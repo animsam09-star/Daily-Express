@@ -364,13 +364,19 @@ def fetch_treasury_now():
     out = {}
     for q in quotes:
         sym = q["symbol"]
-        last, chg = _num(q.get("last")), _num(q.get("change"))
+        last = _num(q.get("last"))
         if last is None:
             continue
+        # CNBC 는 변동이 작으면 change 를 아예 안 준다(2년물이 UNCH 로 와서
+        # 늘 0.0bp 로 표시됐다). 그때는 전일 종가와의 차이로 직접 계산한다.
+        chg = _num(q.get("change"))
+        if chg is None:
+            prev = _num(q.get("previous_day_closing"))
+            chg = (last - prev) if prev is not None else 0.0
         out[sym] = {
             "label": TENOR_LABEL[sym],
             "yield": last,
-            "chg_bp": (chg or 0.0) * 100.0,   # %p -> bp
+            "chg_bp": chg * 100.0,            # %p -> bp
             "asof": q.get("last_timedate"),
         }
     return out

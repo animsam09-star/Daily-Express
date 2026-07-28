@@ -28,7 +28,7 @@ from sources import TIMEOUT, UA, VERIFY
 if not VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-HEADLINES_PER_TICKER = 4
+HEADLINES_PER_TICKER = 6   # 두 소스를 합치므로 후보를 넉넉히 넘긴다
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 300           # Claude Code 헤드리스 호출 상한(초)
 
@@ -291,16 +291,32 @@ def _finnhub(ticker: str) -> list[dict]:
     return []
 
 
+def _preferred(src: str) -> bool:
+    return any(p in (src or "").lower() for p in PREFERRED)
+
+
 def _rank(arts: list[dict]) -> list[dict]:
-    """데이터 페이지는 버리고, 원인이 담긴 기사를 앞으로 보낸다."""
+    """데이터 페이지는 버리고, 원인이 담긴 지정 매체 기사를 앞으로 보낸다."""
     kept = [a for a in arts if not DATA_PAGE_RE.search(a["title"])]
-    kept.sort(key=lambda a: 1 if _is_recap(a["title"]) else 0)
+    kept.sort(key=lambda a: (1 if _is_recap(a["title"]) else 0,
+                             0 if _preferred(a.get("source")) else 1))
     return kept[:HEADLINES_PER_TICKER]
 
 
 def _headlines(ticker: str, name: str) -> list[dict]:
-    """Finnhub(티커 직접) → 구글 뉴스 RSS(지정 매체) → 야후 순으로 시도한다."""
-    return _rank(_finnhub(ticker) or _gnews(ticker, name) or _yahoo(ticker, name))
+    """Finnhub 와 지정 매체(로이터·인베스팅·시킹알파)를 둘 다 조회해 합친다.
+
+    예전에는 Finnhub 가 성공하면 지정 매체를 아예 안 봤다. Finnhub 키가 있는
+    운영 환경에서는 사실상 지정 매체가 조회되지 않았다는 뜻이다.
+    """
+    seen, merged = set(), []
+    for group in (_gnews(ticker, name), _finnhub(ticker)):
+        for a in group:
+            t = a.get("title")
+            if t and t not in seen:
+                seen.add(t)
+                merged.append(a)
+    return _rank(merged or _yahoo(ticker, name))
 
 
 def collect(holdings: dict) -> list[dict]:
