@@ -29,6 +29,7 @@ NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
 GROUP_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
 DETAIL_URL = "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}"
 ITEM_URL = "https://finance.naver.com/item/main.naver?code={code}"
+ETF_CODE_RE = r"[0-9A-Z]{6}"
 
 # 업종 -> 테마. 여기 없는 업종은 어느 테마에도 들어가지 않는다.
 UPJONG_THEME = {
@@ -51,20 +52,31 @@ UPJONG_THEME = {
     "게임엔터테인먼트": "인터넷·게임", "IT서비스": "인터넷·게임",
     "소프트웨어": "인터넷·게임", "양방향미디어와서비스": "인터넷·게임",
     "우주항공과국방": "방산·항공",           # 우주는 아래 SPACE 로 빼낸다
+    "전자장비와기기": "전기전자", "전자제품": "전기전자",
+    "전기제품": "전기전자", "전기장비": "전기전자",
+    "핸드셋": "전기전자", "컴퓨터와주변기기": "전기전자",
+    "통신장비": "전기전자", "가정용기기와용품": "전기전자",
 }
 
-# '반도체와반도체장비' 안에서 소자·설계 대형주. 나머지는 소부장으로 남는다.
-SEMI_LARGE = {"005930": "삼성전자", "000660": "SK하이닉스", "402340": "SK스퀘어",
-              "000990": "DB하이텍", "042700": "한미반도체"}
+# '반도체와반도체장비' 안에서 메모리 대형 2사. 나머지(파운드리·장비·소재)는
+# 전부 소부장으로 남는다.
+SEMI_LARGE = {"005930": "삼성전자", "000660": "SK하이닉스"}
 
 # '우주항공과국방' 안에서 위성·발사체. 나머지는 방산·항공에 남는다.
 SPACE = {"047810", "099320", "451760", "462350", "211270", "189300"}
 
 # 업종에 없는 테마는 해당 테마 ETF 의 구성종목으로 만든다(네이버는 상위 10종목 공개).
+ETF_WEIGHTS: dict[str, dict[str, float]] = {}   # 테마 -> {종목: ETF 구성비중}
+
+# 네이버 ETF 목록에서 이름으로 실제 코드를 확인해 넣었다. 기억으로 적었던
+# 코드는 로봇 ETF 자리에 바이오 ETF 가 들어가 있었다(알테오젠·셀트리온이 로봇
+# 테마로 잡혔다). 코드는 숫자 6자리가 아닌 것도 있다(0148J0).
 THEME_ETFS = {
-    "2차전지": ["305540", "364980", "305720", "462010"],
-    "로봇": ["445290", "445300", "462900"],
-    "신재생": ["117460", "434730", "376410", "381570"],
+    "2차전지": ["305720", "305540", "364980", "462010", "461950"],
+    "로봇": ["445290", "0148J0", "469070", "0177X0"],
+    "신재생": ["385510", "377990", "367770", "457990"],
+    "우주": ["421320", "463250", "0207G0"],
+    "방산·항공": ["449450", "0080G0", "490480"],
 }
 
 
@@ -95,11 +107,34 @@ def upjong_members() -> dict[str, list[str]]:
     return {name: c for (_, name), c in zip(wanted, codes)}
 
 
-def etf_members(etf_code: str) -> list[str]:
-    """ETF 페이지가 공개하는 구성종목(상위 10)."""
+ETF_TABLE_MARK = "구성종목(구성자산)"
+ETF_ROW_RE = re.compile(
+    r'<td class="ctg">\s*<a href="/item/main\.naver\?code=([0-9A-Z]{6})">([^<]+)</a>.*?'
+    r'<td class="per">\s*([\d.]+)%', re.S)
+
+
+def etf_members(etf_code: str) -> list[tuple[str, float]]:
+    """ETF 구성종목과 구성비중(상위 10). [(종목코드, 비중%), ...]
+
+    페이지 전체의 링크를 긁으면 '인기종목'·'동일업종' 같은 다른 영역까지
+    들어온다(로봇 ETF 에 셀트리온·한미약품이 섞여 나왔다). 구성종목 표
+    안쪽만 파싱한다.
+    """
     text = _get(ITEM_URL.format(code=etf_code))
-    found = re.findall(r'/item/main\.naver\?code=(\d{6})">', text)
-    return [c for c in dict.fromkeys(found) if c != etf_code]
+    i = text.find(ETF_TABLE_MARK)
+    if i < 0:
+        return []
+    end = text.find("</table>", i)
+    seg = text[i:end if end > 0 else i + 20000]
+    out = []
+    for code, _name, pct in ETF_ROW_RE.findall(seg):
+        if code == etf_code:
+            continue
+        try:
+            out.append((code, float(pct)))
+        except ValueError:
+            continue
+    return out
 
 
 def build_pools() -> dict[str, list[str]]:
@@ -117,14 +152,27 @@ def build_pools() -> dict[str, list[str]]:
             else:
                 pools[theme].append(c)
 
-    # 업종에 없는 테마: ETF 구성종목 합집합
+    # 업종에 없는 테마: ETF 구성종목 합집합.
+    # 국내 테마 ETF 는 삼성전자 같은 대형주를 상당 비중 담는다. 시가총액으로
+    # 줄을 세우면 로봇 테마가 삼성전자 지수가 되어버리므로, ETF 가 실제로 부여한
+    # 구성비중을 순위와 가중치로 쓴다.
     with ThreadPoolExecutor(max_workers=8) as ex:
         flat = [(t, e) for t, es in THEME_ETFS.items() for e in es]
-        for (theme, _), codes in zip(flat, ex.map(etf_members, [e for _, e in flat])):
-            pools.setdefault(theme, []).extend(codes)
+        weights: dict[str, dict[str, float]] = {}
+        for (theme, _), rows in zip(flat, ex.map(etf_members, [e for _, e in flat])):
+            w = weights.setdefault(theme, {})
+            for code, pct in rows:
+                w[code] = max(w.get(code, 0.0), pct)   # 여러 ETF 에 겹치면 최대치
+    # ETF 로 정의되는 테마는 업종에서 온 종목을 섞지 않고 ETF 구성만 쓴다.
+    # 섞으면 가중치 기준이 둘(시총/구성비중)이 되어 지수가 흐려진다.
+    for theme, w in weights.items():
+        pools[theme] = sorted(w, key=lambda c: w[c], reverse=True)
+        ETF_WEIGHTS[theme] = w
 
     # 대형 반도체가 업종 목록에 없을 수도 있어 확실히 채워 넣는다
     pools.setdefault("반도체", []).extend(SEMI_LARGE)
-    pools.setdefault("우주", []).extend(SPACE)
 
-    return {t: list(dict.fromkeys(cs)) for t, cs in pools.items() if cs}
+    # 우선주 제외. 보통주는 코드가 0 으로 끝나고 우선주는 5·7 로 끝난다
+    # (삼성전자우 005935 가 '반도체 소부장' 1위로 올라왔다).
+    return {t: [c for c in dict.fromkeys(cs) if c.endswith("0")]
+            for t, cs in pools.items() if cs}

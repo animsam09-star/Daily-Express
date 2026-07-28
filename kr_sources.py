@@ -134,7 +134,13 @@ def fetch_sectors_and_holdings():
     def cap(c):
         return (quotes.get(_ys(c)) or {}).get("market_cap") or 0
 
-    pools = {t: sorted([c for c in cs if cap(c) > 0], key=cap, reverse=True)[:POOL_TOP]
+    def weight(theme, c):
+        """지수 가중치. ETF 로 정의된 테마는 ETF 구성비중, 나머지는 시가총액."""
+        w = kr_universe.ETF_WEIGHTS.get(theme)
+        return w.get(c, 0.0) if w else cap(c)
+
+    pools = {t: sorted([c for c in cs if cap(c) > 0],
+                       key=lambda c: weight(t, c), reverse=True)[:POOL_TOP]
              for t, cs in pools.items()}
     pools = {t: cs for t, cs in pools.items() if cs}
 
@@ -157,19 +163,22 @@ def fetch_sectors_and_holdings():
                          "price": q.get("price"), "market_cap": q.get("market_cap"),
                          "chg_pct": q.get("chg_pct"),
                          "returns": rets.get(_ys(c), {})})
-        rows.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
         if not rows:
             continue
+        for r in rows:
+            r["weight"] = weight(theme, r["ticker"])
+        # 지수 가중치와 같은 순서로 보여준다(ETF 테마는 구성비중, 그 외 시총)
+        rows.sort(key=lambda r: r["weight"], reverse=True)
         holdings[theme] = rows[:TOP_N]         # 메시지에는 상위 5종목만
 
         # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.
         # 상위 5개만 쓰면 소부장(12종목)처럼 저변이 넓은 테마의 대표성이 떨어진다.
-        wsum = sum(r.get("market_cap") or 0 for r in rows)
-        chg = (sum((r.get("chg_pct") or 0) * (r.get("market_cap") or 0) for r in rows) / wsum
+        wsum = sum(r["weight"] for r in rows)
+        chg = (sum((r.get("chg_pct") or 0) * r["weight"] for r in rows) / wsum
                if wsum else 0.0)
         sec_ret = {}
         for k, _ in RETURN_WINDOWS:
-            vals = [(r["returns"].get(k), r.get("market_cap") or 0) for r in rows
+            vals = [(r["returns"].get(k), r["weight"]) for r in rows
                     if (r.get("returns") or {}).get(k) is not None]
             if vals:
                 tw = sum(w for _, w in vals)
@@ -237,7 +246,7 @@ def sector_series(theme: str, members) -> list:
     with ThreadPoolExecutor(max_workers=5) as ex:
         for r, s in zip(rows, ex.map(lambda x: _safe_series(_ys(x["ticker"])), rows)):
             if s:
-                series_list.append((r.get("market_cap") or 1, s))
+                series_list.append((r.get("weight") or r.get("market_cap") or 1, s))
     if not series_list:
         return []
 
