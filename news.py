@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -29,11 +30,86 @@ HEADLINES_PER_TICKER = 4
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 300           # Claude Code 헤드리스 호출 상한(초)
 
-SEARCH_URL = (
+# 지정 소스에서만 기사를 찾는다. 구글 뉴스 RSS 의 site: 필터를 쓰면
+# 세 곳을 한 번의 요청으로 훑을 수 있다(로이터는 직접 접근 시 401 이라 이 경로가 필요).
+NEWS_SITES = ("reuters.com", "investing.com", "seekingalpha.com")
+GNEWS_URL = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+NEWS_WINDOW = "when:3d"     # 최근 3일치만
+
+YAHOO_URL = (                # 지정 소스에서 못 찾았을 때의 폴백
     "https://query1.finance.yahoo.com/v1/finance/search"
     "?q={q}&newsCount={n}&quotesCount=0"
 )
 TINYURL = "https://tinyurl.com/api-create.php"
+
+ITEM_RE = re.compile(r"<item>(.*?)</item>", re.S)
+TITLE_RE = re.compile(r"<title>(.*?)</title>", re.S)
+LINK_RE = re.compile(r"<link>(.*?)</link>", re.S)
+SOURCE_RE = re.compile(r"<source[^>]*>(.*?)</source>", re.S)
+
+
+def _cdata(s: str) -> str:
+    return re.sub(r"<!\[CDATA\[|\]\]>", "", s).strip()
+
+
+# 사명에서 법인격 표기를 떼어내 검색·대조에 쓸 핵심어를 남긴다
+CORP_WORDS = {"CORP", "CORPORATION", "INC", "CO", "THE", "PLC", "LTD", "LLC",
+              "GROUP", "HOLDINGS", "HOLDING", "COMPANY", "CLASS", "A", "B", "&",
+              "SA", "NV", "AG", "TECHNOLOGIES", "TECHNOLOGY", "INTERNATIONAL",
+              # 아래는 일반 명사라 기사 제목에 우연히 걸린다("shares plunge" 등)
+              "SHARES", "SHS", "COMMON", "STOCK", "ORD", "CL", "SER"}
+
+
+def _keywords(ticker: str, name: str) -> list[str]:
+    words = [w.strip(".,/") for w in re.split(r"[\s/]+", name.upper())]
+    core = [w for w in words if w and w not in CORP_WORDS and len(w) > 2]
+    # 2글자 이하 티커(V, KO 등)는 다른 단어에 우연히 걸리므로 사명으로만 대조한다
+    if len(ticker) <= 2 and core:
+        return core[:2]
+    return [ticker.upper()] + core[:2]
+
+
+def _relevant(title: str, keys: list[str]) -> bool:
+    """제목에 티커나 사명 핵심어가 실제로 들어있는 기사만 남긴다.
+
+    티커가 짧으면(KO, V 등) 구글이 매칭에 실패해 무관한 일반 기사를 돌려준다.
+    이걸 그대로 요약에 넘기면 엉뚱한 설명이 붙을 수 있어 여기서 끊는다.
+    """
+    up = title.upper()
+    for k in keys:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(k)}(?![A-Z0-9])", up):
+            return True
+    return False
+
+
+def _gnews(ticker: str, name: str) -> list[dict]:
+    """구글 뉴스 RSS 에서 지정 소스 기사만. 제목·링크·출처를 돌려준다."""
+    sites = " OR ".join(f"site:{d}" for d in NEWS_SITES)
+    keys = _keywords(ticker, name)
+    out, seen = [], set()
+    queries = [f"{ticker} ({sites}) {NEWS_WINDOW}"]
+    if len(keys) > 1:
+        queries.append(f'"{keys[1]}" ({sites}) {NEWS_WINDOW}')
+    for q in queries:
+        try:
+            text = _get(GNEWS_URL.format(q=requests.utils.quote(q))).text
+        except Exception:                      # noqa: BLE001
+            continue
+        for raw in ITEM_RE.findall(text):
+            t, l = TITLE_RE.search(raw), LINK_RE.search(raw)
+            if not t or not l:
+                continue
+            title = _cdata(t.group(1))
+            # 구글이 제목 끝에 " - 매체명" 을 붙인다. 출처는 따로 쓰므로 떼어낸다.
+            src = _cdata(SOURCE_RE.search(raw).group(1)) if SOURCE_RE.search(raw) else ""
+            if src and title.endswith(f" - {src}"):
+                title = title[: -len(src) - 3]
+            if title and title not in seen and _relevant(title, keys):
+                seen.add(title)
+                out.append({"title": title, "url": _cdata(l.group(1)), "source": src})
+        if len(out) >= HEADLINES_PER_TICKER:
+            break
+    return out[:HEADLINES_PER_TICKER]
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -82,23 +158,27 @@ def _get(url, **kw):
     return r
 
 
-def _headlines(ticker: str, name: str) -> list[dict]:
-    """야후 뉴스 검색. 티커는 노이즈가 많아 사명으로도 한 번 더 찾는다."""
+def _yahoo(ticker: str, name: str) -> list[dict]:
+    """폴백. 지정 소스에서 아무것도 못 찾았을 때만 쓴다(노이즈가 많다)."""
     out, seen = [], set()
     for q in (ticker, name.split()[0]):
         try:
-            data = _get(SEARCH_URL.format(q=requests.utils.quote(q),
-                                          n=HEADLINES_PER_TICKER)).json()
+            data = _get(YAHOO_URL.format(q=requests.utils.quote(q),
+                                         n=HEADLINES_PER_TICKER)).json()
         except Exception:                      # noqa: BLE001
             continue
         for n in data.get("news", []):
             t, u = (n.get("title") or "").strip(), (n.get("link") or "").strip()
             if t and t not in seen:
                 seen.add(t)
-                out.append({"title": t, "url": u})
+                out.append({"title": t, "url": u, "source": n.get("publisher", "")})
         if len(out) >= HEADLINES_PER_TICKER:
             break
     return out[:HEADLINES_PER_TICKER]
+
+
+def _headlines(ticker: str, name: str) -> list[dict]:
+    return _gnews(ticker, name) or _yahoo(ticker, name)
 
 
 def collect(holdings: dict) -> list[dict]:
