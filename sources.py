@@ -189,7 +189,7 @@ def fetch_quotes(tickers):
     return out
 
 
-RETURN_WINDOWS = (("m1", 30), ("m6", 182), ("m12", 365))
+RETURN_WINDOWS = (("m1", 30), ("m3", 91), ("m6", 182), ("m12", 365))
 
 
 def _return_at(series, days_back: int):

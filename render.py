@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 from html import escape
 
 import matplotlib
@@ -252,6 +253,18 @@ def _cap_fmt(v):
 
 CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
 NOTE_MAX = 45               # 뉴스 한 줄 최대 글자수
+MAX_NOTES = 3               # 섹터당 뉴스 최대 개수(등락 큰 종목 우선)
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _visible_len(html_text: str) -> int:
+    """텔레그램 캡션 상한은 '엔티티 파싱 후' 글자수 기준이다.
+
+    즉 <b> 같은 태그와 <a href="..."> 의 URL 은 세지 않고, 링크는 보이는
+    글자('기사')만 센다. HTML 원문 길이로 재면 크게 과대평가돼서
+    실제로는 들어갈 뉴스가 통째로 잘려나간다.
+    """
+    return len(TAG_RE.sub("", html_text))
 
 
 def holdings_caption(sector, holdings, notes=None):
@@ -265,15 +278,27 @@ def holdings_caption(sector, holdings, notes=None):
         return None
     notes = notes or {}
 
-    # 상한을 넘기면 잘라내지 않고 뉴스를 빼고 다시 만든다.
+    # 뉴스는 섹터당 MAX_NOTES 개까지만. 등락이 큰 종목이 그날의 주요 뉴스다.
+    ranked = sorted(holdings, key=lambda h: abs(h.get("chg_pct") or 0), reverse=True)
+    picked = {h["ticker"]: notes[h["ticker"]]
+              for h in ranked if h["ticker"] in notes}
+    picked = dict(list(picked.items())[:MAX_NOTES])
+
+    # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
-    full = _build_caption(sector, holdings, notes)
-    if len(full) <= CAPTION_LIMIT:
-        return full
-    return _build_caption(sector, holdings, {})
+    for note_cap in (NOTE_MAX, 30, 22):
+        cap = _build_caption(sector, holdings, picked, note_cap)
+        if _visible_len(cap) <= CAPTION_LIMIT:
+            return cap
+    for keep in (2, 1):
+        subset = dict(list(picked.items())[:keep])
+        cap = _build_caption(sector, holdings, subset, 22)
+        if _visible_len(cap) <= CAPTION_LIMIT:
+            return cap
+    return _build_caption(sector, holdings, {}, NOTE_MAX)
 
 
-def _build_caption(sector, holdings, notes):
+def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX):
     blocks = [f"<b>{escape(sector['name'])} ({sector['symbol']}) "
               f"{sector['chg_pct']:+.2f}%</b>"]
 
@@ -291,14 +316,14 @@ def _build_caption(sector, holdings, notes):
         # 기간 수익률은 보조 정보라 굵게 하지 않는다
         r = h.get("returns") or {}
         spans = [f"{lab} {r[k]:+.1f}%" for k, lab in
-                 (("m1", "1M"), ("m6", "6M"), ("m12", "12M"))
+                 (("m1", "1M"), ("m3", "3M"), ("m6", "6M"), ("m12", "12M"))
                  if r.get(k) is not None]
         if spans:
             line += "\n" + "  ".join(spans)
 
         n = notes.get(h["ticker"])
         if n and n.get("note"):
-            note = n["note"][:NOTE_MAX]
+            note = n["note"][:note_cap]
             link = f' <a href="{escape(n["url"], quote=True)}">기사</a>' if n.get("url") else ""
             line += f"\n<i>{escape(note)}</i>{link}"
         blocks.append(line)
