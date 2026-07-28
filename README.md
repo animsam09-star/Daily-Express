@@ -110,6 +110,16 @@ git push -u origin main
 | `TELEGRAM_CHAT_ID` | 1번에서 확인한 chat_id | ✅ |
 | `CLAUDE_CODE_OAUTH_TOKEN` | 뉴스 요약용 — **구독으로 쓰는 방법** | 선택 |
 | `ANTHROPIC_API_KEY` | 뉴스 요약용 — API 크레딧 방식 | 선택 |
+| `FINNHUB_API` | 종목 뉴스 수집용 ([finnhub.io](https://finnhub.io)) | 선택 |
+
+### 뉴스 수집 경로
+
+`FINNHUB_API` → 구글 뉴스 RSS(로이터·인베스팅닷컴·시킹알파) → 야후 순으로 시도한다.
+앞 단계가 결과를 주면 뒤는 건너뛴다.
+
+Finnhub 는 티커로 직접 조회하므로 검색 노이즈가 없다. 무료 등급이 분당 60회라
+동시 요청을 5로 낮췄고, 429 는 한 번 쉬었다 재시도한다. 지정 매체(로이터·인베스팅·
+시킹알파) 기사를 앞으로 정렬하고 그다음 최신순으로 고른다.
 
 ### 뉴스 요약 인증: 구독 vs API 키
 

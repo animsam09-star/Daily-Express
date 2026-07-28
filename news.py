@@ -11,11 +11,13 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
-import re
 import os
+import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -177,8 +179,64 @@ def _yahoo(ticker: str, name: str) -> list[dict]:
     return out[:HEADLINES_PER_TICKER]
 
 
+FINNHUB_URL = "https://finnhub.io/api/v1/company-news"
+FINNHUB_DAYS = 3            # 최근 며칠치를 볼 것인가
+FINNHUB_WORKERS = 5         # 무료 등급 분당 60회 제한을 넘지 않도록 낮춘다
+PREFERRED = ("reuters", "investing", "seeking alpha", "seekingalpha")
+
+
+def _finnhub_key():
+    """시크릿 이름을 FINNHUB_API 로 두든 FINNHUB_API_KEY 로 두든 받는다."""
+    for n in ("FINNHUB_API_KEY", "FINNHUB_API", "FINNHUB_TOKEN"):
+        v = (os.environ.get(n) or "").strip()
+        if v:
+            return v
+    return None
+
+
+def _finnhub(ticker: str) -> list[dict]:
+    """Finnhub 종목 뉴스. 티커로 직접 조회하므로 검색 노이즈가 없다."""
+    key = _finnhub_key()
+    if not key:
+        return []
+    today = dt.date.today()
+    params = {"symbol": ticker,
+              "from": (today - dt.timedelta(days=FINNHUB_DAYS)).isoformat(),
+              "to": today.isoformat(), "token": key}
+    for attempt in (0, 1):                     # 429 는 한 번만 쉬었다 재시도
+        try:
+            r = requests.get(FINNHUB_URL, params=params, headers=UA,
+                             verify=VERIFY, timeout=TIMEOUT)
+            if r.status_code == 429 and attempt == 0:
+                time.sleep(2)
+                continue
+            r.raise_for_status()
+            arts = r.json()
+        except Exception as e:                 # noqa: BLE001
+            if attempt:
+                print(f"[news] finnhub {ticker} 실패: {type(e).__name__}")
+            continue
+        if not isinstance(arts, list):
+            return []
+        # 지정 매체를 앞으로, 그다음 최신순
+        arts.sort(key=lambda a: (
+            0 if any(p in (a.get("source") or "").lower() for p in PREFERRED) else 1,
+            -(a.get("datetime") or 0)))
+        out = []
+        for a in arts:
+            t = (a.get("headline") or "").strip()
+            if t:
+                out.append({"title": t, "url": (a.get("url") or "").strip(),
+                            "source": (a.get("source") or "").strip()})
+            if len(out) >= HEADLINES_PER_TICKER:
+                break
+        return out
+    return []
+
+
 def _headlines(ticker: str, name: str) -> list[dict]:
-    return _gnews(ticker, name) or _yahoo(ticker, name)
+    """Finnhub(티커 직접) → 구글 뉴스 RSS(지정 매체) → 야후 순으로 시도한다."""
+    return _finnhub(ticker) or _gnews(ticker, name) or _yahoo(ticker, name)
 
 
 def collect(holdings: dict) -> list[dict]:
@@ -193,7 +251,9 @@ def collect(holdings: dict) -> list[dict]:
                            "chg_pct": h.get("chg_pct")})
     if not stocks:
         return []
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    # Finnhub 무료 등급은 분당 60회라 동시 요청을 낮춘다
+    workers = FINNHUB_WORKERS if _finnhub_key() else 10
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         heads = ex.map(lambda s: _headlines(s["ticker"], s["name"]), stocks)
     for s, hl in zip(stocks, heads):
         s["headlines"] = hl
