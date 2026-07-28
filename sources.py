@@ -141,8 +141,16 @@ def _company_key(name: str) -> str:
     return " ".join(w for w in s.split() if w not in NAME_NOISE)
 
 
-def _top_holdings(etf: str, n: int = TOP_N):
-    """SPDR 일별 보유종목 공시에서 비중 상위 n개(이미 비중순으로 정렬돼 있다)."""
+CANDIDATES = 25       # 시총 상위 5를 제대로 뽑으려면 후보를 넉넉히 봐야 한다
+
+
+def _top_holdings(etf: str, n: int = CANDIDATES):
+    """SPDR 일별 보유종목 공시에서 후보 n개.
+
+    파일은 ETF 비중순으로 정렬돼 있는데 비중은 유동주식 기준이라 시가총액
+    순서와 다르다(PG 가 KO 보다 시총이 작은데 앞에 있었다). 여기서는 후보만
+    넉넉히 넘기고, 시총 순 상위 5 선정은 시세를 받은 뒤에 한다.
+    """
     import openpyxl
 
     raw = _get(SSGA_HOLDINGS.format(etf=etf.lower())).content
@@ -161,7 +169,7 @@ def _top_holdings(etf: str, n: int = TOP_N):
 
     out, seen = [], set()
     # 중복 클래스를 걸러내면 자리가 비므로 넉넉히 읽고 나서 상위 n 개를 고른다
-    for r in rows[hi + 1: hi + 41]:
+    for r in rows[hi + 1: hi + 1 + n * 3]:
         if not r or not r[ti]:
             continue
         try:
@@ -309,10 +317,18 @@ def fetch_sector_holdings(sector_symbols):
 
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
     quotes = fetch_quotes(tickers)
-    rets = fetch_returns(tickers)
-    for hs in holdings.values():
+
+    # 시가총액 순으로 다시 세워 상위 TOP_N 만 남긴다
+    for sym, hs in list(holdings.items()):
         for h in hs:
             h.update(quotes.get(h["ticker"], {}))
+        hs.sort(key=lambda h: h.get("market_cap") or 0, reverse=True)
+        holdings[sym] = hs[:TOP_N]
+
+    kept = sorted({h["ticker"] for hs in holdings.values() for h in hs})
+    rets = fetch_returns(kept)
+    for hs in holdings.values():
+        for h in hs:
             h["returns"] = rets.get(h["ticker"], {})
     return holdings
 
