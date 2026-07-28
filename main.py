@@ -47,9 +47,15 @@ def main() -> int:
         return 0
 
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("[3/3] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 없습니다.", file=sys.stderr)
+    missing = [n for n, v in (("TELEGRAM_BOT_TOKEN", token),
+                              ("TELEGRAM_CHAT_ID", chat_id)) if not v]
+    if missing:
+        # 어느 쪽이 없는지 알려줘야 시크릿을 헤매지 않는다. 값은 절대 찍지 않는다.
+        print(f"[3/3] 다음 시크릿이 비어 있습니다: {', '.join(missing)}", file=sys.stderr)
+        print("      저장소 Settings → Secrets and variables → Actions 에서 "
+              "이름이 정확히 일치하는지 확인하세요.", file=sys.stderr)
         return 2
+    print(f"    시크릿 확인: 토큰 {len(token)}자, chat_id {chat_id[:3]}***")
 
     print("[3/3] 텔레그램 발송...")
     notify.send(token, chat_id, text, charts)
