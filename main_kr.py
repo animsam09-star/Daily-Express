@@ -150,7 +150,8 @@ def build_charts(data, outdir):
         if not series:
             continue
         cap = render.holdings_caption(s, holdings.get(s["symbol"]), notes,
-                                      cur=CUR, px=PX)
+                                      cur=CUR, px=PX,
+                                      bench=(idx.get("코스피") or {}).get("returns"))
         add(render.line_chart(
             os.path.join(outdir, f"sector_{s['symbol']}.png"),
             f"{s['name']} 2년 추이 (시총가중, 2년 전 = 100)", series,

@@ -93,7 +93,8 @@ def fetch_indices():
             o = f.result()
             s = [(d, c) for d, _, _, c in o]
             out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
-                         "chg_pct": pct_change(s)}
+                         "chg_pct": pct_change(s),
+                         "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
     return out
 
 

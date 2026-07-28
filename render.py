@@ -286,7 +286,8 @@ def build_all(data, outdir):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
                 f"{s['name']} ({s['symbol']}) 2년 추이", s["series"],
                 unit="", change=s["chg_pct"], change_unit="%", ohlc=s.get("ohlc"),
-                caption=holdings_caption(s, holdings.get(s["symbol"]), notes),
+                caption=holdings_caption(s, holdings.get(s["symbol"]), notes,
+                                         bench=(idx.get("S&P500") or {}).get("returns")),
                 solo=True)
     return charts
 
@@ -317,7 +318,7 @@ def _visible_len(html_text: str) -> int:
     return len(TAG_RE.sub("", html_text))
 
 
-def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}"):
+def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", bench=None):
     """섹터 차트에 붙일 상위 5종목: 주가·시가총액·등락 + 종목별 뉴스.
 
     텔레그램 HTML 에는 글자 크기 지정이 없다. 쓸 수 있는 강약은 굵게/보통/기울임뿐이라
@@ -337,15 +338,15 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}"):
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
     for note_cap in (NOTE_MAX, 30, 22):
-        cap = _build_caption(sector, holdings, picked, note_cap, cur, px)
+        cap = _build_caption(sector, holdings, picked, note_cap, cur, px, bench)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, holdings, subset, 22, cur, px)
+        cap = _build_caption(sector, holdings, subset, 22, cur, px, bench)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
-    return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px)
+    return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px, bench)
 
 
 NAME_DROP = re.compile(
@@ -388,16 +389,38 @@ def _arrow(v):
     return "▲" if v > 0 else ("▼" if v < 0 else "—")
 
 
+SPAN_KEYS = (("m1", "1M"), ("m3", "3M"), ("m6", "6M"), ("m12", "12M"))
+
+
 def _spans(returns):
     """1M/3M/6M/12M 를 자리맞춤해 한 줄로. 종목 간 세로로 눈이 맞는다."""
     r = returns or {}
-    out = [f"{lab} {r[k]:+5.1f}" for k, lab in
-           (("m1", "1M"), ("m3", "3M"), ("m6", "6M"), ("m12", "12M"))
-           if r.get(k) is not None]
+    out = [f"{lab} {r[k]:+5.1f}" for k, lab in SPAN_KEYS if r.get(k) is not None]
     return "  ".join(out)
 
 
-def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}"):
+def _rel_spans(returns, bench):
+    """지수 대비 상대수익률(%p). 절대 수익률 줄과 같은 자리에 정렬된다.
+
+    시장이 빠져서 같이 빠진 것인지, 그 종목이 유독 부진한 것인지를
+    가르는 숫자라 절대 수익률만큼 중요하다.
+    """
+    r, b = returns or {}, bench or {}
+    if not r or not b:
+        return ""
+    out = []
+    for k, lab in SPAN_KEYS:
+        if r.get(k) is None or b.get(k) is None:
+            continue
+        # 라벨 자리를 공백으로 채워 절대 수익률 줄과 열이 정확히 맞게 한다
+        out.append(f"{' ' * len(lab)} {r[k] - b[k]:+5.1f}")
+    if not out:
+        return ""
+    line = "  ".join(out)
+    return "vs" + line[2:]            # 맨 앞 두 칸만 'vs' 로 덮어쓴다
+
+
+def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}", bench=None):
     # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률
     chg = sector.get("chg_pct")
     sec_label = (sector["name"] if sector["name"] == sector["symbol"]
@@ -406,6 +429,9 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
+    sec_rel = _rel_spans(sector.get("returns"), bench)
+    if sec_rel:
+        blocks[0] += f"\n<code>{sec_rel}</code>"
 
     for h in holdings:
         c = h.get("chg_pct")
@@ -424,6 +450,9 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         sp = _spans(h.get("returns"))
         if sp:
             lines.append(f"<code>{sp}</code>")
+        rel = _rel_spans(h.get("returns"), bench)
+        if rel:
+            lines.append(f"<code>{rel}</code>")
 
         n = notes.get(h["ticker"])
         if n and n.get("note"):
