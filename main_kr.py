@@ -93,6 +93,8 @@ def collect():
 
     try:
         secs, holdings = kr.fetch_sectors_and_holdings()
+        # 코스닥 종목은 코스닥 지수 기준으로 상대수익률을 낸다
+        kr.attach_benchmarks(secs, holdings, data.get("indices") or {})
         data["sectors"], data["holdings"] = secs, holdings
     except Exception as e:                     # noqa: BLE001
         errors.append(f"sectors: {type(e).__name__}: {e}")
@@ -155,7 +157,9 @@ def build_charts(data, outdir):
         add(render.line_chart(
             os.path.join(outdir, f"sector_{s['symbol']}.png"),
             f"{s['name']} 2년 추이 (시총가중, 2년 전 = 100)", series,
-            value_fmt="{:,.1f}", change=s["chg_pct"], change_unit="%"),
+            value_fmt="{:,.1f}", change=s["chg_pct"], change_unit="%",
+            bench_series=(idx.get("코스피") or {}).get("series"),
+            bench_label="코스피"),
             caption=cap, solo=True)
     return charts
 

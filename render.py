@@ -76,9 +76,35 @@ def _ichimoku(ohlc):
     return dates[26:] + future, span_a[:-26] + span_a[-26:], span_b[:-26] + span_b[-26:]
 
 
+RS_COLOR = "#8e44ad"
+
+
+def _rs_series(series, bench_series):
+    """지수 대비 상대강도. 구간 시작을 100 으로 잡은 (종목/지수) 비율.
+
+    100 을 넘으면 그 구간 동안 지수를 앞선 것이다. 절대 주가만 보면
+    시장이 밀어올린 것인지 종목이 잘한 것인지 구분되지 않는다.
+    """
+    if not bench_series or len(series) < 2:
+        return None
+    bm = dict(bench_series)
+    pairs = [(d, v / bm[d]) for d, v in series if d in bm and bm[d]]
+    if len(pairs) < 30:
+        return None
+    base = pairs[0][1]
+    if not base:
+        return None
+    return [d for d, _ in pairs], [r / base * 100.0 for _, r in pairs]
+
+
 def line_chart(path, title, series, *, value_fmt="{:,.2f}", unit="",
-               change=None, change_fmt="{:+.1f}", change_unit="", ohlc=None):
-    """2개년 종가 + 이동평균선 1장. ohlc 를 주면 일목균형표 구름대를 깐다."""
+               change=None, change_fmt="{:+.1f}", change_unit="", ohlc=None,
+               bench_series=None, bench_label="지수"):
+    """2개년 종가 + 이동평균선 1장.
+
+    ohlc 를 주면 일목균형표 구름대를, bench_series 를 주면 우측 축에
+    지수 대비 상대강도선을 얹는다.
+    """
     if not series or len(series) < 2:
         return None
     dates = [d for d, _ in series]
@@ -125,7 +151,24 @@ def line_chart(path, title, series, *, value_fmt="{:,.2f}", unit="",
     ax.tick_params(colors=TEXT, labelsize=9)
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%y.%m"))
-    ax.legend(loc="upper left", fontsize=8, frameon=False, ncol=4)
+
+    rs = _rs_series(series, bench_series)
+    handles, labels = ax.get_legend_handles_labels()
+    if rs:
+        rd, rv = rs
+        ax2 = ax.twinx()
+        ax2.plot(rd, rv, color=RS_COLOR, lw=1.3, ls="--", alpha=0.85, zorder=3,
+                 label=f"{bench_label} 대비 상대강도(우)")
+        ax2.axhline(100, color=RS_COLOR, lw=0.8, ls=":", alpha=0.5)
+        ax2.tick_params(colors=RS_COLOR, labelsize=8)
+        ax2.spines["right"].set_color(RS_COLOR)
+        for side in ("top", "left", "bottom"):
+            ax2.spines[side].set_visible(False)
+        ax2.grid(False)
+        h2, l2 = ax2.get_legend_handles_labels()
+        handles, labels = handles + h2, labels + l2
+
+    ax.legend(handles, labels, loc="upper left", fontsize=8, frameon=False, ncol=3)
 
     fig.tight_layout()
     fig.savefig(path, bbox_inches="tight", facecolor="white")
@@ -286,6 +329,8 @@ def build_all(data, outdir):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
                 f"{s['name']} ({s['symbol']}) 2년 추이", s["series"],
                 unit="", change=s["chg_pct"], change_unit="%", ohlc=s.get("ohlc"),
+                bench_series=(idx.get("S&P500") or {}).get("series"),
+                bench_label="S&P500",
                 caption=holdings_caption(s, holdings.get(s["symbol"]), notes,
                                          bench=(idx.get("S&P500") or {}).get("returns")),
                 solo=True)
@@ -429,7 +474,7 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
-    sec_rel = _rel_spans(sector.get("returns"), bench)
+    sec_rel = _rel_spans(sector.get("returns"), sector.get("bench") or bench)
     if sec_rel:
         blocks[0] += f"\n<code>{sec_rel}</code>"
 
@@ -450,7 +495,7 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         sp = _spans(h.get("returns"))
         if sp:
             lines.append(f"<code>{sp}</code>")
-        rel = _rel_spans(h.get("returns"), bench)
+        rel = _rel_spans(h.get("returns"), h.get("bench") or bench)
         if rel:
             lines.append(f"<code>{rel}</code>")
 

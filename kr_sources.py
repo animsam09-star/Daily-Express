@@ -175,6 +175,37 @@ def fetch_sectors_and_holdings():
     return sectors, holdings
 
 
+def attach_benchmarks(sectors, holdings, indices):
+    """종목마다 자기가 속한 시장 지수를 기준으로 붙인다.
+
+    코스닥 종목을 코스피와 비교하면 상대수익률이 왜곡된다(두 지수의 등락 폭이
+    다르다). 섹터 헤더는 구성종목의 시총 비중대로 두 지수를 섞어 쓴다 —
+    반도체 소부장·로봇처럼 코스닥이 주류인 테마가 있기 때문이다.
+    """
+    kospi = (indices.get("코스피") or {}).get("returns") or {}
+    kosdaq = (indices.get("코스닥") or {}).get("returns") or {}
+    if not kospi:
+        return
+
+    for theme, rows in holdings.items():
+        for h in rows:
+            h["bench"] = kosdaq if _SUFFIX_CACHE.get(h["ticker"]) == ".KQ" else kospi
+
+        kq_w = sum((h.get("market_cap") or 0) for h in rows if h.get("bench") is kosdaq)
+        total = sum((h.get("market_cap") or 0) for h in rows) or 1
+        ratio = kq_w / total
+        blended = {}
+        for k in set(kospi) | set(kosdaq):
+            a, b = kospi.get(k), kosdaq.get(k)
+            if a is None or b is None:
+                blended[k] = a if b is None else b
+            else:
+                blended[k] = a * (1 - ratio) + b * ratio
+        for s in sectors:
+            if s["symbol"] == theme:
+                s["bench"] = blended
+
+
 def _fetch_returns(symbols):
     def one(sym):
         try:
