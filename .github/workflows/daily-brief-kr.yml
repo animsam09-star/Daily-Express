@@ -1,0 +1,51 @@
+name: 한국증시 마감 브리핑
+
+on:
+  schedule:
+    # 06:45 UTC = 15:45 KST. 장 마감(15:30) 정각은 종가가 아직 정리되지 않아
+    # 동시호가 반영을 기다린 뒤 보낸다.
+    # UTC 06:45 는 한국시간과 같은 날이므로 요일도 월~금(1-5) 그대로 쓴다.
+    - cron: "45 6 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 한글 폰트 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-nanum
+          fc-cache -f
+          rm -rf ~/.cache/matplotlib
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      - name: Claude Code 설치
+        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: 브리핑 발송
+        run: python main_kr.py
+
+      - name: 실패 시 차트 보관(원인 확인용)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: charts-kr
+          path: out_kr/
+          if-no-files-found: ignore

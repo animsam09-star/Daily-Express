@@ -458,3 +458,79 @@ def build(holdings: dict) -> dict[str, dict]:
     print(f"[news] 요약 {len(summaries)}건 / 링크 {len(short)}건")
     return {tk: {"note": v["note"], "url": short.get(tk, "")}
             for tk, v in summaries.items()}
+
+
+# ---------------------------------------------------------------- 한국 증시
+GNEWS_KR = "https://news.google.com/rss/search?q={q}&hl=ko&gl=KR&ceid=KR:ko"
+KR_RECAP_RE = re.compile(
+    r"(상승 ?마감|하락 ?마감|강보합|약보합|보합 ?마감|급등|급락|\d+% ?[↑↓]"
+    r"|신고가|신저가|주가 ?(상승|하락|급등|급락)$)")
+
+
+def _gnews_kr(name: str) -> list[dict]:
+    """한국 종목 뉴스. 한국어 사명으로 찾으므로 티커 오매칭 문제가 없다."""
+    out, seen = [], set()
+    for q in (f'"{name}" 주가 {NEWS_WINDOW}', f'"{name}" {NEWS_WINDOW}'):
+        try:
+            text = _get(GNEWS_KR.format(q=requests.utils.quote(q))).text
+        except Exception:                      # noqa: BLE001
+            continue
+        for raw in ITEM_RE.findall(text):
+            t, l = TITLE_RE.search(raw), LINK_RE.search(raw)
+            if not t or not l:
+                continue
+            title = _cdata(t.group(1))
+            sm = SOURCE_RE.search(raw)
+            src = _cdata(sm.group(1)) if sm else ""
+            if src and title.endswith(f" - {src}"):
+                title = title[: -len(src) - 3]
+            # 사명이 실제로 들어간 기사만
+            if title and title not in seen and name in title:
+                seen.add(title)
+                out.append({"title": title, "url": _cdata(l.group(1)), "source": src})
+        if len(out) >= HEADLINES_PER_TICKER:
+            break
+    # 등락만 전하는 기사는 뒤로
+    out.sort(key=lambda a: 1 if KR_RECAP_RE.search(a["title"]) else 0)
+    return out[:HEADLINES_PER_TICKER]
+
+
+def build_kr(holdings: dict) -> dict[str, dict]:
+    """{종목코드: {note, url}}. 미국판과 같은 요약 규칙을 쓴다."""
+    stocks, seen = [], set()
+    for hs in holdings.values():
+        for h in hs:
+            if h["ticker"] in seen:
+                continue
+            seen.add(h["ticker"])
+            stocks.append({"ticker": h["ticker"], "name": h["name"],
+                           "chg_pct": h.get("chg_pct")})
+    if not stocks:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        heads = ex.map(lambda s: _gnews_kr(s["name"]), stocks)
+    for s, hl in zip(stocks, heads):
+        s["headlines"] = hl
+    stocks = [s for s in stocks if s["headlines"]]
+    if not stocks:
+        return {}
+    print(f"[news] 한국 {len(stocks)}종목 헤드라인 수집 — 요약 요청")
+
+    summaries = _via_claude_code(stocks)
+    if summaries is None:
+        summaries = _via_api(stocks)
+    if not summaries:
+        return {}
+
+    by = {s["ticker"]: s for s in stocks}
+    targets = []
+    for tk, v in summaries.items():
+        src, s = v.get("source", -1), by.get(tk)
+        if s and isinstance(src, int) and 0 <= src < len(s["headlines"]):
+            targets.append((tk, s["headlines"][src]["url"]))
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        short = dict(zip([t for t, _ in targets],
+                         ex.map(shorten, [u for _, u in targets])))
+    print(f"[news] 요약 {len(summaries)}건 / 링크 {len(short)}건")
+    return {tk: {"note": v["note"], "url": short.get(tk, "")}
+            for tk, v in summaries.items()}

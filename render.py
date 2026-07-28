@@ -242,13 +242,15 @@ def build_all(data, outdir):
     return charts
 
 
-def _cap_fmt(v):
-    """시가총액을 한국식 단위로. 4759668391936 -> 4.76조달러"""
+def _cap_fmt(v, cur="달러"):
+    """시가총액을 한국식 단위로. 4759668391936 -> 4.76조달러 / 71.7조원"""
     if not v:
         return ""
+    if v >= 1e14:
+        return f"{v / 1e12:,.0f}조{cur}"
     if v >= 1e12:
-        return f"{v / 1e12:.2f}조달러"
-    return f"{v / 1e8:,.0f}억달러"
+        return f"{v / 1e12:.2f}조{cur}"
+    return f"{v / 1e8:,.0f}억{cur}"
 
 
 CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
@@ -267,7 +269,7 @@ def _visible_len(html_text: str) -> int:
     return len(TAG_RE.sub("", html_text))
 
 
-def holdings_caption(sector, holdings, notes=None):
+def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}"):
     """섹터 차트에 붙일 상위 5종목: 주가·시가총액·등락 + 종목별 뉴스.
 
     텔레그램 HTML 에는 글자 크기 지정이 없다. 쓸 수 있는 강약은 굵게/보통/기울임뿐이라
@@ -287,15 +289,15 @@ def holdings_caption(sector, holdings, notes=None):
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
     for note_cap in (NOTE_MAX, 30, 22):
-        cap = _build_caption(sector, holdings, picked, note_cap)
+        cap = _build_caption(sector, holdings, picked, note_cap, cur, px)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, holdings, subset, 22)
+        cap = _build_caption(sector, holdings, subset, 22, cur, px)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
-    return _build_caption(sector, holdings, {}, NOTE_MAX)
+    return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px)
 
 
 NAME_DROP = re.compile(
@@ -310,6 +312,10 @@ def _short_name(name: str, limit: int = 18) -> str:
     'EXXONMOBIL HOLDINGS CORP' -> 'Exxonmobil'
     'AT+T INC' -> 'AT&T'   (SSGA 는 & 를 + 로 쓴다)
     """
+    # 한글 사명은 이미 읽기 좋은 형태다. 영문 규칙(법인격 제거·대소문자 변환)을
+    # 적용하면 'SK하이닉스'가 'Sk하이닉스'로 망가진다.
+    if re.search(r"[가-힣]", name):
+        return name.strip()
     s = name.replace("+", "&")
     s = NAME_DROP.sub(" ", s)
     s = " ".join(s.split()).strip(" ,/-")
@@ -343,11 +349,12 @@ def _spans(returns):
     return "  ".join(out)
 
 
-def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX):
+def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}"):
     # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률
     chg = sector.get("chg_pct")
-    blocks = [f"{_arrow(chg)} <b>{escape(sector['name'])} ({sector['symbol']})"
-              f"  {chg:+.2f}%</b>"]
+    sec_label = (sector["name"] if sector["name"] == sector["symbol"]
+                 else f"{sector['name']} ({sector['symbol']})")
+    blocks = [f"{_arrow(chg)} <b>{escape(sec_label)}  {chg:+.2f}%</b>"]
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
@@ -359,8 +366,8 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX):
         head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.2f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
-        meta = [f"${h['price']:,.2f}"] if h.get("price") is not None else []
-        cap = _cap_fmt(h.get("market_cap"))
+        meta = [px.format(h["price"])] if h.get("price") is not None else []
+        cap = _cap_fmt(h.get("market_cap"), cur)
         if cap:
             meta.append(cap)
         lines = [head]
