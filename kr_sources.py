@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import urllib3
 
+import kr_universe
+
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at,
                      fetch_quotes, pct_change, yahoo_ohlc, yahoo_series)
 
@@ -25,29 +27,21 @@ if not VERIFY:
 
 INDICES = [("^KS11", "코스피"), ("^KQ11", "코스닥")]
 
-# 테마별 후보 풀. 이 중 시가총액 상위 5종목을 매일 자동으로 고른다.
-# 풀을 넓게 두면 순위가 바뀌어도 코드를 고칠 필요가 없다.
-SECTOR_POOL = {
-    "반도체": ["005930", "000660", "000990", "402340", "222800"],
-    "반도체 소부장": ["042700", "403870", "058470", "095340", "240810", "036930",
-                 "357780", "005290", "064760", "101490", "319660", "084370"],
-    "2차전지": ["373220", "006400", "003670", "247540", "066970", "137400", "020150"],
-    "자동차": ["005380", "000270", "012330", "204320", "018880", "011210"],
-    "바이오·제약": ["207940", "068270", "000100", "128940", "326030", "302440", "196170"],
-    "인터넷·게임": ["035420", "035720", "259960", "036570", "251270", "263750", "112040"],
-    "금융": ["105560", "055550", "086790", "032830", "138040", "316140", "071050"],
-    "화학·소재": ["051910", "011170", "011780", "298020", "011790", "005490", "004020"],
-    "조선·기계": ["009540", "042660", "010140", "329180", "034020", "267250"],
-    "방산·항공": ["012450", "079550", "064350", "272210", "003490"],
-    "우주": ["047810", "099320", "451760", "462350", "211270", "189300"],
-    "로봇": ["454910", "277810", "108490", "348340", "388720", "117730", "058610"],
-    "신재생": ["009830", "010060", "112610", "336260", "322000", "288620",
-             "018000", "475150", "100090"],
-    "화장품": ["090430", "278470", "051900", "192820", "161890", "002790",
-             "257720", "237880", "241710"],
-    "의류·유통": ["139480", "004170", "069960", "023530", "383220", "020000",
-               "111770", "081660", "282330", "007070"],
-}
+SERIES_TOP = 40      # 지수 시계열을 받을 테마별 상위 종목 수(시총순)
+
+_POOLS = None
+
+
+def get_pools():
+    """테마 -> 종목코드. 업종 분류와 테마 ETF 에서 만든다(kr_universe)."""
+    global _POOLS
+    if _POOLS is None:
+        try:
+            _POOLS = kr_universe.build_pools()
+        except Exception as e:              # noqa: BLE001
+            print(f"[kr] 테마 구성 실패, 최소 구성으로 진행: {type(e).__name__}: {e}")
+            _POOLS = {"반도체": list(kr_universe.SEMI_LARGE)}
+    return _POOLS
 
 TOP_N = 5
 NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
@@ -131,17 +125,34 @@ def fetch_sectors_and_holdings():
     한국은 미국의 SPDR 처럼 테마별 ETF 보유종목 공시가 일관되지 않아,
     후보 풀에서 시총 상위를 골라 직접 집계한다.
     """
-    codes = sorted({c for pool in SECTOR_POOL.values() for c in pool})
+    pools = get_pools()
+    codes = sorted({c for pool in pools.values() for c in pool})
     quotes = _resolve_suffixes(codes)          # 코스피/코스닥 접미사 확정
-    symbols = [_ys(c) for c in codes]
+
+    # 시가총액 하한을 넘긴 종목만 남긴다
+    def cap(c):
+        return (quotes.get(_ys(c)) or {}).get("market_cap") or 0
+
+    pools = {t: [c for c in cs if cap(c) >= kr_universe.MIN_CAP]
+             for t, cs in pools.items()}
+    pools = {t: cs for t, cs in pools.items() if cs}
+
+    # 2년 히스토리는 종목당 1회 호출이라 전부 받으면 느리다. 시총가중이라
+    # 꼬리 종목의 기여가 미미하므로 테마별 상위 SERIES_TOP 개만 받는다.
+    hist_codes = set()
+    for cs in pools.values():
+        hist_codes.update(sorted(cs, key=cap, reverse=True)[:SERIES_TOP])
+    name_codes = set()
+    for cs in pools.values():
+        name_codes.update(sorted(cs, key=cap, reverse=True)[:TOP_N])
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f_names = ex.submit(fetch_names, codes)
-        f_rets = ex.submit(_fetch_returns, symbols)
+        f_names = ex.submit(fetch_names, sorted(name_codes))
+        f_rets = ex.submit(_fetch_returns, [_ys(c) for c in sorted(hist_codes)])
     names, rets = f_names.result(), f_rets.result()
 
     sectors, holdings = [], {}
-    for theme, pool in SECTOR_POOL.items():
+    for theme, pool in pools.items():
         rows = []
         for c in pool:
             q = quotes.get(_ys(c)) or {}
@@ -170,7 +181,7 @@ def fetch_sectors_and_holdings():
                 sec_ret[k] = sum(v * w for v, w in vals) / tw if tw else None
         sectors.append({"symbol": theme, "name": theme, "chg_pct": chg,
                         "returns": sec_ret, "series": None,
-                        "members": rows, "member_count": len(rows)})
+                        "members": rows[:SERIES_TOP], "member_count": len(rows)})
 
     sectors.sort(key=lambda s: s["chg_pct"], reverse=True)
     return sectors, holdings

@@ -1,0 +1,130 @@
+"""한국 테마 구성종목을 손으로 적지 않고 데이터에서 만든다.
+
+두 갈래를 쓴다.
+1) 네이버 업종 분류(전 종목 4,036개 / 79개 업종) — 업종으로 깔끔히 떨어지는 테마
+2) 테마 ETF 구성종목 — 업종에 존재하지 않는 테마(2차전지·로봇·신재생)
+
+업종 분류의 한계가 이 구조의 이유다. GICS 세분류라 '반도체와반도체장비' 170종목에
+삼성전자와 소부장이 한 덩어리로 들어가고, 2차전지·로봇·신재생은 업종 자체가 없다.
+반대로 ETF 는 테마를 정확히 반영하지만 네이버가 상위 10종목까지만 공개해서
+테마당 ETF 를 여러 개 묶어 합집합을 쓴다.
+
+시가총액 하한(기본 1,000억)으로 잡주를 걸러낸다.
+"""
+from __future__ import annotations
+
+import re
+from concurrent.futures import ThreadPoolExecutor
+
+import requests
+import urllib3
+
+from sources import TIMEOUT, UA, VERIFY
+
+if not VERIFY:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+MIN_CAP = 1_000e8               # 시가총액 하한: 1,000억원
+NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
+GROUP_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
+DETAIL_URL = "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}"
+ITEM_URL = "https://finance.naver.com/item/main.naver?code={code}"
+
+# 업종 -> 테마. 여기 없는 업종은 어느 테마에도 들어가지 않는다.
+UPJONG_THEME = {
+    "반도체와반도체장비": "반도체 소부장",     # 대형주는 아래 SEMI_LARGE 로 빼낸다
+    "디스플레이장비및부품": "반도체 소부장",
+    "디스플레이패널": "반도체 소부장",
+    "제약": "바이오·제약", "생물공학": "바이오·제약",
+    "생명과학도구및서비스": "바이오·제약", "건강관리장비및용품": "바이오·제약",
+    "건강관리장비와용품": "바이오·제약",
+    "자동차": "자동차", "자동차부품": "자동차",
+    "은행": "금융", "증권": "금융", "손해보험": "금융", "생명보험": "금융",
+    "기타금융": "금융", "카드": "금융", "다각화된금융서비스": "금융",
+    "화장품": "화장품",
+    "섬유,의류,신발,호화품": "의류·유통", "백화점과일반상점": "의류·유통",
+    "전문소매": "의류·유통", "판매업체": "의류·유통",
+    "인터넷과카탈로그소매": "의류·유통", "식품과기본식료품소매": "의류·유통",
+    "화학": "화학·소재", "철강": "화학·소재", "비철금속": "화학·소재",
+    "포장재": "화학·소재", "종이와목재": "화학·소재",
+    "조선": "조선·기계", "기계": "조선·기계",
+    "게임엔터테인먼트": "인터넷·게임", "IT서비스": "인터넷·게임",
+    "소프트웨어": "인터넷·게임", "양방향미디어와서비스": "인터넷·게임",
+    "우주항공과국방": "방산·항공",           # 우주는 아래 SPACE 로 빼낸다
+}
+
+# '반도체와반도체장비' 안에서 소자·설계 대형주. 나머지는 소부장으로 남는다.
+SEMI_LARGE = {"005930": "삼성전자", "000660": "SK하이닉스", "402340": "SK스퀘어",
+              "000990": "DB하이텍", "042700": "한미반도체"}
+
+# '우주항공과국방' 안에서 위성·발사체. 나머지는 방산·항공에 남는다.
+SPACE = {"047810", "099320", "451760", "462350", "211270", "189300"}
+
+# 업종에 없는 테마는 해당 테마 ETF 의 구성종목으로 만든다(네이버는 상위 10종목 공개).
+THEME_ETFS = {
+    "2차전지": ["305540", "364980", "305720", "462010"],
+    "로봇": ["445290", "445300", "462900"],
+    "신재생": ["117460", "434730", "376410", "381570"],
+}
+
+
+def _dec(r):
+    for enc in ("euc-kr", "utf-8"):
+        try:
+            return r.content.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
+def _get(url):
+    return _dec(requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT))
+
+
+def upjong_members() -> dict[str, list[str]]:
+    """{업종명: [종목코드]}. 전 종목을 훑는다."""
+    ups = re.findall(r'no=(\d+)">([^<]+)</a>', _get(GROUP_URL))
+    wanted = [(no, name) for no, name in ups if name in UPJONG_THEME]
+
+    def one(no):
+        # 같은 종목 링크가 행마다 두 번 나와 중복이 생긴다
+        return list(dict.fromkeys(re.findall(r'code=(\d{6})">', _get(DETAIL_URL.format(no=no)))))
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        codes = list(ex.map(one, [no for no, _ in wanted]))
+    return {name: c for (_, name), c in zip(wanted, codes)}
+
+
+def etf_members(etf_code: str) -> list[str]:
+    """ETF 페이지가 공개하는 구성종목(상위 10)."""
+    text = _get(ITEM_URL.format(code=etf_code))
+    found = re.findall(r'/item/main\.naver\?code=(\d{6})">', text)
+    return [c for c in dict.fromkeys(found) if c != etf_code]
+
+
+def build_pools() -> dict[str, list[str]]:
+    """테마 -> 종목코드 목록. 시가총액 필터는 호출한 쪽에서 적용한다."""
+    pools: dict[str, list[str]] = {}
+
+    for upjong, codes in upjong_members().items():
+        theme = UPJONG_THEME[upjong]
+        pools.setdefault(theme, [])
+        for c in codes:
+            if theme == "반도체 소부장" and c in SEMI_LARGE:
+                pools.setdefault("반도체", []).append(c)
+            elif theme == "방산·항공" and c in SPACE:
+                pools.setdefault("우주", []).append(c)
+            else:
+                pools[theme].append(c)
+
+    # 업종에 없는 테마: ETF 구성종목 합집합
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        flat = [(t, e) for t, es in THEME_ETFS.items() for e in es]
+        for (theme, _), codes in zip(flat, ex.map(etf_members, [e for _, e in flat])):
+            pools.setdefault(theme, []).extend(codes)
+
+    # 대형 반도체가 업종 목록에 없을 수도 있어 확실히 채워 넣는다
+    pools.setdefault("반도체", []).extend(SEMI_LARGE)
+    pools.setdefault("우주", []).extend(SPACE)
+
+    return {t: list(dict.fromkeys(cs)) for t, cs in pools.items() if cs}
