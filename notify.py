@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import time
 
 import requests
 
@@ -61,11 +62,44 @@ def build_message(data) -> str:
     return "\n".join(lines)
 
 
-def _post(token, method, **kw):
-    r = requests.post(API.format(token=token, method=method), timeout=TIMEOUT, **kw)
-    if not r.ok:
-        raise RuntimeError(f"{method} 실패 {r.status_code}: {r.text[:300]}")
-    return r.json()
+SEND_GAP = 1.2          # 메시지 사이 간격(초). 같은 방에 초당 1건이 안전선이다
+MAX_RETRY = 4
+
+
+def _post(token, method, files=None, **kw):
+    """텔레그램 호출. 429(속도 제한)와 5xx 는 쉬었다 다시 보낸다.
+
+    22개 메시지를 연달아 던지면 429 가 난다. 그때 텔레그램이 알려주는
+    retry_after 만큼 기다렸다 재시도해야 한다. 파일은 한 번 읽으면 커서가
+    끝에 가 있으므로 재시도할 때마다 처음으로 되돌린다.
+    """
+    last = None
+    for attempt in range(MAX_RETRY):
+        if files:
+            for f in files.values():
+                try:
+                    f[1].seek(0)
+                except (AttributeError, OSError):
+                    pass
+        r = requests.post(API.format(token=token, method=method),
+                          files=files, timeout=TIMEOUT, **kw)
+        if r.ok:
+            return r.json()
+
+        last = f"{method} 실패 {r.status_code}: {r.text[:300]}"
+        if r.status_code == 429:
+            try:
+                wait = float(r.json()["parameters"]["retry_after"])
+            except Exception:                  # noqa: BLE001
+                wait = 5.0
+            print(f"    [telegram] 속도 제한 — {wait:.0f}초 대기 후 재시도")
+            time.sleep(wait + 0.5)
+            continue
+        if 500 <= r.status_code < 600:
+            time.sleep(2 * (attempt + 1))
+            continue
+        break                                   # 400 등은 재시도해도 같다
+    raise RuntimeError(last or f"{method} 실패")
 
 
 CAPTION_MAX = 1024      # 텔레그램 미디어 캡션 상한
@@ -122,8 +156,25 @@ def send(token: str, chat_id: str, text: str, charts: list) -> None:
     grouped = [c for c in charts if not c.get("solo")]
     solos = [c for c in charts if c.get("solo")]
 
+    # 하나가 실패해도 나머지는 계속 보낸다. 예전에는 첫 실패에서 전체가 멈춰
+    # 절반만 도착했다. 실패는 모아 두었다가 마지막에 알린다.
+    failed = []
+
+    def attempt(label, fn, *a):
+        try:
+            fn(*a)
+        except Exception as e:                 # noqa: BLE001
+            print(f"    [telegram] {label} 실패: {type(e).__name__}: {e}")
+            failed.append(label)
+        time.sleep(SEND_GAP)
+
     for i in range(0, len(grouped), ALBUM_MAX):
-        _send_album(token, chat_id, grouped[i:i + ALBUM_MAX])
+        batch = grouped[i:i + ALBUM_MAX]
+        attempt(f"앨범 {i // ALBUM_MAX + 1}", _send_album, token, chat_id, batch)
 
     for c in solos:
-        _send_photo(token, chat_id, c["path"], c.get("caption"))
+        name = os.path.splitext(os.path.basename(c["path"]))[0]
+        attempt(name, _send_photo, token, chat_id, c["path"], c.get("caption"))
+
+    if failed:
+        raise RuntimeError(f"{len(failed)}건 전송 실패: {', '.join(failed)}")
