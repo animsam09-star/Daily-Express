@@ -1,0 +1,14 @@
+# 생성물
+out/
+*.png
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 비밀값은 절대 커밋하지 않는다 (토큰은 GitHub Secrets 에만 둔다)
+.env
+*.token
+secrets.*

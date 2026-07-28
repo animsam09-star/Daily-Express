@@ -1,0 +1,55 @@
+name: 마켓 브리핑 발송
+
+on:
+  schedule:
+    # GitHub Actions cron 은 UTC. 21:40 UTC = 06:40 KST.
+    # 요일도 UTC 기준이라 일~목(0-4) = 한국시간 월~금.
+    # Actions 는 부하에 따라 수 분 지연될 수 있어 7시보다 20분 앞에 둔다.
+    - cron: "40 21 * * 0-4"
+  workflow_dispatch:        # 수동 실행(테스트용)
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 한글 폰트 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-nanum
+          fc-cache -f
+          rm -rf ~/.cache/matplotlib
+
+      - name: 패키지 설치
+        run: pip install -r requirements.txt
+
+      # 구독(Pro/Max) 토큰으로 뉴스 요약을 돌릴 때만 필요하다.
+      # API 키를 쓰거나 요약을 안 쓰면 이 단계는 건너뛴다.
+      - name: Claude Code 설치
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: 브리핑 발송
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 아래 둘은 뉴스 요약용. 없으면 요약만 빠지고 나머지는 그대로 발송된다.
+          # 구독 토큰이 있으면 그쪽을 먼저 쓰고, 없을 때만 API 키로 넘어간다.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python main.py
+
+      - name: 실패 시 차트 보관(원인 확인용)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: charts
+          path: out/
+          if-no-files-found: ignore
