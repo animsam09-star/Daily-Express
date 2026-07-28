@@ -166,11 +166,14 @@ def build_all(data, outdir):
     setup_font()
     charts = []
 
-    def add(fn, *a, caption=None, **kw):
+    def add(fn, *a, caption=None, solo=False, **kw):
+        # solo=True 는 앨범에 묶지 않고 한 장씩 보낸다.
+        # 앨범(미디어 그룹)은 사진별 캡션이 앨범 화면에 표시되지 않아,
+        # 캡션이 본문인 섹터 차트는 개별 전송해야 한 묶음으로 읽힌다.
         try:
             p = fn(*a, **kw)
             if p:
-                charts.append({"path": p, "caption": caption})
+                charts.append({"path": p, "caption": caption, "solo": solo})
         except Exception as e:                # noqa: BLE001
             print(f"[chart] 실패 {a[0] if a else ''}: {type(e).__name__}: {e}")
 
@@ -233,34 +236,74 @@ def build_all(data, outdir):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
                 f"{s['name']} ({s['symbol']}) 2년 추이", s["series"],
                 unit="", change=s["chg_pct"], change_unit="%",
-                caption=holdings_caption(s, holdings.get(s["symbol"]), notes))
+                caption=holdings_caption(s, holdings.get(s["symbol"]), notes),
+                solo=True)
     return charts
 
 
-def holdings_caption(sector, holdings, notes=None):
-    """섹터 차트에 붙일 상위 5개 종목 당일 등락. 텔레그램 캡션(HTML).
+def _cap_fmt(v):
+    """시가총액을 한국식 단위로. 4759668391936 -> 4.76조달러"""
+    if not v:
+        return ""
+    if v >= 1e12:
+        return f"{v / 1e12:.2f}조달러"
+    return f"{v / 1e8:,.0f}억달러"
 
-    표를 <pre> 로 감싸야 자리맞춤이 유지된다(HTML 모드는 연속 공백을 접는다).
+
+CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
+NOTE_MAX = 45               # 뉴스 한 줄 최대 글자수
+
+
+def holdings_caption(sector, holdings, notes=None):
+    """섹터 차트에 붙일 상위 5종목: 주가·시가총액·등락 + 종목별 뉴스.
+
+    텔레그램 HTML 에는 글자 크기 지정이 없다. 쓸 수 있는 강약은 굵게/보통/기울임뿐이라
+    종목명·등락은 <b>, 뉴스는 보통 글씨로 두어 위계를 만든다.
     사명에 '&' 가 들어가는 종목(AT&T 등)이 있어 이스케이프는 필수다.
     """
     if not holdings:
         return None
+    notes = notes or {}
 
-    rows = []
+    # 상한을 넘기면 잘라내지 않고 뉴스를 빼고 다시 만든다.
+    # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
+    full = _build_caption(sector, holdings, notes)
+    if len(full) <= CAPTION_LIMIT:
+        return full
+    return _build_caption(sector, holdings, {})
+
+
+def _build_caption(sector, holdings, notes):
+    blocks = [f"<b>{escape(sector['name'])} ({sector['symbol']}) "
+              f"{sector['chg_pct']:+.2f}%</b>"]
+
     for h in holdings:
         chg = h.get("chg_pct")
-        move = f"{chg:+6.2f}%" if chg is not None else "   n/a"
-        name = escape(h["name"][:20])
-        rows.append(f"{escape(h['ticker']):<6}{name:<21}{h['weight']:5.1f}%{move}")
+        bits = [f"<b>{escape(h['ticker'])}</b>"]
+        if h.get("price") is not None:
+            bits.append(f"<b>${h['price']:,.2f}</b>")
+        cap = _cap_fmt(h.get("market_cap"))
+        if cap:
+            bits.append(f"<b>{cap}</b>")
+        bits.append(f"<b>{chg:+.2f}%</b>" if chg is not None else "<b>n/a</b>")
+        line = "  ".join(bits)
 
-    head = (f"<b>{escape(sector['name'])} ({sector['symbol']}) "
-            f"{sector['chg_pct']:+.2f}%</b> — 비중 상위 5종목")
-    caption = head + "\n<pre>" + "\n".join(rows) + "</pre>"
+        # 기간 수익률은 보조 정보라 굵게 하지 않는다
+        r = h.get("returns") or {}
+        spans = [f"{lab} {r[k]:+.1f}%" for k, lab in
+                 (("m1", "1M"), ("m6", "6M"), ("m12", "12M"))
+                 if r.get(k) is not None]
+        if spans:
+            line += "\n" + "  ".join(spans)
 
-    # 크게 움직인 종목만, 그것도 헤드라인이 실제로 설명할 때만 붙는다
-    hits = [(h["ticker"], (notes or {}).get(h["ticker"])) for h in holdings]
-    hits = [(t, n) for t, n in hits if n]
-    if hits:
-        caption += "\n" + "\n".join(f"· {escape(t)} {escape(n)}" for t, n in hits)
-        caption += "\n<i>관련 뉴스 헤드라인 기반 요약 — 등락 원인 단정 아님</i>"
+        n = notes.get(h["ticker"])
+        if n and n.get("note"):
+            note = n["note"][:NOTE_MAX]
+            link = f' <a href="{escape(n["url"], quote=True)}">기사</a>' if n.get("url") else ""
+            line += f"\n<i>{escape(note)}</i>{link}"
+        blocks.append(line)
+
+    caption = "\n\n".join(blocks)
+    if any(notes.get(h["ticker"], {}).get("note") for h in holdings):
+        caption += "\n\n<i>뉴스 헤드라인 기반 요약 — 등락 원인 단정 아님</i>"
     return caption

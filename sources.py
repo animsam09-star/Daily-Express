@@ -136,27 +136,105 @@ def _top_holdings(etf: str, n: int = TOP_N):
     return out
 
 
+def _crumb_session():
+    """야후 시세 API 는 쿠키+crumb 를 요구한다. 실패하면 None."""
+    s = requests.Session()
+    s.headers.update(UA)
+    s.verify = VERIFY
+    try:
+        s.get("https://fc.yahoo.com/", timeout=TIMEOUT)
+        crumb = s.get("https://query2.finance.yahoo.com/v1/test/getcrumb",
+                      timeout=TIMEOUT).text.strip()
+    except Exception:                          # noqa: BLE001
+        return None, None
+    return (s, crumb) if crumb and "<" not in crumb else (None, None)
+
+
+def fetch_quotes(tickers):
+    """주가·시가총액·등락률을 한 번에. 종목당 개별 호출을 대신한다."""
+    out = {}
+    session, crumb = _crumb_session()
+    if session and crumb:
+        for i in range(0, len(tickers), 50):   # URL 길이 여유를 두고 나눈다
+            batch = tickers[i:i + 50]
+            try:
+                r = session.get(
+                    "https://query2.finance.yahoo.com/v7/finance/quote",
+                    params={"symbols": ",".join(batch), "crumb": crumb},
+                    timeout=TIMEOUT,
+                )
+                r.raise_for_status()
+                for q in r.json().get("quoteResponse", {}).get("result", []):
+                    out[q.get("symbol")] = {
+                        "price": q.get("regularMarketPrice"),
+                        "market_cap": q.get("marketCap"),
+                        "chg_pct": q.get("regularMarketChangePercent"),
+                    }
+            except Exception as e:             # noqa: BLE001
+                print(f"[quote] 배치 실패: {type(e).__name__}: {e}")
+
+    # crumb 가 막히거나 일부가 빠지면 차트 API 로 등락률만이라도 채운다
+    missing = [t for t in tickers if t not in out]
+    if missing:
+        def one(sym):
+            try:
+                s = yahoo_series(sym, rng="5d")
+                return sym, {"price": s[-1][1], "market_cap": None,
+                             "chg_pct": pct_change(s)}
+            except Exception:                  # noqa: BLE001
+                return sym, {"price": None, "market_cap": None, "chg_pct": None}
+        with ThreadPoolExecutor(max_workers=12) as ex:
+            out.update(dict(ex.map(one, missing)))
+        print(f"[quote] {len(missing)}종목은 차트 API 로 대체(시가총액 없음)")
+    return out
+
+
+RETURN_WINDOWS = (("m1", 30), ("m6", 182), ("m12", 365))
+
+
+def _return_at(series, days_back: int):
+    """days_back 일 전 종가 대비 등락률(%). 그 날짜에 가장 가까운 거래일을 쓴다."""
+    if len(series) < 2:
+        return None
+    target = series[-1][0] - dt.timedelta(days=days_back)
+    past = [(d, v) for d, v in series if d <= target]
+    if not past:                               # 상장 기간이 짧으면 구간을 못 만든다
+        return None
+    base = past[-1][1]
+    return (series[-1][1] / base - 1.0) * 100.0 if base else None
+
+
+def fetch_returns(tickers):
+    """종목별 1개월·6개월·12개월 등락률."""
+    def one(sym):
+        try:
+            # 1y 로 받으면 365일 전 시점이 구간 밖이라 12M 수익률이 비므로 2y 로 받는다
+            s = yahoo_series(sym, rng="2y")
+        except Exception:                      # noqa: BLE001
+            return sym, {}
+        return sym, {k: _return_at(s, d) for k, d in RETURN_WINDOWS}
+
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        return dict(ex.map(one, tickers))
+
+
 def fetch_sector_holdings(sector_symbols):
-    """섹터별 상위 5개 종목 + 각 종목의 당일 등락률."""
+    """섹터별 상위 5개 종목 + 각 종목의 주가·시가총액·당일 등락률.
+
+    상위 5개 선정은 ETF 내 비중 순인데, 비중은 시가총액 가중이라
+    사실상 섹터 내 시가총액 상위와 같다. 비중 자체는 표시하지 않는다.
+    """
     with ThreadPoolExecutor(max_workers=6) as ex:
         holdings = dict(zip(sector_symbols,
                             ex.map(lambda e: _top_holdings(e), sector_symbols)))
 
-    # 종목은 섹터 간 중복되지 않지만, 중복돼도 한 번만 받도록 모아서 조회한다
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
-
-    def chg(sym):
-        try:
-            return sym, pct_change(yahoo_series(sym, rng="5d"))
-        except Exception:                      # noqa: BLE001
-            return sym, None
-
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        moves = dict(ex.map(chg, tickers))
-
+    quotes = fetch_quotes(tickers)
+    rets = fetch_returns(tickers)
     for hs in holdings.values():
         for h in hs:
-            h["chg_pct"] = moves.get(h["ticker"])
+            h.update(quotes.get(h["ticker"], {}))
+            h["returns"] = rets.get(h["ticker"], {})
     return holdings
 
 

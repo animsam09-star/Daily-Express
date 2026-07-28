@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 
 import requests
@@ -70,33 +71,59 @@ def _post(token, method, **kw):
 CAPTION_MAX = 1024      # 텔레그램 미디어 캡션 상한
 
 
-def send(token: str, chat_id: str, text: str, charts: list) -> None:
-    """본문 먼저, 그다음 차트를 10장씩 앨범으로.
+def _send_photo(token, chat_id, path, caption=None):
+    """사진 한 장. 캡션이 사진 바로 아래 붙어 한 묶음으로 읽힌다."""
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption[:CAPTION_MAX]
+        data["parse_mode"] = "HTML"
+    with open(path, "rb") as fh:
+        _post(token, "sendPhoto",
+              data=data, files={"photo": (os.path.basename(path), fh, "image/png")})
 
-    charts 는 {"path": ..., "caption": ...} 목록. 캡션이 있으면 사진마다 붙는다
-    (섹터 차트의 상위 5개 종목 등락).
+
+def _send_album(token, chat_id, batch):
+    """사진 여러 장을 한 앨범으로. 텔레그램 앨범은 2~10장만 허용한다."""
+    if len(batch) == 1:                     # 1장짜리 앨범은 API 가 거부한다
+        _send_photo(token, chat_id, batch[0]["path"], batch[0].get("caption"))
+        return
+
+    files, media = {}, []
+    for n, item in enumerate(batch):
+        key = f"photo{n}"
+        files[key] = (os.path.basename(item["path"]),
+                      open(item["path"], "rb"), "image/png")
+        entry = {"type": "photo", "media": f"attach://{key}"}
+        if item.get("caption"):
+            entry["caption"] = item["caption"][:CAPTION_MAX]
+            entry["parse_mode"] = "HTML"
+        media.append(entry)
+    try:
+        _post(token, "sendMediaGroup",
+              data={"chat_id": chat_id, "media": json.dumps(media)}, files=files)
+    finally:
+        for _, fh, _ in files.values():
+            fh.close()
+
+
+def send(token: str, chat_id: str, text: str, charts: list) -> None:
+    """본문 → 지표 차트(앨범) → 섹터 차트(한 장씩).
+
+    charts 는 {"path", "caption", "solo"} 목록.
+
+    solo=True 인 항목은 앨범에 묶지 않고 개별 전송한다. 앨범(미디어 그룹)은
+    사진별 캡션을 앨범 화면에 표시하지 않아서, 캡션이 본문인 섹터 차트
+    (상위 5종목 등락 + 관련 이슈)가 사진을 눌러야만 보이기 때문이다.
     """
     _post(token, "sendMessage",
           data={"chat_id": chat_id, "text": text,
                 "parse_mode": "HTML", "disable_web_page_preview": True})
 
-    for i in range(0, len(charts), ALBUM_MAX):
-        batch = charts[i:i + ALBUM_MAX]
-        files, media = {}, []
-        for n, item in enumerate(batch):
-            path = item["path"] if isinstance(item, dict) else item
-            caption = item.get("caption") if isinstance(item, dict) else None
-            key = f"photo{n}"
-            files[key] = (os.path.basename(path), open(path, "rb"), "image/png")
-            entry = {"type": "photo", "media": f"attach://{key}"}
-            if caption:
-                entry["caption"] = caption[:CAPTION_MAX]
-                entry["parse_mode"] = "HTML"
-            media.append(entry)
-        try:
-            import json
-            _post(token, "sendMediaGroup",
-                  data={"chat_id": chat_id, "media": json.dumps(media)}, files=files)
-        finally:
-            for _, fh, _ in files.values():
-                fh.close()
+    grouped = [c for c in charts if not c.get("solo")]
+    solos = [c for c in charts if c.get("solo")]
+
+    for i in range(0, len(grouped), ALBUM_MAX):
+        _send_album(token, chat_id, grouped[i:i + ALBUM_MAX])
+
+    for c in solos:
+        _send_photo(token, chat_id, c["path"], c.get("caption"))
