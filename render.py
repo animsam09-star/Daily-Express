@@ -374,11 +374,14 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
         return None
     notes = notes or {}
 
-    # 뉴스는 섹터당 MAX_NOTES 개까지만. 등락이 큰 종목이 그날의 주요 뉴스다.
-    ranked = sorted(holdings, key=lambda h: abs(h.get("chg_pct") or 0), reverse=True)
-    picked = {h["ticker"]: notes[h["ticker"]]
-              for h in ranked if h["ticker"] in notes}
-    picked = dict(list(picked.items())[:MAX_NOTES])
+    # 뉴스는 섹터당 MAX_NOTES 개까지만. 중요도가 높은 것부터,
+    # 같은 중요도면 그날 크게 움직인 종목을 앞세운다.
+    ranked = sorted(
+        (h for h in holdings if h["ticker"] in notes),
+        key=lambda h: (notes[h["ticker"]].get("importance", 0),
+                       abs(h.get("chg_pct") or 0)),
+        reverse=True)
+    picked = {h["ticker"]: notes[h["ticker"]] for h in ranked[:MAX_NOTES]}
 
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.

@@ -31,6 +31,7 @@ if not VERIFY:
 HEADLINES_PER_TICKER = 6   # 두 소스를 합치므로 후보를 넉넉히 넘긴다
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 300           # Claude Code 헤드리스 호출 상한(초)
+MIN_IMPORTANCE = 3          # 이 미만은 보내지 않는다(단일 매체 소식·인사 등)
 
 # 지정 소스에서만 기사를 찾는다. 구글 뉴스 RSS 의 site: 필터를 쓰면
 # 세 곳을 한 번의 요청으로 훑을 수 있다(로이터는 직접 접근 시 401 이라 이 경로가 필요).
@@ -171,8 +172,13 @@ SUMMARY_SCHEMA = {
                         "type": "integer",
                         "description": "근거로 삼은 헤드라인 번호. 없으면 -1.",
                     },
+                    "importance": {
+                        "type": "integer",
+                        "description": "1~5. 이 뉴스가 그 종목에 얼마나 중요한가. "
+                                       "메모가 비면 0.",
+                    },
                 },
-                "required": ["ticker", "note", "source"],
+                "required": ["ticker", "note", "source", "importance"],
                 "additionalProperties": False,
             },
         }
@@ -208,7 +214,17 @@ SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식�
    어떻게 바꿨다'가 없으면 사건이 아니다.
 
    둘 중 하나에 해당하거나 판단이 서지 않으면 note 를 비우고 source 를 -1 로 둔다.
-   비워 두는 것이 틀린 설명을 적는 것보다 낫다."""
+   비워 두는 것이 틀린 설명을 적는 것보다 낫다.
+8. importance 에 1~5 로 중요도를 매긴다. 메모가 비면 0.
+   5 — 회사의 실적·사업 구조를 바꾸는 사건. 어닝 서프라이즈/쇼크, 대형 인수합병,
+       핵심 사업 규제·소송 결과, 대규모 수주, 경영권 변동, 상장폐지 위험.
+   4 — 실적 가이던스 수정, 주요 계약 체결, 신제품 출시, 대형 투자 결정,
+       복수 매체가 동시에 다룬 사건.
+   3 — 애널리스트 투자의견·목표주가 변경, 업황 전반의 변화가 그 종목에 미치는 영향.
+   2 — 단일 매체의 소소한 소식, 정기 공시, 인사.
+   1 — 관련은 있으나 주가와 연결이 약한 내용.
+   입력의 '[N개 매체 보도]' 표시는 그 종목을 여러 매체가 동시에 다뤘다는 뜻이다.
+   같은 사안을 여러 곳이 보도했다면 그만큼 중요하다고 본다."""
 
 
 def _get(url, **kw):
@@ -357,9 +373,15 @@ def _prompt(stocks: list[dict]) -> str:
     lines = []
     for s in stocks:
         chg = f"{s['chg_pct']:+.2f}%" if s.get("chg_pct") is not None else "n/a"
-        lines.append(f"[{s['ticker']}] {s['name']} {chg}")
+        # 같은 사안을 여러 매체가 동시에 다뤘다면 그만큼 중요하다는 신호다.
+        # 조회수는 어느 소스에서도 안 나오므로 이것이 대신할 수 있는 지표다.
+        srcs = {(h.get("source") or "").split()[0].lower()
+                for h in s["headlines"] if h.get("source")}
+        tag = f"  [{len(srcs)}개 매체 보도]" if len(srcs) > 1 else ""
+        lines.append(f"[{s['ticker']}] {s['name']} {chg}{tag}")
         for i, h in enumerate(s["headlines"]):
-            lines.append(f"  {i}. {h['title']}")
+            src = f"  ({h['source']})" if h.get("source") else ""
+            lines.append(f"  {i}. {h['title']}{src}")
     return "\n".join(lines)
 
 
@@ -380,7 +402,12 @@ def _parse(text: str) -> dict[str, dict]:
     for it in data.get("items", []):
         note = (it.get("note") or "").strip()
         if it.get("ticker") and note:
-            out[it["ticker"]] = {"note": note, "source": it.get("source", -1)}
+            try:
+                imp = int(it.get("importance") or 0)
+            except (TypeError, ValueError):
+                imp = 0
+            out[it["ticker"]] = {"note": note, "source": it.get("source", -1),
+                                 "importance": imp}
     return out
 
 
@@ -471,9 +498,13 @@ def build(holdings: dict) -> dict[str, dict]:
         short = dict(zip([t for t, _ in targets],
                          ex.map(shorten, [u for _, u in targets])))
 
-    print(f"[news] 요약 {len(summaries)}건 / 링크 {len(short)}건")
-    return {tk: {"note": v["note"], "url": short.get(tk, "")}
-            for tk, v in summaries.items()}
+    kept = {tk: v for tk, v in summaries.items()
+            if v.get("importance", 0) >= MIN_IMPORTANCE}
+    print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
+          f"/ 링크 {len(short)}건")
+    return {tk: {"note": v["note"], "url": short.get(tk, ""),
+                 "importance": v.get("importance", 0)}
+            for tk, v in kept.items()}
 
 
 # ---------------------------------------------------------------- 한국 증시
@@ -547,6 +578,10 @@ def build_kr(holdings: dict) -> dict[str, dict]:
     with ThreadPoolExecutor(max_workers=8) as ex:
         short = dict(zip([t for t, _ in targets],
                          ex.map(shorten, [u for _, u in targets])))
-    print(f"[news] 요약 {len(summaries)}건 / 링크 {len(short)}건")
-    return {tk: {"note": v["note"], "url": short.get(tk, "")}
-            for tk, v in summaries.items()}
+    kept = {tk: v for tk, v in summaries.items()
+            if v.get("importance", 0) >= MIN_IMPORTANCE}
+    print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
+          f"/ 링크 {len(short)}건")
+    return {tk: {"note": v["note"], "url": short.get(tk, ""),
+                 "importance": v.get("importance", 0)}
+            for tk, v in kept.items()}
