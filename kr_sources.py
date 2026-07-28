@@ -152,24 +152,25 @@ def fetch_sectors_and_holdings():
                          "chg_pct": q.get("chg_pct"),
                          "returns": rets.get(_ys(c), {})})
         rows.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
-        top = rows[:TOP_N]
-        if not top:
+        if not rows:
             continue
-        holdings[theme] = top
+        holdings[theme] = rows[:TOP_N]         # 메시지에는 상위 5종목만
 
-        # 섹터 등락은 상위 종목의 시총 가중 평균으로 근사한다
-        wsum = sum(r.get("market_cap") or 0 for r in top)
-        chg = (sum((r.get("chg_pct") or 0) * (r.get("market_cap") or 0) for r in top) / wsum
+        # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.
+        # 상위 5개만 쓰면 소부장(12종목)처럼 저변이 넓은 테마의 대표성이 떨어진다.
+        wsum = sum(r.get("market_cap") or 0 for r in rows)
+        chg = (sum((r.get("chg_pct") or 0) * (r.get("market_cap") or 0) for r in rows) / wsum
                if wsum else 0.0)
         sec_ret = {}
         for k, _ in RETURN_WINDOWS:
-            vals = [(r["returns"].get(k), r.get("market_cap") or 0) for r in top
+            vals = [(r["returns"].get(k), r.get("market_cap") or 0) for r in rows
                     if (r.get("returns") or {}).get(k) is not None]
             if vals:
                 tw = sum(w for _, w in vals)
                 sec_ret[k] = sum(v * w for v, w in vals) / tw if tw else None
         sectors.append({"symbol": theme, "name": theme, "chg_pct": chg,
-                        "returns": sec_ret, "series": None})
+                        "returns": sec_ret, "series": None,
+                        "members": rows, "member_count": len(rows)})
 
     sectors.sort(key=lambda s: s["chg_pct"], reverse=True)
     return sectors, holdings
@@ -218,9 +219,14 @@ def _fetch_returns(symbols):
         return dict(ex.map(one, symbols))
 
 
-def sector_series(theme: str, holdings) -> list:
-    """섹터 차트용 2개년 시계열. 상위 종목을 시총 가중해 지수처럼 만든다."""
-    rows = holdings.get(theme) or []
+def sector_series(theme: str, members) -> list:
+    """섹터 차트용 2개년 시계열. 테마 전체를 시총 가중해 지수처럼 만든다.
+
+    한국은 미국의 SPDR 같은 테마 ETF 가 일관되게 없어 직접 만든다.
+    가중치는 오늘의 시가총액을 2년 내내 고정 적용한 근사치다(실제 지수는
+    정기적으로 재조정한다). 구간 시작을 100 으로 놓는다.
+    """
+    rows = members if isinstance(members, list) else (members.get(theme) or [])
     series_list = []
     with ThreadPoolExecutor(max_workers=5) as ex:
         for r, s in zip(rows, ex.map(lambda x: _safe_series(_ys(x["ticker"])), rows)):

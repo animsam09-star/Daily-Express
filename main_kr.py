@@ -148,7 +148,7 @@ def build_charts(data, outdir):
                                 title="한국증시 섹터별 등락"))
 
     for s in secs:
-        series = kr.sector_series(s["symbol"], holdings)
+        series = kr.sector_series(s["symbol"], s.get("members") or holdings.get(s["symbol"]))
         if not series:
             continue
         cap = render.holdings_caption(s, holdings.get(s["symbol"]), notes,
@@ -156,7 +156,7 @@ def build_charts(data, outdir):
                                       bench=(idx.get("코스피") or {}).get("returns"))
         add(render.line_chart(
             os.path.join(outdir, f"sector_{s['symbol']}.png"),
-            f"{s['name']} 2년 추이 (시총가중, 2년 전 = 100)", series,
+            f"{s['name']} 2년 추이 — {s.get('member_count', 0)}종목 시총가중 (2년 전 = 100)", series,
             value_fmt="{:,.1f}", change=s["chg_pct"], change_unit="%",
             bench_series=(idx.get("코스피") or {}).get("series"),
             bench_label="코스피"),
