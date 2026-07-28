@@ -18,7 +18,7 @@ import requests
 import urllib3
 
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at,
-                     fetch_quotes, pct_change, yahoo_series)
+                     fetch_quotes, pct_change, yahoo_ohlc, yahoo_series)
 
 if not VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -111,14 +111,16 @@ def fetch_names(codes):
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = {ex.submit(yahoo_series, sym): name for sym, name in INDICES}
+        futs = {ex.submit(yahoo_ohlc, sym): name for sym, name in INDICES}
         for f, name in futs.items():
             try:
-                s = f.result()
+                o = f.result()
             except Exception as e:             # noqa: BLE001
                 print(f"[kr] 지수 {name} 실패: {type(e).__name__}")
                 continue
-            out[name] = {"series": s, "last": s[-1][1], "chg_pct": pct_change(s),
+            s = [(d, c) for d, _, _, c in o]
+            out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
+                         "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
     return out
 

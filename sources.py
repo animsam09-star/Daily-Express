@@ -60,6 +60,24 @@ def yahoo_series(symbol: str, rng: str = "2y"):
     return out
 
 
+def yahoo_ohlc(symbol: str, rng: str = "2y"):
+    """일목균형표용 고가·저가·종가. [(date, high, low, close), ...]"""
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{requests.utils.quote(symbol, safe='')}?range={rng}&interval=1d"
+    )
+    res = _get(url).json()["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    out = []
+    for ts, h, l, c in zip(res["timestamp"], q.get("high") or [],
+                           q.get("low") or [], q.get("close") or []):
+        if None in (h, l, c):
+            continue
+        out.append((dt.datetime.utcfromtimestamp(ts).date(),
+                    float(h), float(l), float(c)))
+    return out
+
+
 def pct_change(series):
     """직전 거래일 대비 등락률(%)."""
     if len(series) < 2:
@@ -70,10 +88,12 @@ def pct_change(series):
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(yahoo_series, sym): (sym, name) for sym, name in INDICES}
+        futs = {ex.submit(yahoo_ohlc, sym): (sym, name) for sym, name in INDICES}
         for f, (sym, name) in futs.items():
-            s = f.result()
-            out[name] = {"series": s, "last": s[-1][1], "chg_pct": pct_change(s)}
+            o = f.result()
+            s = [(d, c) for d, _, _, c in o]
+            out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
+                         "chg_pct": pct_change(s)}
     return out
 
 
@@ -81,10 +101,11 @@ def fetch_sectors():
     """섹터별 일간 등락률 + 2개년 시계열(상대성과 차트용)."""
     out = []
     with ThreadPoolExecutor(max_workers=11) as ex:
-        futs = {ex.submit(yahoo_series, sym): (sym, name) for sym, name in SECTORS}
+        futs = {ex.submit(yahoo_ohlc, sym): (sym, name) for sym, name in SECTORS}
         for f, (sym, name) in futs.items():
-            s = f.result()
-            out.append({"symbol": sym, "name": name,
+            o = f.result()
+            s = [(d, c) for d, _, _, c in o]
+            out.append({"symbol": sym, "name": name, "ohlc": o,
                         "chg_pct": pct_change(s), "series": s,
                         "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}})
     out.sort(key=lambda d: d["chg_pct"], reverse=True)
@@ -296,9 +317,10 @@ def fetch_sector_holdings(sector_symbols):
 
 
 def fetch_fx():
-    s = yahoo_series("KRW=X")
+    o = yahoo_ohlc("KRW=X")
+    s = [(d, c) for d, _, _, c in o]
     diff = s[-1][1] - s[-2][1] if len(s) > 1 else 0.0
-    return {"series": s, "last": s[-1][1], "chg": diff}
+    return {"series": s, "ohlc": o, "last": s[-1][1], "chg": diff}
 
 
 # ------------------------------------------------------------- 美 국채

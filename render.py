@@ -44,15 +44,64 @@ def _ma(values, window):
     return out
 
 
+CLOUD_UP, CLOUD_DOWN = "#e8a0a0", "#a0b8e8"     # 양운(붉은) / 음운(푸른)
+
+
+def _ichimoku(ohlc):
+    """일목균형표 선행스팬 1·2. [(date, high, low, close), ...] 를 받는다.
+
+    전환선 9, 기준선 26, 선행스팬2 52, 선행 이동 26 — 표준 설정.
+    구름대는 26일 앞으로 밀어 그리므로 미래 구간이 생긴다.
+    """
+    if len(ohlc) < 78:                          # 52 + 26. 모자라면 그리지 않는다
+        return None
+    dates = [d for d, _, _, _ in ohlc]
+    highs = [h for _, h, _, _ in ohlc]
+    lows = [l for _, _, l, _ in ohlc]
+
+    def mid(n, i):
+        if i + 1 < n:
+            return None
+        return (max(highs[i + 1 - n:i + 1]) + min(lows[i + 1 - n:i + 1])) / 2
+
+    conv = [mid(9, i) for i in range(len(ohlc))]
+    base = [mid(26, i) for i in range(len(ohlc))]
+    span_a = [None if conv[i] is None or base[i] is None else (conv[i] + base[i]) / 2
+              for i in range(len(ohlc))]
+    span_b = [mid(52, i) for i in range(len(ohlc))]
+
+    # 26 거래일 앞으로. 마지막 구간은 영업일 간격을 그대로 이어 붙인다
+    step = (dates[-1] - dates[-27]) / 26 if len(dates) > 27 else dt.timedelta(days=1)
+    future = [dates[-1] + step * (i + 1) for i in range(26)]
+    return dates[26:] + future, span_a[:-26] + span_a[-26:], span_b[:-26] + span_b[-26:]
+
+
 def line_chart(path, title, series, *, value_fmt="{:,.2f}", unit="",
-               change=None, change_fmt="{:+.1f}", change_unit=""):
-    """2개년 종가 + 이동평균선 1장."""
+               change=None, change_fmt="{:+.1f}", change_unit="", ohlc=None):
+    """2개년 종가 + 이동평균선 1장. ohlc 를 주면 일목균형표 구름대를 깐다."""
     if not series or len(series) < 2:
         return None
     dates = [d for d, _ in series]
     vals = [v for _, v in series]
 
     fig, ax = plt.subplots(figsize=(9, 4.6), dpi=140)
+
+    cloud = _ichimoku(ohlc) if ohlc else None
+    if cloud:
+        cd, sa, sb = cloud
+        n = min(len(cd), len(sa), len(sb))
+        cd, sa, sb = cd[:n], sa[:n], sb[:n]
+        ok = [i for i in range(n) if sa[i] is not None and sb[i] is not None]
+        if ok:
+            cdx = [cd[i] for i in ok]
+            sax = [sa[i] for i in ok]
+            sbx = [sb[i] for i in ok]
+            ax.fill_between(cdx, sax, sbx, where=[a >= b for a, b in zip(sax, sbx)],
+                            color=CLOUD_UP, alpha=0.45, lw=0, zorder=1,
+                            interpolate=True, label="일목 구름대")
+            ax.fill_between(cdx, sax, sbx, where=[a < b for a, b in zip(sax, sbx)],
+                            color=CLOUD_DOWN, alpha=0.45, lw=0, zorder=1,
+                            interpolate=True)
     ax.plot(dates, vals, color=LINE, lw=1.6, zorder=5, label="종가")
     for win, color in MA_STYLE:
         if len(vals) > win:
@@ -184,7 +233,7 @@ def build_all(data, outdir):
         if d:
             add(line_chart, os.path.join(outdir, f"{name.replace('&','')}.png"),
                 f"{name} 2년 추이", d["series"],
-                change=d["chg_pct"], change_unit="%")
+                change=d["chg_pct"], change_unit="%", ohlc=d.get("ohlc"))
 
     now, hist = data.get("ust_now") or {}, data.get("ust_hist") or {}
     for sym in ("US2Y", "US10Y", "US30Y"):
@@ -208,7 +257,7 @@ def build_all(data, outdir):
     if fx:
         add(line_chart, os.path.join(outdir, "USDKRW.png"),
             "원/달러 환율 2년 추이", fx["series"],
-            unit="원", change=fx["chg"], change_unit="원")
+            unit="원", change=fx["chg"], change_unit="원", ohlc=fx.get("ohlc"))
 
     dom = data.get("domestic") or {}
     corp = dom.get("corp_aa3y")
@@ -236,7 +285,7 @@ def build_all(data, outdir):
         if s.get("series"):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
                 f"{s['name']} ({s['symbol']}) 2년 추이", s["series"],
-                unit="", change=s["chg_pct"], change_unit="%",
+                unit="", change=s["chg_pct"], change_unit="%", ohlc=s.get("ohlc"),
                 caption=holdings_caption(s, holdings.get(s["symbol"]), notes),
                 solo=True)
     return charts
@@ -246,10 +295,9 @@ def _cap_fmt(v, cur="달러"):
     """시가총액을 한국식 단위로. 4759668391936 -> 4.76조달러 / 71.7조원"""
     if not v:
         return ""
-    if v >= 1e14:
-        return f"{v / 1e12:,.0f}조{cur}"
+    # 소수점은 쓰지 않는다. 1조 미만은 억 단위로 내려 자릿수를 지킨다.
     if v >= 1e12:
-        return f"{v / 1e12:.2f}조{cur}"
+        return f"{v / 1e12:,.0f}조{cur}"
     return f"{v / 1e8:,.0f}억{cur}"
 
 

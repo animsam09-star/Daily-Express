@@ -117,13 +117,15 @@ def build_charts(data, outdir):
         if d:
             add(render.line_chart(os.path.join(outdir, f"{name}.png"),
                                   f"{name} 2년 추이", d["series"],
-                                  change=d["chg_pct"], change_unit="%"))
+                                  change=d["chg_pct"], change_unit="%",
+                                  ohlc=d.get("ohlc")))
 
     fx = data.get("fx")
     if fx:
         add(render.line_chart(os.path.join(outdir, "USDKRW.png"),
                               "원/달러 환율 2년 추이", fx["series"],
-                              unit="원", change=fx["chg"], change_unit="원"))
+                              unit="원", change=fx["chg"], change_unit="원",
+                              ohlc=fx.get("ohlc")))
 
     dom = data.get("domestic") or {}
     for key, title in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
