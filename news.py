@@ -71,15 +71,24 @@ def _keywords(ticker: str, name: str) -> list[str]:
     return [ticker.upper()] + core[:2]
 
 
-def _relevant(title: str, keys: list[str]) -> bool:
+def _relevant(title: str, ticker: str, keys: list[str]) -> bool:
     """제목에 티커나 사명 핵심어가 실제로 들어있는 기사만 남긴다.
 
-    티커가 짧으면(KO, V 등) 구글이 매칭에 실패해 무관한 일반 기사를 돌려준다.
-    이걸 그대로 요약에 넘기면 엉뚱한 설명이 붙을 수 있어 여기서 끊는다.
+    티커가 짧으면 구글이 매칭에 실패해 무관한 일반 기사를 돌려준다.
+    이걸 그대로 요약에 넘기면 엉뚱한 설명이 붙는다(COP 가 'cop shortage' 에,
+    KO 가 복싱 기사에 걸렸다).
+
+    티커는 대소문자를 구분해 찾는다. 기사에서 티커는 항상 대문자로 쓰이므로
+    소문자 일반 단어('cop')와 갈라낼 수 있는 유일한 단서다.
+    사명 핵심어는 표기가 제각각이라 대소문자를 무시한다.
     """
+    if len(ticker) > 1 and re.search(
+            rf"(?<![A-Za-z0-9]){re.escape(ticker)}(?![A-Za-z0-9])", title):
+        return True
     up = title.upper()
     for k in keys:
-        if re.search(rf"(?<![A-Z0-9]){re.escape(k)}(?![A-Z0-9])", up):
+        if k != ticker and re.search(
+                rf"(?<![A-Z0-9]){re.escape(k)}(?![A-Z0-9])", up):
             return True
     return False
 
@@ -106,7 +115,7 @@ def _gnews(ticker: str, name: str) -> list[dict]:
             src = _cdata(SOURCE_RE.search(raw).group(1)) if SOURCE_RE.search(raw) else ""
             if src and title.endswith(f" - {src}"):
                 title = title[: -len(src) - 3]
-            if title and title not in seen and _relevant(title, keys):
+            if title and title not in seen and _relevant(title, ticker, keys):
                 seen.add(title)
                 out.append({"title": title, "url": _cdata(l.group(1)), "source": src})
         if len(out) >= HEADLINES_PER_TICKER:
