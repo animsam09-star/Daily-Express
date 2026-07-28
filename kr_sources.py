@@ -27,7 +27,7 @@ if not VERIFY:
 
 INDICES = [("^KS11", "코스피"), ("^KQ11", "코스닥")]
 
-SERIES_TOP = 40      # 지수 시계열을 받을 테마별 상위 종목 수(시총순)
+POOL_TOP = 20        # 테마별로 지수에 넣을 종목 수(시가총액 상위순)
 
 _POOLS = None
 
@@ -129,22 +129,17 @@ def fetch_sectors_and_holdings():
     codes = sorted({c for pool in pools.values() for c in pool})
     quotes = _resolve_suffixes(codes)          # 코스피/코스닥 접미사 확정
 
-    # 시가총액 하한을 넘긴 종목만 남긴다
+    # 테마마다 시가총액 상위 POOL_TOP 개만 쓴다. 금액 하한으로 자르면
+    # 테마별 종목 수가 들쭉날쭉해져 지수 간 비교가 어렵다.
     def cap(c):
         return (quotes.get(_ys(c)) or {}).get("market_cap") or 0
 
-    pools = {t: [c for c in cs if cap(c) >= kr_universe.MIN_CAP]
+    pools = {t: sorted([c for c in cs if cap(c) > 0], key=cap, reverse=True)[:POOL_TOP]
              for t, cs in pools.items()}
     pools = {t: cs for t, cs in pools.items() if cs}
 
-    # 2년 히스토리는 종목당 1회 호출이라 전부 받으면 느리다. 시총가중이라
-    # 꼬리 종목의 기여가 미미하므로 테마별 상위 SERIES_TOP 개만 받는다.
-    hist_codes = set()
-    for cs in pools.values():
-        hist_codes.update(sorted(cs, key=cap, reverse=True)[:SERIES_TOP])
-    name_codes = set()
-    for cs in pools.values():
-        name_codes.update(sorted(cs, key=cap, reverse=True)[:TOP_N])
+    hist_codes = {c for cs in pools.values() for c in cs}
+    name_codes = {c for cs in pools.values() for c in cs[:TOP_N]}
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_names = ex.submit(fetch_names, sorted(name_codes))
@@ -181,7 +176,7 @@ def fetch_sectors_and_holdings():
                 sec_ret[k] = sum(v * w for v, w in vals) / tw if tw else None
         sectors.append({"symbol": theme, "name": theme, "chg_pct": chg,
                         "returns": sec_ret, "series": None,
-                        "members": rows[:SERIES_TOP], "member_count": len(rows)})
+                        "members": rows, "member_count": len(rows)})
 
     sectors.sort(key=lambda s: s["chg_pct"], reverse=True)
     return sectors, holdings
