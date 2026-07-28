@@ -444,26 +444,6 @@ def _spans(returns):
     return "  ".join(out)
 
 
-def _rel_spans(returns, bench):
-    """지수 대비 상대수익률(%p). 절대 수익률 줄과 같은 자리에 정렬된다.
-
-    시장이 빠져서 같이 빠진 것인지, 그 종목이 유독 부진한 것인지를
-    가르는 숫자라 절대 수익률만큼 중요하다.
-    """
-    r, b = returns or {}, bench or {}
-    if not r or not b:
-        return ""
-    out = []
-    for k, lab in SPAN_KEYS:
-        if r.get(k) is None or b.get(k) is None:
-            continue
-        # 라벨 자리를 공백으로 채워 절대 수익률 줄과 열이 정확히 맞게 한다
-        out.append(f"{' ' * len(lab)} {r[k] - b[k]:+5.1f}")
-    if not out:
-        return ""
-    line = "  ".join(out)
-    return "vs" + line[2:]            # 맨 앞 두 칸만 'vs' 로 덮어쓴다
-
 
 def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}", bench=None):
     # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률
@@ -474,9 +454,8 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
-    sec_rel = _rel_spans(sector.get("returns"), sector.get("bench") or bench)
-    if sec_rel:
-        blocks[0] += f"\n<code>{sec_rel}</code>"
+    # 지수 대비 상대수익률은 글로 쓰지 않는다. 차트 우측 축의 상대강도선이
+    # 같은 정보를 더 잘 보여주고, 캡션은 길이 여유가 뉴스에 쓰이는 편이 낫다.
 
     for h in holdings:
         c = h.get("chg_pct")
@@ -495,9 +474,6 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         sp = _spans(h.get("returns"))
         if sp:
             lines.append(f"<code>{sp}</code>")
-        rel = _rel_spans(h.get("returns"), h.get("bench") or bench)
-        if rel:
-            lines.append(f"<code>{rel}</code>")
 
         n = notes.get(h["ticker"])
         if n and n.get("note"):
