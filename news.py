@@ -54,6 +54,37 @@ def _cdata(s: str) -> str:
     return re.sub(r"<!\[CDATA\[|\]\]>", "", s).strip()
 
 
+# 기사가 아니라 시세·재무 데이터 페이지. 이유를 담을 수 없으니 아예 뺀다.
+DATA_PAGE_RE = re.compile(
+    r"(stock price history|stock price, quote|price, quote|dividend summary"
+    r"|compare against competitors|analysis & opinion|analysis &amp; opinion"
+    r"|news today|quote & chart|earnings call transcript|financial statements"
+    r"|balance sheet|income statement|revenue$|\(.*\) revenue$)", re.I)
+
+# "왜"가 담긴 헤드라인의 표지. 이런 연결어가 있으면 원인 설명일 가능성이 높다.
+CAUSAL_RE = re.compile(
+    r"\b(after|amid|as|on|following|due to|over|because|boosted by|driven by"
+    r"|beats?|misses?|announces?|unveils?|wins?|loses?|cuts?|raises?|lifts?"
+    r"|upgrades?|downgrades?|warns?|guides?|approves?|rejects?|sues?|acquires?"
+    r"|launches?|recalls?|halts?|resumes?|files?|reports?|signs?|invests?)\b", re.I)
+
+# 등락만 말하는 시세 요약 표현
+MOVE_RE = re.compile(
+    r"\b(clos(e|es|ed|ing)|end(s|ed)|finish(es|ed)?|rise[sn]?|rose|fall[s]?|fell"
+    r"|gain[s]?|drop[s]?|slide[s]?|jump[s]?|climb[s]?|slip[s]?|surge[s]?"
+    r"|plunge[s]?|tumble[s]?|higher|lower|up|down|rally|rallies)\b", re.I)
+
+
+def _is_recap(title: str) -> bool:
+    """이유 없이 등락만 전하는 헤드라인인가.
+
+    '왜 올랐는지'가 필요한데 '올랐다'만 있는 기사는 쓸모가 없다. 다만
+    'Nvidia leads chip stocks lower after $500B deal' 처럼 등락 표현이 있어도
+    원인이 붙어 있으면 살린다.
+    """
+    return bool(MOVE_RE.search(title)) and not CAUSAL_RE.search(title)
+
+
 # 사명에서 법인격 표기를 떼어내 검색·대조에 쓸 핵심어를 남긴다
 CORP_WORDS = {"CORP", "CORPORATION", "INC", "CO", "THE", "PLC", "LTD", "LLC",
               "GROUP", "HOLDINGS", "HOLDING", "COMPANY", "CLASS", "A", "B", "&",
@@ -160,7 +191,24 @@ SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식�
 3. 인과를 단정하지 않는다. "~때문에 급락"이 아니라 "~보도" 처럼 사실만 적는다.
 4. 35자 내외로 짧게. 종목명은 반복하지 말고 내용만 적는다.
 5. source 에는 근거로 삼은 헤드라인의 번호를 정확히 적는다.
-6. 입력에 있는 모든 종목을 빠짐없이 items 에 포함한다(메모가 비어도 항목은 넣는다)."""
+6. 입력에 있는 모든 종목을 빠짐없이 items 에 포함한다(메모가 비어도 항목은 넣는다).
+7. 가장 중요한 규칙 — note 에는 '그날 일어난 사건'만 적는다.
+
+   쓸 수 있는 것(사건):
+   실적 발표·가이던스 제시, 계약·수주·투자 결정, 인수합병, 규제 조치·소송,
+   투자의견/목표주가 변경, 신제품 출시·리콜, 공급 차질, 경영진 교체,
+   유가·금리·환율 같은 외부 변수의 그날 움직임.
+
+   쓸 수 없는 것 1 (결과만 있음): "주가 상승 마감", "3% 하락", "신고가 경신".
+   무엇이 움직였는지만 말할 뿐 왜 움직였는지가 없다.
+
+   쓸 수 없는 것 2 (상시 평가): "견조한 재무구조 부각", "밸류에이션 매력",
+   "장기 성장성 주목", "배당 매력", "저평가 논쟁". 어제도 오늘도 내일도 할 수 있는
+   말이라 그날의 등락을 설명하지 못한다. 애널리스트 의견이라도 '무엇을 언제
+   어떻게 바꿨다'가 없으면 사건이 아니다.
+
+   둘 중 하나에 해당하거나 판단이 서지 않으면 note 를 비우고 source 를 -1 로 둔다.
+   비워 두는 것이 틀린 설명을 적는 것보다 낫다."""
 
 
 def _get(url, **kw):
@@ -243,9 +291,16 @@ def _finnhub(ticker: str) -> list[dict]:
     return []
 
 
+def _rank(arts: list[dict]) -> list[dict]:
+    """데이터 페이지는 버리고, 원인이 담긴 기사를 앞으로 보낸다."""
+    kept = [a for a in arts if not DATA_PAGE_RE.search(a["title"])]
+    kept.sort(key=lambda a: 1 if _is_recap(a["title"]) else 0)
+    return kept[:HEADLINES_PER_TICKER]
+
+
 def _headlines(ticker: str, name: str) -> list[dict]:
     """Finnhub(티커 직접) → 구글 뉴스 RSS(지정 매체) → 야후 순으로 시도한다."""
-    return _finnhub(ticker) or _gnews(ticker, name) or _yahoo(ticker, name)
+    return _rank(_finnhub(ticker) or _gnews(ticker, name) or _yahoo(ticker, name))
 
 
 def collect(holdings: dict) -> list[dict]:

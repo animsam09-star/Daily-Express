@@ -298,37 +298,83 @@ def holdings_caption(sector, holdings, notes=None):
     return _build_caption(sector, holdings, {}, NOTE_MAX)
 
 
+NAME_DROP = re.compile(
+    r"\b(INC|CORP|CORPORATION|CO|THE|PLC|LTD|LLC|COMPANY|HOLDINGS?|GROUP"
+    r"|CL|CLASS|SER|SERIES|SHARES|SHS|COMMON|STOCK|ORD|SA|NV|AG)\b|\s+[A-C]$",
+    re.I)
+
+
+def _short_name(name: str, limit: int = 18) -> str:
+    """SSGA 표기를 읽을 수 있는 회사명으로. 티커만으로는 어딘지 모르기 때문이다.
+
+    'EXXONMOBIL HOLDINGS CORP' -> 'Exxonmobil'
+    'AT+T INC' -> 'AT&T'   (SSGA 는 & 를 + 로 쓴다)
+    """
+    s = name.replace("+", "&")
+    s = NAME_DROP.sub(" ", s)
+    s = " ".join(s.split()).strip(" ,/-")
+    if not s:
+        return name.title()
+    # 짧은 약어(IBM, AT&T)는 대문자를 유지하고, 일반 단어는 첫 글자만 대문자로
+    words = [w if (len(w) <= 4 and not w.isalpha()) or (w.isupper() and len(w) <= 3)
+             else w.capitalize() for w in s.split()]
+    # 길면 글자를 자르지 말고 뒤 단어를 떨어뜨린다("Verizon Communicat" 방지)
+    out = ""
+    for w in words:
+        cand = f"{out} {w}".strip()
+        if len(cand) > limit and out:
+            break
+        out = cand
+    return out.strip(" &+-,·") or " ".join(words)[:limit]
+
+
+def _arrow(v):
+    if v is None:
+        return "•"
+    return "▲" if v > 0 else ("▼" if v < 0 else "—")
+
+
+def _spans(returns):
+    """1M/3M/6M/12M 를 자리맞춤해 한 줄로. 종목 간 세로로 눈이 맞는다."""
+    r = returns or {}
+    out = [f"{lab} {r[k]:+5.1f}" for k, lab in
+           (("m1", "1M"), ("m3", "3M"), ("m6", "6M"), ("m12", "12M"))
+           if r.get(k) is not None]
+    return "  ".join(out)
+
+
 def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX):
-    blocks = [f"<b>{escape(sector['name'])} ({sector['symbol']}) "
-              f"{sector['chg_pct']:+.2f}%</b>"]
+    # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률
+    chg = sector.get("chg_pct")
+    blocks = [f"{_arrow(chg)} <b>{escape(sector['name'])} ({sector['symbol']})"
+              f"  {chg:+.2f}%</b>"]
+    sec_spans = _spans(sector.get("returns"))
+    if sec_spans:
+        blocks[0] += f"\n<code>{sec_spans}</code>"
 
     for h in holdings:
-        chg = h.get("chg_pct")
-        bits = [f"<b>{escape(h['ticker'])}</b>"]
-        if h.get("price") is not None:
-            bits.append(f"<b>${h['price']:,.2f}</b>")
+        c = h.get("chg_pct")
+        # 1행: 방향 표시 + 티커 + 당일 등락 (굵게 — 가장 먼저 읽히는 줄)
+        label = f"{_short_name(h['name'])} ({h['ticker']})"
+        head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.2f}%</b>" if c is not None
+                else f"• <b>{escape(label)}</b>")
+        # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
+        meta = [f"${h['price']:,.2f}"] if h.get("price") is not None else []
         cap = _cap_fmt(h.get("market_cap"))
         if cap:
-            bits.append(f"<b>{cap}</b>")
-        bits.append(f"<b>{chg:+.2f}%</b>" if chg is not None else "<b>n/a</b>")
-        line = "  ".join(bits)
-
-        # 기간 수익률은 보조 정보라 굵게 하지 않는다
-        r = h.get("returns") or {}
-        spans = [f"{lab} {r[k]:+.1f}%" for k, lab in
-                 (("m1", "1M"), ("m3", "3M"), ("m6", "6M"), ("m12", "12M"))
-                 if r.get(k) is not None]
-        if spans:
-            line += "\n" + "  ".join(spans)
+            meta.append(cap)
+        lines = [head]
+        if meta:
+            lines.append(f"<code>{'  ·  '.join(meta)}</code>")
+        sp = _spans(h.get("returns"))
+        if sp:
+            lines.append(f"<code>{sp}</code>")
 
         n = notes.get(h["ticker"])
         if n and n.get("note"):
             note = n["note"][:note_cap]
             link = f' <a href="{escape(n["url"], quote=True)}">기사</a>' if n.get("url") else ""
-            line += f"\n<i>{escape(note)}</i>{link}"
-        blocks.append(line)
+            lines.append(f"<i>↳ {escape(note)}</i>{link}")
+        blocks.append("\n".join(lines))
 
-    caption = "\n\n".join(blocks)
-    if any(notes.get(h["ticker"], {}).get("note") for h in holdings):
-        caption += "\n\n<i>뉴스 헤드라인 기반 요약 — 등락 원인 단정 아님</i>"
-    return caption
+    return "\n\n".join(blocks)

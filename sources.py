@@ -85,7 +85,8 @@ def fetch_sectors():
         for f, (sym, name) in futs.items():
             s = f.result()
             out.append({"symbol": sym, "name": name,
-                        "chg_pct": pct_change(s), "series": s})
+                        "chg_pct": pct_change(s), "series": s,
+                        "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}})
     out.sort(key=lambda d: d["chg_pct"], reverse=True)
     return out
 
@@ -100,6 +101,22 @@ TOP_N = 5
 def _yahoo_ticker(t: str) -> str:
     """SSGA 표기를 야후 심볼로. 예: BRK.B -> BRK-B"""
     return t.strip().upper().replace(".", "-")
+
+
+CLASS_RE = re.compile(r"\b(CL|CLASS|SER|SERIES)\s+[A-Z]\b")
+NAME_NOISE = {"INC", "CORP", "CORPORATION", "CO", "THE", "PLC", "LTD", "LLC",
+              "COMPANY", "HOLDINGS", "HOLDING", "GROUP", "SA", "NV", "AG"}
+
+
+def _company_key(name: str) -> str:
+    """같은 회사의 복수 클래스를 하나로 묶기 위한 식별자.
+
+    ALPHABET INC CL A 와 ALPHABET INC CL C 는 같은 회사다. 둘 다 상위 5에
+    들어가면 한 자리를 낭비하므로 비중이 큰 쪽만 남긴다.
+    """
+    s = CLASS_RE.sub(" ", name.upper())
+    s = re.sub(r"[^A-Z0-9 ]", " ", s)
+    return " ".join(w for w in s.split() if w not in NAME_NOISE)
 
 
 def _top_holdings(etf: str, n: int = TOP_N):
@@ -120,17 +137,22 @@ def _top_holdings(etf: str, n: int = TOP_N):
     hdr = [str(c).strip() if c else "" for c in rows[hi]]
     ti, ni, wi = hdr.index("Ticker"), hdr.index("Name"), hdr.index("Weight")
 
-    out = []
-    for r in rows[hi + 1:]:
+    out, seen = [], set()
+    # 중복 클래스를 걸러내면 자리가 비므로 넉넉히 읽고 나서 상위 n 개를 고른다
+    for r in rows[hi + 1: hi + 41]:
         if not r or not r[ti]:
             continue
         try:
             weight = float(r[wi])
         except (TypeError, ValueError):
             continue
+        name = str(r[ni]).strip()
+        key = _company_key(name)
+        if key in seen:
+            continue
+        seen.add(key)
         out.append({"ticker": _yahoo_ticker(str(r[ti])),
-                    "name": str(r[ni]).strip(),
-                    "weight": weight})
+                    "name": name, "weight": weight})
         if len(out) >= n:
             break
     return out
@@ -150,30 +172,65 @@ def _crumb_session():
     return (s, crumb) if crumb and "<" not in crumb else (None, None)
 
 
+QUOTE_URL = "https://query2.finance.yahoo.com/v7/finance/quote"
+QUOTE_BATCH = 25            # 배치 하나가 실패하면 그만큼 시총이 통째로 빈다
+
+
+def _quote_batch(session, crumb, batch, out):
+    r = session.get(QUOTE_URL,
+                    params={"symbols": ",".join(batch), "crumb": crumb},
+                    timeout=TIMEOUT)
+    r.raise_for_status()
+    for q in r.json().get("quoteResponse", {}).get("result", []):
+        out[q.get("symbol")] = {
+            "price": q.get("regularMarketPrice"),
+            "market_cap": q.get("marketCap"),
+            "chg_pct": q.get("regularMarketChangePercent"),
+        }
+
+
 def fetch_quotes(tickers):
-    """주가·시가총액·등락률을 한 번에. 종목당 개별 호출을 대신한다."""
+    """주가·시가총액·등락률을 한 번에. 종목당 개별 호출을 대신한다.
+
+    배치가 하나라도 실패하면 그 종목들의 시가총액이 통째로 빈다(차트 API
+    폴백은 시총을 못 준다). 그래서 crumb 을 새로 받아 한 번 더 시도하고,
+    그래도 남으면 개별로 훑는다.
+    """
     out = {}
     session, crumb = _crumb_session()
     if session and crumb:
-        for i in range(0, len(tickers), 50):   # URL 길이 여유를 두고 나눈다
-            batch = tickers[i:i + 50]
+        failed = []
+        for i in range(0, len(tickers), QUOTE_BATCH):
+            batch = tickers[i:i + QUOTE_BATCH]
             try:
-                r = session.get(
-                    "https://query2.finance.yahoo.com/v7/finance/quote",
-                    params={"symbols": ",".join(batch), "crumb": crumb},
-                    timeout=TIMEOUT,
-                )
-                r.raise_for_status()
-                for q in r.json().get("quoteResponse", {}).get("result", []):
-                    out[q.get("symbol")] = {
-                        "price": q.get("regularMarketPrice"),
-                        "market_cap": q.get("marketCap"),
-                        "chg_pct": q.get("regularMarketChangePercent"),
-                    }
+                _quote_batch(session, crumb, batch, out)
             except Exception as e:             # noqa: BLE001
-                print(f"[quote] 배치 실패: {type(e).__name__}: {e}")
+                print(f"[quote] 배치 실패({len(batch)}종목): {type(e).__name__}: {e}")
+                failed.extend(batch)
 
-    # crumb 가 막히거나 일부가 빠지면 차트 API 로 등락률만이라도 채운다
+        # crumb 이 만료됐을 수 있으니 새 세션으로 재시도
+        retry = [t for t in failed if t not in out]
+        if retry:
+            session2, crumb2 = _crumb_session()
+            if session2 and crumb2:
+                for i in range(0, len(retry), QUOTE_BATCH):
+                    try:
+                        _quote_batch(session2, crumb2, retry[i:i + QUOTE_BATCH], out)
+                    except Exception:          # noqa: BLE001
+                        pass
+                print(f"[quote] 재시도로 {len(retry) - len([t for t in retry if t not in out])}"
+                      f"/{len(retry)}종목 복구")
+
+    # 시총이 비는 종목은 개별로 한 번 더(수가 적을 때만)
+    no_cap = [t for t in tickers if t in out and not out[t].get("market_cap")]
+    if session and crumb and 0 < len(no_cap) <= 15:
+        for t in no_cap:
+            try:
+                _quote_batch(session, crumb, [t], out)
+            except Exception:                  # noqa: BLE001
+                pass
+
+    # crumb 자체가 막히면 차트 API 로 등락률만이라도 채운다(시총은 없음)
     missing = [t for t in tickers if t not in out]
     if missing:
         def one(sym):
