@@ -19,14 +19,14 @@ def build_message(data) -> str:
 
     idx = data.get("indices") or {}
     if idx:
-        parts = [f"{n} ({idx[n]['chg_pct']:+.2f}%)" for n in ("Dow", "S&P500", "Nasdaq") if n in idx]
+        parts = [f"{n} ({idx[n]['chg_pct']:+.1f}%)" for n in ("Dow", "S&P500", "Nasdaq") if n in idx]
         lines.append("□ 미국증시: " + ", ".join(parts))
 
     sectors = data.get("sectors") or []
     if sectors:
         lines.append("□ 섹터별 등락:")
         for s in sectors:
-            lines.append(f"    · {s['name']} {s['chg_pct']:+.2f}%")
+            lines.append(f"    · {s['name']} {s['chg_pct']:+.1f}%")
 
     now = data.get("ust_now") or {}
     if now:

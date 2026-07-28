@@ -37,13 +37,13 @@ def build_message(data) -> str:
     for name in ("코스피", "코스닥"):
         d = idx.get(name)
         if d:
-            lines.append(f"□ {name} {d['last']:,.2f} ({d['chg_pct']:+.2f}%)")
+            lines.append(f"□ {name} {d['last']:,.2f} ({d['chg_pct']:+.1f}%)")
 
     secs = data.get("sectors") or []
     if secs:
         lines.append("□ 섹터별 등락:")
         for s in secs:
-            lines.append(f"    · {s['name']} {s['chg_pct']:+.2f}%")
+            lines.append(f"    · {s['name']} {s['chg_pct']:+.1f}%")
 
     fx = data.get("fx")
     if fx:

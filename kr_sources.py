@@ -49,9 +49,32 @@ NAME_URL = "https://finance.naver.com/item/main.naver?code={code}"
 NAME_RE = re.compile(r"<title>\s*([^<:]+?)\s*:", re.I)
 
 
+_SUFFIX_CACHE: dict[str, str] = {}
+
+
 def _ys(code: str) -> str:
-    """종목코드를 야후 심볼로. 코스닥이면 .KQ 지만 .KS 로도 대부분 잡힌다."""
-    return f"{code}.KS"
+    """종목코드를 야후 심볼로.
+
+    코스피는 .KS, 코스닥은 .KQ 다. 접미사가 틀리면 시가총액이 통째로 비므로
+    (에코프로비엠·알테오젠 등 코스닥 종목이 0으로 잡혀 순위가 어긋났다)
+    한 번 확인한 결과를 캐시해 쓴다.
+    """
+    return f"{code}{_SUFFIX_CACHE.get(code, '.KS')}"
+
+
+def _resolve_suffixes(codes):
+    """.KS 로 시가총액이 안 나오는 종목은 .KQ 로 다시 확인해 캐시에 남긴다."""
+    first = fetch_quotes([f"{c}.KS" for c in codes])
+    unknown = [c for c in codes if not (first.get(f"{c}.KS") or {}).get("market_cap")]
+    if not unknown:
+        return first
+    second = fetch_quotes([f"{c}.KQ" for c in unknown])
+    for c in unknown:
+        if (second.get(f"{c}.KQ") or {}).get("market_cap"):
+            _SUFFIX_CACHE[c] = ".KQ"
+    merged = dict(first)
+    merged.update(second)
+    return merged
 
 
 def stock_name(code: str) -> str:
@@ -99,8 +122,8 @@ def fetch_sectors_and_holdings():
     후보 풀에서 시총 상위를 골라 직접 집계한다.
     """
     codes = sorted({c for pool in SECTOR_POOL.values() for c in pool})
+    quotes = _resolve_suffixes(codes)          # 코스피/코스닥 접미사 확정
     symbols = [_ys(c) for c in codes]
-    quotes = fetch_quotes(symbols)
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_names = ex.submit(fetch_names, codes)

@@ -45,7 +45,7 @@ def _ma(values, window):
 
 
 def line_chart(path, title, series, *, value_fmt="{:,.2f}", unit="",
-               change=None, change_fmt="{:+.2f}", change_unit=""):
+               change=None, change_fmt="{:+.1f}", change_unit=""):
     """2개년 종가 + 이동평균선 1장."""
     if not series or len(series) < 2:
         return None
@@ -98,7 +98,7 @@ def sector_chart(path, sectors, title="미국증시 섹터별 등락"):
     for bar, v in zip(bars, vals):
         off = span * 0.03
         ax.text(v + (off if v >= 0 else -off), bar.get_y() + bar.get_height() / 2,
-                f"{v:+.2f}%", va="center", ha="left" if v >= 0 else "right",
+                f"{v:+.1f}%", va="center", ha="left" if v >= 0 else "right",
                 fontsize=9, color=TEXT, fontweight="bold")
 
     ax.axvline(0, color="#999999", lw=1)
@@ -354,7 +354,7 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     chg = sector.get("chg_pct")
     sec_label = (sector["name"] if sector["name"] == sector["symbol"]
                  else f"{sector['name']} ({sector['symbol']})")
-    blocks = [f"{_arrow(chg)} <b>{escape(sec_label)}  {chg:+.2f}%</b>"]
+    blocks = [f"{_arrow(chg)} <b>{escape(sec_label)}  {chg:+.1f}%</b>"]
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
@@ -363,7 +363,7 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         c = h.get("chg_pct")
         # 1행: 방향 표시 + 티커 + 당일 등락 (굵게 — 가장 먼저 읽히는 줄)
         label = f"{_short_name(h['name'])} ({h['ticker']})"
-        head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.2f}%</b>" if c is not None
+        head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.1f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
         meta = [px.format(h["price"])] if h.get("price") is not None else []
