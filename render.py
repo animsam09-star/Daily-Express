@@ -12,6 +12,8 @@ import matplotlib.dates as mdates            # noqa: E402
 import matplotlib.pyplot as plt              # noqa: E402
 from matplotlib import font_manager          # noqa: E402
 
+import biz                                   # noqa: E402
+
 # 상승 빨강 / 하락 파랑 (국내 관행)
 UP, DOWN = "#d32f2f", "#1565c0"
 LINE, GRID, TEXT = "#1a1a1a", "#e6e6e6", "#333333"
@@ -460,10 +462,16 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     # 지수 대비 상대수익률은 글로 쓰지 않는다. 차트 우측 축의 상대강도선이
     # 같은 정보를 더 잘 보여주고, 캡션은 길이 여유가 뉴스에 쓰이는 편이 낫다.
 
+    # 티커만 봐서는 무슨 회사인지 모른다. 사명 옆에 사업을 한두 단어로 붙인다.
+    biz_map = biz.describe([h["ticker"] for h in holdings])
+
     for h in holdings:
         c = h.get("chg_pct")
-        # 1행: 방향 표시 + 티커 + 당일 등락 (굵게 — 가장 먼저 읽히는 줄)
+        # 1행: 방향 표시 + 티커 + 사업 + 당일 등락 (굵게 — 가장 먼저 읽히는 줄)
         label = f"{_short_name(h['name'])} ({h['ticker']})"
+        what = biz_map.get(h["ticker"])
+        if what:
+            label += f" / {what}"
         head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.1f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
