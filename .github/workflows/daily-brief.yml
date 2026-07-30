@@ -62,3 +62,12 @@ jobs:
           name: charts
           path: out/
           if-no-files-found: ignore
+
+      # 실패하면 아무 일도 안 일어나 '그냥 안 온 것'과 구별되지 않는다.
+      # 실패했다는 사실 자체를 텔레그램으로 알린다.
+      - name: 실패 알림
+        if: failure()
+        run: |
+          curl -sS -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/sendMessage" \
+            -d chat_id="$TELEGRAM_CHAT_ID" \
+            --data-urlencode "text=⚠️ 미국 마켓 브리핑 발송 실패 — $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
