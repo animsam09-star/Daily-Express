@@ -1,12 +1,20 @@
 name: 한국증시 마감 브리핑
 
+# 정시 발송은 외부 스케줄러(Claude Code Routine)가 workflow_dispatch 로
+# 15:45 KST 정각에 쏘는 것이 1차 경로. 아래 schedule 은 그 백업이다 —
+# GitHub cron 은 정시 보장이 없어 실측 2시간 반씩 지연됐다(15:45 목표가
+# 18:16 시작). dispatch 가 이미 발송했으면 중복 발송 가드가 생략시킨다.
 on:
   schedule:
     # 06:45 UTC = 15:45 KST. 장 마감(15:30) 정각은 종가가 아직 정리되지 않아
     # 동시호가 반영을 기다린 뒤 보낸다.
     # UTC 06:45 는 한국시간과 같은 날이므로 요일도 월~금(1-5) 그대로 쓴다.
     - cron: "45 6 * * 1-5"
-  workflow_dispatch:
+  workflow_dispatch:        # 정시 발송(Routine) + 수동 실행(테스트용)
+
+permissions:
+  contents: read
+  actions: read             # 중복 발송 가드가 최근 run 목록을 조회한다
 
 jobs:
   send:
@@ -18,14 +26,38 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
+      # 지연 도착한 schedule 실행이, 정시 dispatch 가 이미 보낸 브리핑을
+      # 또 보내지 않게 한다. 하루 1회 발송이므로 6시간 창이면 충분하다.
+      # 조회 실패 시에는 발송하는 쪽으로 폴백(미발송보다 중복이 낫다).
+      - name: 중복 발송 가드 (schedule 전용)
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CUTOFF=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S+00:00')
+          DONE=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
+            --created ">=$CUTOFF" --json event,status,conclusion \
+            -q '[.[] | select(.event == "workflow_dispatch")
+                     | select(.conclusion == "success" or .status == "in_progress" or .status == "queued")] | length' || echo 0)
+          if [ "${DONE:-0}" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "이미 정시 dispatch 로 발송됨 — 지연 스케줄 실행 생략"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
           cache: pip
 
       - name: 한글 폰트 설치
+        if: steps.guard.outputs.skip != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-nanum
@@ -33,13 +65,15 @@ jobs:
           rm -rf ~/.cache/matplotlib
 
       - name: 패키지 설치
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       - name: Claude Code 설치
-        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        if: steps.guard.outputs.skip != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         run: npm install -g @anthropic-ai/claude-code
 
       - name: 브리핑 발송
+        if: steps.guard.outputs.skip != 'true'
         run: python main_kr.py
 
       - name: 실패 시 차트 보관(원인 확인용)
