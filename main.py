@@ -31,9 +31,12 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
 
-    # 급등락 종목의 관련 뉴스 → Claude 한 줄 요약. 실패해도 발송은 계속된다.
-    # (sources 를 import 하므로 순환을 피해 여기서 붙인다)
-    data["notes"] = news.build(data.get("holdings") or {})
+    # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
+    # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)
+    data["notes"], data["sector_notes"] = news.build(
+        data.get("holdings") or {},
+        sectors=data.get("sectors"),
+        macro=news.macro_context(data))
 
     print("[2/3] 차트 생성...")
     charts = render.build_all(data, args.outdir)

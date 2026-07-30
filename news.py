@@ -1,9 +1,12 @@
 """섹터 상위 종목의 관련 뉴스 수집 + Claude 한국어 요약 + 링크 축약.
 
-주가가 왜 움직였는지는 사후 해석이라 자동으로 단정하면 틀린 설명이 나간다.
-그래서 이 모듈은 '이유'를 만들어내지 않는다. 실제 수집한 헤드라인만 근거로 삼고,
-헤드라인이 등락을 설명하지 못하면 그렇다고 답하게 한다. 요약마다 근거가 된
+원칙: 근거는 수집한 헤드라인과 시장 지표뿐이고, 그 안에서는 인과를 직접 서술한다.
+헤드라인이 원인을 담고 있으면 "정제마진 악화로 하향" 처럼 적고, 헤드라인에 없는
+원인을 지어내는 것만 금지한다. 설명이 안 되면 비워 둔다. 요약마다 근거가 된
 기사 링크를 함께 붙여 사용자가 직접 확인할 수 있게 한다.
+
+종목 메모 외에, 섹터 컨텍스트(구성 종목 등락·시장 지표)를 주면 "왜 이 섹터가
+올랐/내렸나"를 1~2문장으로 종합한 섹터 코멘트도 함께 만든다.
 
 인증이 없으면 요약을 건너뛴다(발송은 계속된다).
 - CLAUDE_CODE_OAUTH_TOKEN: 구독(Pro/Max)으로 동작. 추가 과금 없음
@@ -165,7 +168,7 @@ SUMMARY_SCHEMA = {
                     "ticker": {"type": "string"},
                     "note": {
                         "type": "string",
-                        "description": "한국어 한 줄 요약(35자 내외). 헤드라인이 "
+                        "description": "한국어 요약(60자 내외, 최대 두 문장). 헤드라인이 "
                                        "등락을 설명하지 못하면 빈 문자열.",
                     },
                     "source": {
@@ -181,21 +184,43 @@ SUMMARY_SCHEMA = {
                 "required": ["ticker", "note", "source", "importance"],
                 "additionalProperties": False,
             },
-        }
+        },
+        "sectors": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "comment": {
+                        "type": "string",
+                        "description": "섹터 등락 종합 1~2문장(90자 내외). "
+                                       "근거가 없으면 빈 문자열.",
+                    },
+                },
+                "required": ["symbol", "comment"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["items"],
+    "required": ["items", "sectors"],
     "additionalProperties": False,
 }
 
 SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식의 당일 등락과 번호가 매겨진
-관련 뉴스 헤드라인을 받아, 종목마다 한국어 한 줄 메모를 만든다.
+관련 뉴스 헤드라인을 받아, 종목마다 한국어 메모를 만든다.
 
 지켜야 할 규칙:
-1. 반드시 제공된 헤드라인에만 근거한다. 헤드라인에 없는 사실·수치·배경을 지어내지 않는다.
+1. 반드시 제공된 헤드라인·시장 지표에만 근거한다. 입력에 없는 사실·수치·배경을
+   지어내지 않는다.
 2. 헤드라인이 그 종목의 등락과 무관하거나 설명이 안 되면 note 를 빈 문자열,
    source 를 -1 로 둔다. 억지로 채우지 않는 것이 맞는 답이다.
-3. 인과를 단정하지 않는다. "~때문에 급락"이 아니라 "~보도" 처럼 사실만 적는다.
-4. 35자 내외로 짧게. 종목명은 반복하지 말고 내용만 적는다.
+3. 원인 서술은 헤드라인이 뒷받침하는 만큼 직접적으로 한다.
+   헤드라인이 원인을 담고 있으면 "실적 가이던스 하향으로 급락" 처럼 인과로 적는다.
+   금지되는 것은 입력에 없는 원인을 추론으로 만들어내는 것뿐이다.
+   사건은 있는데 등락과의 연결이 확실치 않으면 "~영향으로 풀이" 같은
+   완충 표현을 쓴다.
+4. note 는 60자 내외. 사건만이 아니라 왜(배경·수치)까지 담을 수 있으면 두 문장까지
+   허용한다. 종목명은 반복하지 말고 내용만 적는다.
 5. source 에는 근거로 삼은 헤드라인의 번호를 정확히 적는다.
 6. 입력에 있는 모든 종목을 빠짐없이 items 에 포함한다(메모가 비어도 항목은 넣는다).
 7. 가장 중요한 규칙 — note 에는 '그날 일어난 사건'만 적는다.
@@ -233,7 +258,17 @@ SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식�
    2 — 근거 없는 의견 변경, 단일 매체의 소소한 소식, 정기 공시, 인사.
    1 — 관련은 있으나 주가와 연결이 약한 내용.
    입력의 '[N개 매체 보도]' 표시는 그 종목을 여러 매체가 동시에 다뤘다는 뜻이다.
-   같은 사안을 여러 곳이 보도했다면 그만큼 중요하다고 본다."""
+   같은 사안을 여러 곳이 보도했다면 그만큼 중요하다고 본다.
+
+10. 입력에 '## 섹터' 블록이 있으면, 각 섹터마다 sectors 배열에
+    {symbol, comment} 를 만든다.
+    - comment 는 그 섹터가 그날 왜 올랐/내렸는지 1~2문장(90자 내외)으로 종합한다.
+    - 근거는 그 섹터 구성 종목의 등락·헤드라인과 맨 위 [시장 지표] 뿐이다.
+    - 여러 섹터에 걸친 공통 동인(금리·유가·환율·실적 시즌)이 보이면 그걸 앞세우고,
+      한두 종목이 섹터를 끌었다면 그 종목과 이유를 지목한다.
+    - 개별 종목 note 와 같은 문장을 반복하지 말고 섹터 관점에서 다시 쓴다.
+    - 설명할 근거가 없으면 comment 를 빈 문자열로 둔다. 억지 설명보다 낫다.
+    섹터 블록이 없는 입력이면 sectors 를 빈 배열로 둔다."""
 
 
 def _get(url, **kw):
@@ -378,35 +413,85 @@ def shorten(url: str) -> str:
         return url
 
 
-def _prompt(stocks: list[dict]) -> str:
+def _stock_block(s: dict) -> list[str]:
+    chg = f"{s['chg_pct']:+.2f}%" if s.get("chg_pct") is not None else "n/a"
+    # 같은 사안을 여러 매체가 동시에 다뤘다면 그만큼 중요하다는 신호다.
+    # 조회수는 어느 소스에서도 안 나오므로 이것이 대신할 수 있는 지표다.
+    srcs = {(h.get("source") or "").split()[0].lower()
+            for h in s["headlines"] if h.get("source")}
+    tag = f"  [{len(srcs)}개 매체 보도]" if len(srcs) > 1 else ""
+    lines = [f"[{s['ticker']}] {s['name']} {chg}{tag}"]
+    for i, h in enumerate(s["headlines"]):
+        src = f"  ({h['source']})" if h.get("source") else ""
+        lines.append(f"  {i}. {h['title']}{src}")
+    return lines
+
+
+def _prompt(stocks: list[dict], sectors: list[dict] | None = None,
+            holdings: dict | None = None, macro: str | None = None) -> str:
+    """섹터 컨텍스트가 있으면 섹터별로 묶고, 없으면(한국판) 평면 목록으로."""
     lines = []
-    for s in stocks:
-        chg = f"{s['chg_pct']:+.2f}%" if s.get("chg_pct") is not None else "n/a"
-        # 같은 사안을 여러 매체가 동시에 다뤘다면 그만큼 중요하다는 신호다.
-        # 조회수는 어느 소스에서도 안 나오므로 이것이 대신할 수 있는 지표다.
-        srcs = {(h.get("source") or "").split()[0].lower()
-                for h in s["headlines"] if h.get("source")}
-        tag = f"  [{len(srcs)}개 매체 보도]" if len(srcs) > 1 else ""
-        lines.append(f"[{s['ticker']}] {s['name']} {chg}{tag}")
-        for i, h in enumerate(s["headlines"]):
-            src = f"  ({h['source']})" if h.get("source") else ""
-            lines.append(f"  {i}. {h['title']}{src}")
+    if macro:
+        lines += ["[시장 지표]", macro.strip(), ""]
+    if not (sectors and holdings):
+        for s in stocks:
+            lines += _stock_block(s)
+        return "\n".join(lines)
+
+    by = {s["ticker"]: s for s in stocks}
+    for sec in sectors:
+        chg = f"{sec['chg_pct']:+.2f}%" if sec.get("chg_pct") is not None else "n/a"
+        lines.append(f"## {sec['name']} ({sec['symbol']}) {chg}")
+        members = holdings.get(sec["symbol"]) or []
+        # 헤드라인이 없는 종목도 등락은 섹터 판단에 필요하다 — 한 줄로 요약해 준다.
+        quiet = [h for h in members if h["ticker"] not in by]
+        if quiet:
+            lines.append("구성 상위(뉴스 없음): " + ", ".join(
+                f"{h['ticker']} {h['chg_pct']:+.1f}%" if h.get("chg_pct") is not None
+                else h["ticker"] for h in quiet))
+        for h in members:
+            s = by.get(h["ticker"])
+            if s:
+                lines += _stock_block(s)
+        lines.append("")
     return "\n".join(lines)
 
 
-def _parse(text: str) -> dict[str, dict]:
-    """모델 출력에서 {티커: {note, source}}. 앞뒤 잡텍스트가 있어도 JSON 만 건진다."""
+def macro_context(data: dict) -> str:
+    """섹터 코멘트의 근거가 될 시장 지표 요약. 수집 실패 항목은 조용히 빠진다."""
+    lines = []
+    idx = data.get("indices") or {}
+    parts = [f"{n} {idx[n]['chg_pct']:+.2f}%"
+             for n in ("Dow", "S&P500", "Nasdaq") if idx.get(n)]
+    if parts:
+        lines.append("미국증시: " + ", ".join(parts))
+    now = data.get("ust_now") or {}
+    parts = [f"{now[s]['label']} {now[s]['yield']:.2f}%({now[s]['chg_bp']:+.1f}bp)"
+             for s in ("US2Y", "US10Y", "US30Y") if now.get(s)]
+    if parts:
+        lines.append("미국채: " + ", ".join(parts))
+    fx = data.get("fx")
+    if fx and fx.get("last") is not None:
+        lines.append(f"원/달러 {fx['last']:,.1f}원({fx.get('chg', 0):+.1f}원)")
+    return "\n".join(lines)
+
+
+def _parse(text: str) -> tuple[dict[str, dict], dict[str, str]]:
+    """모델 출력에서 ({티커: {note, source}}, {섹터심볼: 코멘트}).
+
+    앞뒤 잡텍스트가 있어도 JSON 만 건진다.
+    """
     text = text.strip()
     if not text.startswith("{"):
         i, j = text.find("{"), text.rfind("}")
         if i == -1 or j == -1:
-            return {}
+            return {}, {}
         text = text[i:j + 1]
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
         print(f"[news] 요약 파싱 실패: {e}")
-        return {}
+        return {}, {}
     out = {}
     for it in data.get("items", []):
         note = (it.get("note") or "").strip()
@@ -417,10 +502,20 @@ def _parse(text: str) -> dict[str, dict]:
                 imp = 0
             out[it["ticker"]] = {"note": note, "source": it.get("source", -1),
                                  "importance": imp}
-    return out
+    secs = {}
+    raw = data.get("sectors")
+    if isinstance(raw, list):
+        for sc in raw:
+            if not isinstance(sc, dict):
+                continue
+            sym = (sc.get("symbol") or "").strip()
+            comment = (sc.get("comment") or "").strip()
+            if sym and comment:
+                secs[sym] = comment
+    return out, secs
 
 
-def _via_claude_code(stocks: list[dict]) -> dict | None:
+def _via_claude_code(prompt: str) -> tuple[dict, dict] | None:
     """Claude Code 헤드리스 모드. 구독 토큰으로 동작해 API 크레딧이 들지 않는다."""
     if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         return None
@@ -432,8 +527,9 @@ def _via_claude_code(stocks: list[dict]) -> dict | None:
     instruction = (
         SYSTEM
         + "\n\n아래 입력에 대해 JSON 만 출력한다. 설명·코드펜스 없이 JSON 객체 하나만.\n"
-          '형식: {"items": [{"ticker": "TICKER", "note": "한 줄 메모", "source": 0}]}\n\n'
-        + _prompt(stocks)
+          '형식: {"items": [{"ticker": "TICKER", "note": "메모", "source": 0, '
+          '"importance": 3}], "sectors": [{"symbol": "XLK", "comment": "섹터 코멘트"}]}\n\n'
+        + prompt
     )
     try:
         r = subprocess.run([exe, "-p", instruction, "--model", MODEL],
@@ -448,15 +544,15 @@ def _via_claude_code(stocks: list[dict]) -> dict | None:
     return _parse(r.stdout)
 
 
-def _via_api(stocks: list[dict]) -> dict:
+def _via_api(prompt: str) -> tuple[dict, dict]:
     """Anthropic API 키 경로. 사용량만큼 과금된다."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {}
+        return {}, {}
     try:
         import anthropic
     except ImportError:
         print("[news] anthropic 패키지 없음 — 요약 생략")
-        return {}
+        return {}, {}
     try:
         resp = anthropic.Anthropic().beta.messages.create(
             model=MODEL, max_tokens=16000,
@@ -464,36 +560,43 @@ def _via_api(stocks: list[dict]) -> dict:
             system=SYSTEM,
             output_config={"effort": "medium",
                            "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
-            messages=[{"role": "user", "content": _prompt(stocks)}],
+            messages=[{"role": "user", "content": prompt}],
         )
     except Exception as e:                     # noqa: BLE001
         print(f"[news] 요약 호출 실패: {type(e).__name__}: {e}")
-        return {}
+        return {}, {}
     if resp.stop_reason == "refusal":
         print("[news] 요약 거부됨 — 헤드라인만 사용")
-        return {}
+        return {}, {}
     try:
         return _parse(next(b.text for b in resp.content if b.type == "text"))
     except StopIteration:
-        return {}
+        return {}, {}
 
 
-def build(holdings: dict) -> dict[str, dict]:
-    """{티커: {note, url}}. 어느 단계가 실패해도 발송은 막지 않는다."""
+def build(holdings: dict, sectors: list[dict] | None = None,
+          macro: str | None = None) -> tuple[dict[str, dict], dict[str, str]]:
+    """({티커: {note, url}}, {섹터심볼: 코멘트}). 어느 단계가 실패해도 발송은 막지 않는다.
+
+    sectors(각 {symbol, name, chg_pct})와 macro(시장 지표 요약)를 주면
+    섹터별 등락 종합 코멘트도 함께 만든다.
+    """
     try:
         stocks = collect(holdings)
     except Exception as e:                     # noqa: BLE001
         print(f"[news] 헤드라인 수집 실패: {type(e).__name__}: {e}")
-        return {}
+        return {}, {}
     if not stocks:
-        return {}
+        return {}, {}
     print(f"[news] {len(stocks)}종목 헤드라인 수집 — 요약 요청")
 
-    summaries = _via_claude_code(stocks)
-    if summaries is None:
-        summaries = _via_api(stocks)
-    if not summaries:
-        return {}
+    prompt = _prompt(stocks, sectors, holdings, macro)
+    result = _via_claude_code(prompt)
+    if result is None:
+        result = _via_api(prompt)
+    summaries, sector_notes = result
+    if not summaries and not sector_notes:
+        return {}, {}
 
     # 요약이 나온 종목만 근거 기사 링크를 축약한다
     by_ticker = {s["ticker"]: s for s in stocks}
@@ -510,10 +613,11 @@ def build(holdings: dict) -> dict[str, dict]:
     kept = {tk: v for tk, v in summaries.items()
             if v.get("importance", 0) >= MIN_IMPORTANCE}
     print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
-          f"/ 링크 {len(short)}건")
-    return {tk: {"note": v["note"], "url": short.get(tk, ""),
-                 "importance": v.get("importance", 0)}
-            for tk, v in kept.items()}
+          f"/ 링크 {len(short)}건 / 섹터 코멘트 {len(sector_notes)}건")
+    notes = {tk: {"note": v["note"], "url": short.get(tk, ""),
+                  "importance": v.get("importance", 0)}
+             for tk, v in kept.items()}
+    return notes, sector_notes
 
 
 # ---------------------------------------------------------------- 한국 증시
@@ -572,9 +676,11 @@ def build_kr(holdings: dict) -> dict[str, dict]:
         return {}
     print(f"[news] 한국 {len(stocks)}종목 헤드라인 수집 — 요약 요청")
 
-    summaries = _via_claude_code(stocks)
-    if summaries is None:
-        summaries = _via_api(stocks)
+    prompt = _prompt(stocks)
+    result = _via_claude_code(prompt)
+    if result is None:
+        result = _via_api(prompt)
+    summaries, _ = result
     if not summaries:
         return {}
 

@@ -326,6 +326,7 @@ def build_all(data, outdir):
     add(sector_trend_chart, os.path.join(outdir, "sectors_2y.png"), sectors)
     holdings = data.get("holdings") or {}
     notes = data.get("notes") or {}
+    sector_notes = data.get("sector_notes") or {}
     for s in sectors:                          # 당일 등락률 높은 순
         if s.get("series"):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
@@ -334,7 +335,8 @@ def build_all(data, outdir):
                 bench_series=(idx.get("S&P500") or {}).get("series"),
                 bench_label="S&P500",
                 caption=holdings_caption(s, holdings.get(s["symbol"]), notes,
-                                         bench=(idx.get("S&P500") or {}).get("returns")),
+                                         bench=(idx.get("S&P500") or {}).get("returns"),
+                                         sector_note=sector_notes.get(s["symbol"])),
                 solo=True)
     return charts
 
@@ -350,7 +352,8 @@ def _cap_fmt(v, cur="달러"):
 
 
 CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
-NOTE_MAX = 45               # 뉴스 한 줄 최대 글자수
+NOTE_MAX = 70               # 종목 메모 최대 글자수(두 문장까지 허용)
+SECTOR_NOTE_MAX = 120       # 섹터 종합 코멘트 최대 글자수
 MAX_NOTES = 3               # 섹터당 뉴스 최대 개수(등락 큰 종목 우선)
 TAG_RE = re.compile(r"<[^>]+>")
 
@@ -365,8 +368,9 @@ def _visible_len(html_text: str) -> int:
     return len(TAG_RE.sub("", html_text))
 
 
-def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", bench=None):
-    """섹터 차트에 붙일 상위 5종목: 주가·시가총액·등락 + 종목별 뉴스.
+def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", bench=None,
+                     sector_note=None):
+    """섹터 차트에 붙일 캡션: 섹터 종합 코멘트 + 상위 5종목 주가·등락 + 종목별 뉴스.
 
     텔레그램 HTML 에는 글자 크기 지정이 없다. 쓸 수 있는 강약은 굵게/보통/기울임뿐이라
     종목명·등락은 <b>, 뉴스는 보통 글씨로 두어 위계를 만든다.
@@ -375,6 +379,8 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
     if not holdings:
         return None
     notes = notes or {}
+    if sector_note:
+        sector_note = sector_note[:SECTOR_NOTE_MAX]
 
     # 뉴스는 섹터당 MAX_NOTES 개까지만. 중요도가 높은 것부터,
     # 같은 중요도면 그날 크게 움직인 종목을 앞세운다.
@@ -387,15 +393,17 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
 
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
-    for note_cap in (NOTE_MAX, 30, 22):
-        cap = _build_caption(sector, holdings, picked, note_cap, cur, px, bench)
+    for note_cap in (NOTE_MAX, 45, 30):
+        cap = _build_caption(sector, holdings, picked, note_cap, cur, px, bench,
+                             sector_note)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, holdings, subset, 22, cur, px, bench)
+        cap = _build_caption(sector, holdings, subset, 30, cur, px, bench, sector_note)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
+    # 최후 수단: 섹터 코멘트까지 내려놓고 종목 표만 남긴다
     return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px, bench)
 
 
@@ -450,8 +458,9 @@ def _spans(returns):
 
 
 
-def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}", bench=None):
-    # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률
+def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px="${:,.2f}", bench=None,
+                   sector_note=None):
+    # 섹터 헤더: 이름·당일 등락(굵게) + 기간 수익률 + 섹터 종합 코멘트
     chg = sector.get("chg_pct")
     sec_label = (sector["name"] if sector["name"] == sector["symbol"]
                  else f"{sector['name']} ({sector['symbol']})")
@@ -459,6 +468,8 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     sec_spans = _spans(sector.get("returns"))
     if sec_spans:
         blocks[0] += f"\n<code>{sec_spans}</code>"
+    if sector_note:
+        blocks[0] += f"\n<i>{escape(sector_note)}</i>"
     # 지수 대비 상대수익률은 글로 쓰지 않는다. 차트 우측 축의 상대강도선이
     # 같은 정보를 더 잘 보여주고, 캡션은 길이 여유가 뉴스에 쓰이는 편이 낫다.
 
