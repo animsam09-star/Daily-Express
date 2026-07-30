@@ -314,6 +314,10 @@ canvas.big{width:100%!important;height:380px!important}
 .flowline{display:flex;gap:16px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
 .flowline .t{color:var(--sub)}
 footer{margin-top:34px;color:var(--sub);font-size:12px}
+.segs{margin-left:8px;display:inline-flex;gap:4px;vertical-align:middle}
+.segs button{border:1px solid var(--line);background:#fff;border-radius:8px;
+  padding:3px 10px;font-size:12px;cursor:pointer;color:var(--sub)}
+.segs button.on{background:#1a1a1a;border-color:#1a1a1a;color:#fff;font-weight:700}
 @media(min-width:760px){.secgrid{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
@@ -324,7 +328,7 @@ footer{margin-top:34px;color:var(--sub);font-size:12px}
 
   <div class="cards" id="cards"></div>
 
-  <h2>섹터별 등락</h2>
+  <h2>섹터별 등락 <span class="segs" id="secbar-segs"></span></h2>
   <div class="panel"><canvas id="secbar" class="bar"></canvas></div>
 
   <div id="flows-sec" style="display:none">
@@ -400,20 +404,40 @@ D.summary.forEach((s,i)=>{
   cards.appendChild(el);
 });
 
-// ---- 섹터 막대 (호버 수치)
+// ---- 섹터 막대 (호버 수치, 당일/기간 전환)
 try{
-  const secs=D.sectors;
-  new Chart(document.getElementById('secbar'),{type:'bar',data:{
-    labels:secs.map(s=>s.name+(s.symbol!==s.name?` (${s.symbol})`:'')),
-    datasets:[{data:secs.map(s=>s.chg_pct),
-      backgroundColor:secs.map(s=>s.chg_pct>=0?UP:DOWN),borderRadius:3}]},
-    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},
-        tooltip:{callbacks:{label:c=>sgn(c.parsed.x)+'%'}}},
-      scales:{x:{ticks:{callback:v=>sgn(v)+'%',font:{size:10}},grid:{color:'#eef0f3'}},
-              y:{ticks:{font:{size:11}},grid:{display:false}}},
-      onClick:(e,els)=>{if(els.length){const s=secs[els[0].index];
-        document.getElementById('sec-'+s.symbol)?.scrollIntoView({behavior:'smooth'});}}}});
+  const PERIODS=[['d','당일',s=>s.chg_pct],['m1','1M',s=>s.returns.m1],
+    ['m3','3M',s=>s.returns.m3],['m6','6M',s=>s.returns.m6],
+    ['m12','12M',s=>s.returns.m12]];
+  let barChart=null;
+  function drawBar(key){
+    const per=PERIODS.find(p=>p[0]===key);
+    // 선택한 기간 기준으로 내림차순 정렬해 다시 그린다
+    const secs=[...D.sectors].sort((a,b)=>(per[2](b)??-1e9)-(per[2](a)??-1e9));
+    const vals=secs.map(s=>per[2](s));
+    if(barChart)barChart.destroy();
+    barChart=new Chart(document.getElementById('secbar'),{type:'bar',data:{
+      labels:secs.map(s=>s.name+(s.symbol!==s.name?` (${s.symbol})`:'')),
+      datasets:[{data:vals,
+        backgroundColor:vals.map(v=>(v??0)>=0?UP:DOWN),borderRadius:3,
+        maxBarThickness:26}]},
+      options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},
+          tooltip:{callbacks:{label:c=>`${per[1]} ${sgn(c.parsed.x)}%`}}},
+        scales:{x:{ticks:{callback:v=>sgn(v)+'%',font:{size:10}},grid:{color:'#eef0f3'}},
+                y:{ticks:{font:{size:11}},grid:{display:false}}},
+        onClick:(e,els)=>{if(els.length){const s=secs[els[0].index];
+          document.getElementById('sec-'+s.symbol)?.scrollIntoView({behavior:'smooth'});}}}});
+    document.querySelectorAll('#secbar-segs button').forEach(b=>
+      b.classList.toggle('on',b.dataset.k===key));
+  }
+  const segs=document.getElementById('secbar-segs');
+  PERIODS.forEach(([k,label])=>{
+    const b=document.createElement('button');
+    b.textContent=label;b.dataset.k=k;b.onclick=()=>drawBar(k);
+    segs.appendChild(b);
+  });
+  drawBar('d');
 }catch(e){console.error('secbar:',e);}
 
 // ---- 외국인 수급 (한국판)
