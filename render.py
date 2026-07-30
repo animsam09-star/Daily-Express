@@ -212,6 +212,44 @@ def sector_chart(path, sectors, title="미국증시 섹터별 등락"):
     return path
 
 
+def flow_chart(path, series_map, title="외국인 누적 순매수 2년 (조원)"):
+    """수급 누적 시계열을 겹쳐 그린다. 입력은 {시장명: [(date, 억원)]}.
+
+    가격 차트와 달리 0 을 기준으로 오르내리는 값이라 이동평균 대신
+    0 선을 긋는다. 표시는 조원 단위.
+    """
+    usable = [(lab, s) for lab, s in (series_map or {}).items() if s and len(s) > 30]
+    if not usable:
+        return None
+
+    fig, ax = plt.subplots(figsize=(9, 4.6), dpi=140)
+    palette = [UP, DOWN, "#e6a23c"]
+    for (lab, s), color in zip(usable, palette):
+        dates = [d for d, _ in s]
+        vals = [v / 1e4 for _, v in s]          # 억원 -> 조원
+        ax.plot(dates, vals, lw=1.6, color=color, zorder=4,
+                label=f"{lab} {vals[-1]:+,.1f}조")
+        ax.scatter([dates[-1]], [vals[-1]], s=22, color=color, zorder=5)
+
+    ax.axhline(0, color="#999999", lw=1, ls="--", zorder=2)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT, loc="left", pad=12)
+    ax.grid(True, color=GRID, lw=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(GRID)
+    ax.tick_params(colors=TEXT, labelsize=9)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%y.%m"))
+    ax.legend(loc="upper left", fontsize=9, frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
+
+
 def sector_trend_chart(path, sectors, title="미국증시 섹터별 2개년 상대성과 (2년 전 = 100)"):
     """11개 섹터를 2년 전 100 기준으로 정규화해 한 장에 겹쳐 그린다."""
     usable = [s for s in sectors if len(s.get("series") or []) > 30]

@@ -64,6 +64,12 @@ def build_message(data) -> str:
         parts = [f"{who} {_fmt_flow(f['today'][who])}(YTD {_fmt_flow(f['ytd'][who])})"
                  for who in ("외국인", "기관", "개인")]
         lines.append(f"□ {mkt} 수급: " + ", ".join(parts))
+        # 외국인은 기간 누적을 따로 한 줄 더 — 당일만으로는 추세가 안 보인다
+        w = f.get("windows") or {}
+        cums = [f"{k} {_fmt_flow(w[k]['외국인'])}" for k, _ in kr.FLOW_WINDOWS
+                if w.get(k) is not None]
+        if cums:
+            lines.append("    · 외국인 누적: " + ", ".join(cums))
 
     lines.append("")
     lines.append("<i>지수·종목은 당일 종가, 국내 금리는 전영업일 기준입니다.</i>")
@@ -139,6 +145,13 @@ def build_charts(data, outdir):
                                   f"{title} 2년 추이", d["series"],
                                   value_fmt="{:,.2f}", unit=unit,
                                   change=d["chg"], change_fmt="{:+.0f}", change_unit="bp"))
+
+    flows = data.get("flows") or {}
+    foreign = {mkt: (flows.get(mkt) or {}).get("foreign_cum")
+               for mkt in ("코스피", "코스닥")}
+    foreign = {k: v for k, v in foreign.items() if v}
+    if foreign:
+        add(render.flow_chart(os.path.join(outdir, "foreign_flows.png"), foreign))
 
     secs = data.get("sectors") or []
     holdings = data.get("holdings") or {}
