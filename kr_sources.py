@@ -159,10 +159,12 @@ def fetch_sectors_and_holdings():
             q = quotes.get(_ys(c)) or {}
             if q.get("price") is None:
                 continue
+            r = rets.get(_ys(c)) or {}
             rows.append({"ticker": c, "name": names.get(c, c),
                          "price": q.get("price"), "market_cap": q.get("market_cap"),
                          "chg_pct": q.get("chg_pct"),
-                         "returns": rets.get(_ys(c), {})})
+                         "returns": r.get("returns", {}),
+                         "series": r.get("series", [])})
         if not rows:
             continue
         for r in rows:
@@ -223,12 +225,15 @@ def attach_benchmarks(sectors, holdings, indices):
 
 
 def _fetch_returns(symbols):
+    """{sym: {"returns": {...}, "series": [...]}}. 시계열은 웹 대시보드
+    종목 상세 차트용 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
     def one(sym):
         try:
             s = yahoo_series(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {}
-        return sym, {k: _return_at(s, d) for k, d in RETURN_WINDOWS}
+            return sym, {"returns": {}, "series": []}
+        return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
+                     "series": s}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         return dict(ex.map(one, symbols))
@@ -243,8 +248,11 @@ def sector_series(theme: str, members) -> list:
     """
     rows = members if isinstance(members, list) else (members.get(theme) or [])
     series_list = []
+    # _fetch_returns 가 이미 받아둔 시계열을 재사용하고, 없을 때만 다시 받는다
     with ThreadPoolExecutor(max_workers=5) as ex:
-        for r, s in zip(rows, ex.map(lambda x: _safe_series(_ys(x["ticker"])), rows)):
+        fetched = ex.map(
+            lambda x: x.get("series") or _safe_series(_ys(x["ticker"])), rows)
+        for r, s in zip(rows, fetched):
             if s:
                 series_list.append((r.get("weight") or r.get("market_cap") or 1, s))
     if not series_list:

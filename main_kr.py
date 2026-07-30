@@ -18,6 +18,7 @@ import news
 import notify
 import render
 import sources
+import webgen
 
 CUR = "원"
 PX = "{:,.0f}원"
@@ -164,6 +165,7 @@ def build_charts(data, outdir):
         series = kr.sector_series(s["symbol"], s.get("members") or holdings.get(s["symbol"]))
         if not series:
             continue
+        s["web_series"] = series               # 웹 대시보드가 재사용한다
         cap = render.holdings_caption(s, holdings.get(s["symbol"]), notes,
                                       cur=CUR, px=PX,
                                       bench=(idx.get("코스피") or {}).get("returns"))
@@ -193,6 +195,15 @@ def main() -> int:
     print("[2/3] 차트 생성...")
     charts = build_charts(data, args.outdir)
     print(f"    {len(charts)}장: " + ", ".join(os.path.basename(c["path"]) for c in charts))
+
+    # 웹 대시보드(Cloudflare Pages 배포용). 섹터 시계열(web_series)을
+    # build_charts 가 계산해 두므로 반드시 그 뒤에 만든다. 실패해도 발송은 계속.
+    try:
+        webgen.build_kr(data, os.path.join("site", "kr.html"))
+        webgen.write_index("site")
+        print("    웹 대시보드: site/kr.html")
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 웹 대시보드 생성 실패(발송은 계속): {type(e).__name__}: {e}")
 
     text = build_message(data)
     print("\n" + "-" * 60 + "\n" + text + "\n" + "-" * 60 + "\n")

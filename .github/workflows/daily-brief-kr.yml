@@ -25,6 +25,9 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # 웹 대시보드 배포용 (없으면 배포만 생략)
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # 지연 도착한 schedule 실행이, 정시 dispatch 가 이미 보낸 브리핑을
       # 또 보내지 않게 한다. 하루 1회 발송이므로 6시간 창이면 충분하다.
@@ -75,6 +78,46 @@ jobs:
       - name: 브리핑 발송
         if: steps.guard.outputs.skip != 'true'
         run: python main_kr.py
+
+      # ---- 웹 대시보드 (Cloudflare Pages) ---- daily-brief.yml 과 같은 구조
+      - name: 웹 대시보드 아티팩트 보관
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-kr
+          path: site/kr.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 상대편(미국) 대시보드 회수
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief.yml \
+            -s success -L 1 --json databaseId -q '.[0].databaseId' || true)
+          if [ -n "$RUN" ]; then
+            gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-us -D site/ || true
+          fi
+
+      - name: Cloudflare Pages 프로젝트 준비
+        if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create daily-express --production-branch=main
+
+      - name: Cloudflare Pages 배포
+        if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name=daily-express --branch=main
 
       - name: 실패 시 차트 보관(원인 확인용)
         if: failure()

@@ -151,6 +151,34 @@ claude setup-token
 
 ---
 
+## 웹 대시보드 (Cloudflare Pages)
+
+텔레그램으로 보내는 내용을 웹에서도 본다. 매 발송 때 `site/us.html`(미국) ·
+`site/kr.html`(한국)을 만들어 Cloudflare Pages 프로젝트 `daily-express` 에
+배포한다. 텔레그램의 고정 이미지와 달리:
+
+- **차트에 마우스를 올리면 수치**가 툴팁으로 나온다 (Chart.js)
+- **종목 행을 클릭하면** 지수 차트와 같은 형식의 상세 모달 — 2년 추이 +
+  20/60/120일 이동평균 + 1M/3M/6M/12M 수익률 + 주가·시총·메모
+- 요약 카드(지수·금리·환율·회사채)도 클릭하면 2년 차트
+- 한국판에는 외국인 수급(당일·3M/6M/12M/24M 누적 + 2년 누적 차트) 포함
+
+미국 실행과 한국 실행이 서로 다른 시각에 돌므로, 각 실행은 자기 페이지만
+새로 만들고 반대 시장 페이지는 **최근 성공 실행의 아티팩트에서 회수**해
+둘을 함께 배포한다(저장소에 생성물을 커밋하지 않는다).
+
+필요한 시크릿 — US-Market-Screener 와 같은 값을 쓰면 된다:
+
+| 이름 | 용도 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Pages 편집 권한 토큰 |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 계정 ID |
+
+둘 다 없으면 배포만 조용히 생략된다(아티팩트 `site-us`/`site-kr` 로는 받을 수 있다).
+주소는 `https://daily-express.pages.dev`. **기본 상태는 공개**이므로 비공개로
+쓰려면 Cloudflare 대시보드에서 해당 Pages 프로젝트에 Access 정책(이메일 인증)을
+걸어준다 — US-Market-Screener 와 같은 방식.
+
 ## 실행 시각
 
 ```

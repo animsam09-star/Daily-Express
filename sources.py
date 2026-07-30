@@ -292,21 +292,26 @@ def _return_at(series, days_back: int):
 
 
 def fetch_returns(tickers):
-    """종목별 1개월·6개월·12개월 등락률."""
+    """종목별 1개월·6개월·12개월 등락률 + 2개년 시계열.
+
+    시계열은 어차피 수익률 계산에 받아야 해서, 웹 대시보드(종목 상세 차트)용으로
+    버리지 않고 함께 돌려준다. 반환: {sym: {"returns": {...}, "series": [...]}}.
+    """
     def one(sym):
         try:
             # 1y 로 받으면 365일 전 시점이 구간 밖이라 12M 수익률이 비므로 2y 로 받는다
             s = yahoo_series(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {}
-        return sym, {k: _return_at(s, d) for k, d in RETURN_WINDOWS}
+            return sym, {"returns": {}, "series": []}
+        return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
+                     "series": s}
 
     with ThreadPoolExecutor(max_workers=12) as ex:
         return dict(ex.map(one, tickers))
 
 
 def fetch_sector_holdings(sector_symbols):
-    """섹터별 상위 5개 종목 + 각 종목의 주가·시가총액·당일 등락률.
+    """섹터별 상위 5개 종목 + 각 종목의 주가·시가총액·당일 등락률·2개년 시계열.
 
     상위 5개 선정은 ETF 내 비중 순인데, 비중은 시가총액 가중이라
     사실상 섹터 내 시가총액 상위와 같다. 비중 자체는 표시하지 않는다.
@@ -329,7 +334,9 @@ def fetch_sector_holdings(sector_symbols):
     rets = fetch_returns(kept)
     for hs in holdings.values():
         for h in hs:
-            h["returns"] = rets.get(h["ticker"], {})
+            r = rets.get(h["ticker"]) or {}
+            h["returns"] = r.get("returns", {})
+            h["series"] = r.get("series", [])
     return holdings
 
 
