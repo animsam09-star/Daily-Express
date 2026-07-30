@@ -1,5 +1,9 @@
 name: 마켓 브리핑 발송
 
+# 정시 발송은 외부 스케줄러(Claude Code Routine)가 workflow_dispatch 로
+# 06:05 KST 정각에 쏘는 것이 1차 경로. 아래 schedule 은 그 백업이다 —
+# GitHub cron 은 정시 보장이 없어 실측 60~70분씩 지연됐다(06:05 목표가
+# 07:15 시작). dispatch 가 이미 발송했으면 중복 발송 가드가 생략시킨다.
 on:
   schedule:
     # GitHub Actions cron 은 UTC. 21:05 UTC = 06:05 KST.
@@ -10,7 +14,11 @@ on:
     # 겨울에는 장중 값이 나간다. 06:05 면 겨울에도 마감 후 5분이고
     # 06:30 까지 25분이 남아 Actions 지연을 흡수할 수 있다.
     - cron: "5 21 * * 0-4"
-  workflow_dispatch:        # 수동 실행(테스트용)
+  workflow_dispatch:        # 정시 발송(Routine) + 수동 실행(테스트용)
+
+permissions:
+  contents: read
+  actions: read             # 중복 발송 가드가 최근 run 목록을 조회한다
 
 jobs:
   send:
@@ -26,15 +34,42 @@ jobs:
       # 시크릿 이름을 어느 쪽으로 등록했든 잡히도록 둘 다 넘긴다
       FINNHUB_API: ${{ secrets.FINNHUB_API }}
       FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+      # 웹 대시보드 배포용 (없으면 배포만 생략)
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
+      # 지연 도착한 schedule 실행이, 정시 dispatch 가 이미 보낸 브리핑을
+      # 또 보내지 않게 한다. 하루 1회 발송이므로 6시간 창이면 충분하다.
+      # 조회 실패 시에는 발송하는 쪽으로 폴백(미발송보다 중복이 낫다).
+      - name: 중복 발송 가드 (schedule 전용)
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CUTOFF=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S+00:00')
+          DONE=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief.yml \
+            --created ">=$CUTOFF" --json event,status,conclusion \
+            -q '[.[] | select(.event == "workflow_dispatch")
+                     | select(.conclusion == "success" or .status == "in_progress" or .status == "queued")] | length' || echo 0)
+          if [ "${DONE:-0}" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "이미 정시 dispatch 로 발송됨 — 지연 스케줄 실행 생략"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
           cache: pip
 
       - name: 한글 폰트 설치
+        if: steps.guard.outputs.skip != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq fonts-nanum
@@ -42,18 +77,65 @@ jobs:
           rm -rf ~/.cache/matplotlib
 
       - name: 패키지 설치
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       # 구독(Pro/Max) 토큰으로 뉴스 요약을 돌릴 때만 필요하다.
       # API 키를 쓰거나 요약을 안 쓰면 이 단계는 건너뛴다.
       - name: Claude Code 설치
-        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        if: steps.guard.outputs.skip != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         run: npm install -g @anthropic-ai/claude-code
 
       # 시크릿은 job 단위 env 로 이미 주입돼 있다.
       # 요약용 인증이 하나도 없으면 요약만 빠지고 나머지는 그대로 발송된다.
       - name: 브리핑 발송
+        if: steps.guard.outputs.skip != 'true'
         run: python main.py
+
+      # ---- 웹 대시보드 (Cloudflare Pages) ----
+      # 각 실행은 자기 시장 페이지만 새로 만들므로, 반대 시장 페이지를
+      # 최근 성공 실행의 아티팩트에서 회수해 함께 배포한다. 없으면(첫 실행,
+      # 만료) 이번 시장 페이지만 올라가고 다음 반대편 실행 때 채워진다.
+      - name: 웹 대시보드 아티팩트 보관
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-us
+          path: site/us.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 상대편(한국) 대시보드 회수
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
+            -s success -L 1 --json databaseId -q '.[0].databaseId' || true)
+          if [ -n "$RUN" ]; then
+            gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-kr -D site/ || true
+          fi
+
+      # Cloudflare 가 대시보드에서 Pages 생성 메뉴를 없앴다(Workers 로 통합 중).
+      # CLI 로 만든다. 이미 있으면 실패하는데 그건 정상이므로 무시한다.
+      - name: Cloudflare Pages 프로젝트 준비
+        if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages project create daily-express --production-branch=main
+
+      - name: Cloudflare Pages 배포
+        if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site --project-name=daily-express --branch=main
 
       - name: 실패 시 차트 보관(원인 확인용)
         if: failure()

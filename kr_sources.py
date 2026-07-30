@@ -159,10 +159,12 @@ def fetch_sectors_and_holdings():
             q = quotes.get(_ys(c)) or {}
             if q.get("price") is None:
                 continue
+            r = rets.get(_ys(c)) or {}
             rows.append({"ticker": c, "name": names.get(c, c),
                          "price": q.get("price"), "market_cap": q.get("market_cap"),
                          "chg_pct": q.get("chg_pct"),
-                         "returns": rets.get(_ys(c), {})})
+                         "returns": r.get("returns", {}),
+                         "series": r.get("series", [])})
         if not rows:
             continue
         for r in rows:
@@ -223,12 +225,15 @@ def attach_benchmarks(sectors, holdings, indices):
 
 
 def _fetch_returns(symbols):
+    """{sym: {"returns": {...}, "series": [...]}}. 시계열은 웹 대시보드
+    종목 상세 차트용 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
     def one(sym):
         try:
             s = yahoo_series(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {}
-        return sym, {k: _return_at(s, d) for k, d in RETURN_WINDOWS}
+            return sym, {"returns": {}, "series": []}
+        return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
+                     "series": s}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         return dict(ex.map(one, symbols))
@@ -243,8 +248,11 @@ def sector_series(theme: str, members) -> list:
     """
     rows = members if isinstance(members, list) else (members.get(theme) or [])
     series_list = []
+    # _fetch_returns 가 이미 받아둔 시계열을 재사용하고, 없을 때만 다시 받는다
     with ThreadPoolExecutor(max_workers=5) as ex:
-        for r, s in zip(rows, ex.map(lambda x: _safe_series(_ys(x["ticker"])), rows)):
+        fetched = ex.map(
+            lambda x: x.get("series") or _safe_series(_ys(x["ticker"])), rows)
+        for r, s in zip(rows, fetched):
             if s:
                 series_list.append((r.get("weight") or r.get("market_cap") or 1, s))
     if not series_list:
@@ -311,18 +319,25 @@ def _flow_page(sosok: str, bizdate: str):
     return out
 
 
+# 시황 문장에 쓰는 기간 누적 창. 달력일 기준(3M=91일 등)으로 자른다.
+FLOW_WINDOWS = (("3M", 91), ("6M", 182), ("12M", 365), ("24M", 730))
+
+
 def fetch_flows():
-    """당일과 연초 이후 누적 순매수(억원). 개인·외국인·기관.
+    """당일·YTD·기간별(3M/6M/12M/24M) 누적 순매수(억원)와 외국인 24개월
+    누적 시계열. 개인·외국인·기관.
 
     네이버는 한 페이지에 약 20 영업일만 보여주므로 bizdate 를 거슬러 올리며
-    연초까지 모은다. 시황 문장에 '외국인 -4.9조(YTD -12.3조)' 형태로 쓴다.
+    24개월 전까지 모은다. 시황 문장의 기간 누적과 외국인 누적 차트가
+    모두 이 데이터에서 나온다.
     """
     today = dt.date.today()
+    start = today - dt.timedelta(days=FLOW_WINDOWS[-1][1])
     jan1 = dt.date(today.year, 1, 1)
     out = {}
     for sosok, label in FLOW_MARKETS:
         seen, cursor = {}, today
-        for _ in range(20):                     # 20페이지면 400 영업일, 연초까지 충분
+        for _ in range(40):                     # 40페이지면 800 영업일, 24개월이면 충분
             try:
                 page = _flow_page(sosok, cursor.strftime("%Y%m%d"))
             except Exception as e:              # noqa: BLE001
@@ -333,23 +348,46 @@ def fetch_flows():
             for d, vals in page:
                 seen.setdefault(d, vals)
             oldest = min(d for d, _ in page)
-            if oldest <= jan1:
+            if oldest <= start:
                 break
             cursor = oldest - dt.timedelta(days=1)
 
         if not seen:
             continue
         latest = max(seen)
-        ytd = [0.0, 0.0, 0.0]
-        for d, vals in seen.items():
-            if d >= jan1:
-                for i in range(3):
-                    ytd[i] += vals[i]
+        coverage = min(seen)
         keys = ("개인", "외국인", "기관")
+
+        def cum_since(cut):
+            acc = [0.0, 0.0, 0.0]
+            for d, vals in seen.items():
+                if d >= cut:
+                    for i in range(3):
+                        acc[i] += vals[i]
+            return dict(zip(keys, acc))
+
+        # 데이터가 창의 시작까지 닿지 않으면 그 창은 None — 부분 누적을
+        # 온전한 누적처럼 보여주는 것보다 빼는 편이 낫다. (7일 여유는 휴장 감안)
+        windows = {}
+        for k, days in FLOW_WINDOWS:
+            cut = latest - dt.timedelta(days=days)
+            windows[k] = (cum_since(cut)
+                          if coverage <= cut + dt.timedelta(days=7) else None)
+
+        # 외국인 24개월 누적 시계열(차트용). 오래된 날부터 누적해 나간다.
+        foreign_cum, acc = [], 0.0
+        for d in sorted(seen):
+            if d < start:
+                continue
+            acc += seen[d][1]                   # [개인, 외국인, 기관] 중 외국인
+            foreign_cum.append((d, acc))
+
         out[label] = {
             "date": latest,
             "today": dict(zip(keys, seen[latest])),
-            "ytd": dict(zip(keys, ytd)),
+            "ytd": cum_since(jan1),
+            "windows": windows,
+            "foreign_cum": foreign_cum,
         }
     return out
 

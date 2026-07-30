@@ -18,6 +18,7 @@ import news
 import notify
 import render
 import sources
+import webgen
 
 CUR = "원"
 PX = "{:,.0f}원"
@@ -64,6 +65,12 @@ def build_message(data) -> str:
         parts = [f"{who} {_fmt_flow(f['today'][who])}(YTD {_fmt_flow(f['ytd'][who])})"
                  for who in ("외국인", "기관", "개인")]
         lines.append(f"□ {mkt} 수급: " + ", ".join(parts))
+        # 외국인은 기간 누적을 따로 한 줄 더 — 당일만으로는 추세가 안 보인다
+        w = f.get("windows") or {}
+        cums = [f"{k} {_fmt_flow(w[k]['외국인'])}" for k, _ in kr.FLOW_WINDOWS
+                if w.get(k) is not None]
+        if cums:
+            lines.append("    · 외국인 누적: " + ", ".join(cums))
 
     lines.append("")
     lines.append("<i>지수·종목은 당일 종가, 국내 금리는 전영업일 기준입니다.</i>")
@@ -140,6 +147,13 @@ def build_charts(data, outdir):
                                   value_fmt="{:,.2f}", unit=unit,
                                   change=d["chg"], change_fmt="{:+.0f}", change_unit="bp"))
 
+    flows = data.get("flows") or {}
+    foreign = {mkt: (flows.get(mkt) or {}).get("foreign_cum")
+               for mkt in ("코스피", "코스닥")}
+    foreign = {k: v for k, v in foreign.items() if v}
+    if foreign:
+        add(render.flow_chart(os.path.join(outdir, "foreign_flows.png"), foreign))
+
     secs = data.get("sectors") or []
     holdings = data.get("holdings") or {}
     notes = data.get("notes") or {}
@@ -151,6 +165,7 @@ def build_charts(data, outdir):
         series = kr.sector_series(s["symbol"], s.get("members") or holdings.get(s["symbol"]))
         if not series:
             continue
+        s["web_series"] = series               # 웹 대시보드가 재사용한다
         cap = render.holdings_caption(s, holdings.get(s["symbol"]), notes,
                                       cur=CUR, px=PX,
                                       bench=(idx.get("코스피") or {}).get("returns"))
@@ -180,6 +195,15 @@ def main() -> int:
     print("[2/3] 차트 생성...")
     charts = build_charts(data, args.outdir)
     print(f"    {len(charts)}장: " + ", ".join(os.path.basename(c["path"]) for c in charts))
+
+    # 웹 대시보드(Cloudflare Pages 배포용). 섹터 시계열(web_series)을
+    # build_charts 가 계산해 두므로 반드시 그 뒤에 만든다. 실패해도 발송은 계속.
+    try:
+        webgen.build_kr(data, os.path.join("site", "kr.html"))
+        webgen.write_index("site")
+        print("    웹 대시보드: site/kr.html")
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 웹 대시보드 생성 실패(발송은 계속): {type(e).__name__}: {e}")
 
     text = build_message(data)
     print("\n" + "-" * 60 + "\n" + text + "\n" + "-" * 60 + "\n")

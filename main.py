@@ -16,6 +16,7 @@ import news
 import notify
 import render
 import sources
+import webgen
 
 
 def main() -> int:
@@ -31,13 +32,24 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
 
-    # 급등락 종목의 관련 뉴스 → Claude 한 줄 요약. 실패해도 발송은 계속된다.
-    # (sources 를 import 하므로 순환을 피해 여기서 붙인다)
-    data["notes"] = news.build(data.get("holdings") or {})
+    # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
+    # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)
+    data["notes"], data["sector_notes"] = news.build(
+        data.get("holdings") or {},
+        sectors=data.get("sectors"),
+        macro=news.macro_context(data))
 
     print("[2/3] 차트 생성...")
     charts = render.build_all(data, args.outdir)
     print(f"    {len(charts)}장: " + ", ".join(os.path.basename(c["path"]) for c in charts))
+
+    # 웹 대시보드(Cloudflare Pages 배포용). 실패해도 발송은 계속된다.
+    try:
+        webgen.build_us(data, os.path.join("site", "us.html"))
+        webgen.write_index("site")
+        print("    웹 대시보드: site/us.html")
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 웹 대시보드 생성 실패(발송은 계속): {type(e).__name__}: {e}")
 
     text = notify.build_message(data)
     print("\n" + "-" * 60 + "\n" + text + "\n" + "-" * 60 + "\n")
