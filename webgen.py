@@ -259,73 +259,95 @@ _TEMPLATE = r"""<!doctype html>
 <title>마켓 브리핑</title>
 __CHARTJS__
 <style>
-:root{--up:#d32f2f;--down:#1565c0;--text:#1a1a1a;--sub:#667085;--line:#e6e8ec}
+/* 검증된 기본 팔레트(dataviz) 기반. 상승/하락은 국내 관행(빨강/파랑)을
+   diverging pair 로 쓴다 — 마크용과 텍스트용 단계를 나눠 대비를 확보. */
+:root{
+  --up:#e34948;--down:#2a78d6;          /* 마크(막대·점) */
+  --up-t:#d03b3b;--down-t:#1c5cab;      /* 텍스트(등락 표기) */
+  --plane:#f9f9f7;--surface:#fcfcfb;
+  --ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
+  --grid:#e1e0d9;--hairline:rgba(11,11,11,.10)}
 *{box-sizing:border-box}
-body{font-family:system-ui,'Malgun Gothic','Apple SD Gothic Neo',sans-serif;
-     margin:0;background:#f6f7f9;color:var(--text)}
-.wrap{max-width:1080px;margin:0 auto;padding:20px 16px 60px}
-header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:6px 0 18px}
-header h1{font-size:22px;margin:0}
-header .upd{color:var(--sub);font-size:13px}
-header a{margin-left:auto;font-size:14px;color:var(--down);text-decoration:none}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:10px}
-.card{background:#fff;border-radius:12px;padding:12px 14px;cursor:pointer;
-      box-shadow:0 1px 3px rgba(0,0,0,.07);transition:box-shadow .15s}
-.card:hover{box-shadow:0 3px 10px rgba(0,0,0,.14)}
-.card .lb{font-size:12.5px;color:var(--sub)}
-.card .v{font-size:19px;font-weight:800;margin-top:2px}
-.card .c{font-size:13px;font-weight:700;margin-top:1px}
-.up{color:var(--up)}.down{color:var(--down)}
-h2{font-size:16px;margin:28px 0 10px}
-.panel{background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
-.secgrid{display:grid;grid-template-columns:1fr;gap:14px}
+body{margin:0;background:var(--plane);color:var(--ink);font-size:14px;line-height:1.45;
+  font-family:system-ui,-apple-system,'Segoe UI','Malgun Gothic','Apple SD Gothic Neo',sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:0 20px 72px}
+.topbar{position:sticky;top:0;z-index:20;background:rgba(249,249,247,.92);
+  backdrop-filter:blur(6px);border-bottom:1px solid var(--hairline)}
+.topbar-in{max-width:1100px;margin:0 auto;padding:13px 20px;
+  display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.topbar h1{font-size:16.5px;margin:0;letter-spacing:-.01em}
+.topbar .upd{color:var(--muted);font-size:12px}
+.topbar a{margin-left:auto;font-size:12.5px;color:var(--ink2);text-decoration:none;
+  padding:4px 12px;border:1px solid var(--hairline);border-radius:999px;
+  background:var(--surface);transition:border-color .15s}
+.topbar a:hover{border-color:rgba(11,11,11,.3)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));
+  gap:10px;margin-top:20px}
+.card{background:var(--surface);border:1px solid var(--hairline);border-radius:10px;
+  padding:12px 14px 10px;cursor:pointer;transition:border-color .15s}
+.card:hover{border-color:rgba(11,11,11,.3)}
+.card .lb{font-size:12px;color:var(--ink2)}
+.card .v{font-size:19px;font-weight:750;margin-top:3px;letter-spacing:-.01em}
+.card .c{font-size:12.5px;font-weight:650;margin-top:1px}
+.card svg{display:block;width:100%;height:30px;margin-top:8px}
+.up{color:var(--up-t)}.down{color:var(--down-t)}
+h2{font-size:12.5px;font-weight:700;color:var(--ink2);letter-spacing:.04em;
+   margin:34px 0 10px}
+h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
+.panel{background:var(--surface);border:1px solid var(--hairline);
+  border-radius:12px;padding:16px}
+.secgrid{display:grid;grid-template-columns:1fr;gap:12px}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.sechead b{font-size:15px}
-.sechead .spans{color:var(--sub);font-size:12px;font-variant-numeric:tabular-nums}
-.secnote{font-size:13px;color:#3b4252;background:#f2f4f7;border-radius:8px;
-         padding:8px 10px;margin:8px 0 2px}
-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13.5px}
-th{color:var(--sub);font-weight:600;text-align:right;padding:6px 8px;
-   border-bottom:1px solid var(--line);white-space:nowrap}
+.sechead b{font-size:14.5px}
+.sechead .spans{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+.secnote{font-size:13px;color:var(--ink2);background:#f4f3ef;border-radius:8px;
+         padding:8px 11px;margin:9px 0 2px}
+table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+th{color:var(--muted);font-weight:600;text-align:right;padding:6px 8px;
+   font-size:11.5px;border-bottom:1px solid var(--grid);white-space:nowrap}
 th:first-child{text-align:left}
-td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);
+td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--grid);
    white-space:nowrap;font-variant-numeric:tabular-nums}
-td:first-child{text-align:left;font-weight:700}
-tr.stk{cursor:pointer}tr.stk:hover{background:#f6f8fb}
-.note-row td{font-weight:400;text-align:left;color:#3b4252;font-size:12.5px;
-             padding-top:0;border-bottom:1px solid var(--line)}
-.note-row a{color:var(--down)}
-canvas.mini{width:100%!important;height:210px!important}
+td:first-child{text-align:left;font-weight:650}
+tr:last-child td{border-bottom:0}
+tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
+.note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
+             padding-top:0}
+.note-row a{color:var(--down-t)}
+canvas.mini{width:100%!important;height:200px!important}
 canvas.bar{width:100%!important;height:340px!important}
-dialog{border:0;border-radius:14px;padding:0;max-width:860px;width:94vw;
-       box-shadow:0 12px 40px rgba(0,0,0,.25)}
-dialog::backdrop{background:rgba(15,23,42,.45)}
-.dlg{padding:18px}
+dialog{border:1px solid var(--hairline);border-radius:14px;padding:0;
+  max-width:860px;width:94vw;background:var(--surface);
+  box-shadow:0 16px 48px rgba(11,11,11,.22)}
+dialog::backdrop{background:rgba(11,11,11,.38)}
+.dlg{padding:18px 20px 20px}
 .dlg .head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.dlg .head b{font-size:17px}
-.dlg .meta{color:var(--sub);font-size:13px}
-.dlg .close{margin-left:auto;border:0;background:#eef0f4;border-radius:8px;
-            padding:6px 12px;cursor:pointer;font-size:13px}
-.dlg .rets{display:flex;gap:14px;margin:8px 0 4px;font-size:13px;
+.dlg .head b{font-size:16.5px;letter-spacing:-.01em}
+.dlg .meta{color:var(--ink2);font-size:12.5px}
+.dlg .close{margin-left:auto;border:1px solid var(--hairline);background:var(--surface);
+  border-radius:999px;padding:4px 13px;cursor:pointer;font-size:12.5px;color:var(--ink2)}
+.dlg .close:hover{border-color:rgba(11,11,11,.3)}
+.dlg .rets{display:flex;gap:16px;margin:10px 0 6px;font-size:12.5px;
            font-variant-numeric:tabular-nums}
-.dlg .rets span{color:var(--sub)}
+.dlg .rets span{color:var(--muted)}
 canvas.big{width:100%!important;height:380px!important}
-.flowgrid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:8px;font-size:13.5px}
+.flowgrid{display:grid;grid-template-columns:1fr;gap:8px;margin:2px 0 12px;font-size:13px}
 .flowline{display:flex;gap:16px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
-.flowline .t{color:var(--sub)}
-footer{margin-top:34px;color:var(--sub);font-size:12px}
+.flowline .t{color:var(--muted)}
+footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
 .segs{margin-left:8px;display:inline-flex;gap:4px;vertical-align:middle}
-.segs button{border:1px solid var(--line);background:#fff;border-radius:8px;
-  padding:3px 10px;font-size:12px;cursor:pointer;color:var(--sub)}
-.segs button.on{background:#1a1a1a;border-color:#1a1a1a;color:#fff;font-weight:700}
+.segs button{border:1px solid var(--hairline);background:var(--surface);
+  border-radius:999px;padding:3px 11px;font-size:11.5px;cursor:pointer;
+  color:var(--ink2);transition:border-color .15s}
+.segs button:hover{border-color:rgba(11,11,11,.3)}
+.segs button.on{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:700}
 @media(min-width:760px){.secgrid{grid-template-columns:1fr 1fr}}
 </style></head>
 <body>
+<div class="topbar"><div class="topbar-in">
+  <h1 id="title"></h1><span class="upd" id="updated"></span><a id="other"></a>
+</div></div>
 <div class="wrap">
-  <header>
-    <h1 id="title"></h1><span class="upd" id="updated"></span><a id="other"></a>
-  </header>
-
   <div class="cards" id="cards"></div>
 
   <h2>섹터별 등락 <span class="segs" id="secbar-segs"></span></h2>
@@ -339,8 +361,7 @@ footer{margin-top:34px;color:var(--sub);font-size:12px}
     </div>
   </div>
 
-  <h2>섹터 상세 <span style="color:var(--sub);font-size:12.5px;font-weight:400">
-    — 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
+  <h2>섹터 상세 <span class="hint">— 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
   <div class="secgrid" id="sectors"></div>
 
   <footer>미국 지표는 전일 종가, 국내 금리는 전영업일 기준. 종목 메모는 수집된
@@ -357,7 +378,13 @@ footer{margin-top:34px;color:var(--sub);font-size:12px}
 <script id="data" type="application/json">__DATA__</script>
 <script>
 const D = JSON.parse(document.getElementById('data').textContent);
-const UP='#d32f2f', DOWN='#1565c0', MA=[[20,'#e6a23c'],[60,'#67c23a'],[120,'#909399']];
+const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
+const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7']];  // 검증된 categorical 슬롯
+if(typeof Chart!=='undefined'){
+  Chart.defaults.font.family=getComputedStyle(document.body).fontFamily;
+  Chart.defaults.color='#898781';                 // 축·눈금은 muted 잉크
+  Chart.defaults.borderColor='#e1e0d9';           // 격자는 hairline
+}
 const fmt=(v,d=2)=>v==null?'–':v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const sgn=v=>v==null?'–':(v>=0?'+':'')+fmt(v,Math.abs(v)>=100?0:2);
 const cls=v=>v==null?'':(v>=0?'up':'down');
@@ -388,17 +415,29 @@ function lineChart(canvas, series, {label='종가', withMA=true, unit='', color=
     plugins:{legend:{display:withMA,labels:{boxWidth:14,font:{size:10}}},
       tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)+unit}}},
     scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
-            y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#eef0f3'}}}}});
+            y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'}}}}});
  }catch(e){console.error('lineChart:',e);return null;}
 }
 
-// ---- 요약 카드 (클릭 → 2년 차트 모달)
+// ---- 요약 카드 (스파크라인 + 클릭 → 2년 차트 모달)
+function spark(series, chg){
+  const pts=(series||[]).slice(-90);              // 최근 약 3개월
+  if(pts.length<2) return '';
+  const vs=pts.map(p=>p[1]), mn=Math.min(...vs), mx=Math.max(...vs), rg=(mx-mn)||1;
+  const W=100, H=30, X=i=>(i/(vs.length-1)*W), Y=v=>(H-2-(v-mn)/rg*(H-4));
+  const d=vs.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+  const dot=`<circle cx="${X(vs.length-1).toFixed(1)}" cy="${Y(vs[vs.length-1]).toFixed(1)}"
+    r="2.4" fill="${(chg??0)>=0?UP:DOWN}"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${d}" fill="none" stroke="#898781" stroke-width="1.3"
+      vector-effect="non-scaling-stroke"/>${dot}</svg>`;
+}
 const cards=document.getElementById('cards');
 D.summary.forEach((s,i)=>{
   const el=document.createElement('div');el.className='card';
   el.innerHTML=`<div class="lb">${s.label}</div>
     <div class="v">${fmt(s.value, s.unit==='%'?(s.label.includes('국채')?3:2):s.unit==='bp'?1:s.unit==='원'?1:2)}${s.unit}</div>
-    <div class="c ${cls(s.chg)}">${sgn(s.chg)}${s.chg_unit}</div>`;
+    <div class="c ${cls(s.chg)}">${sgn(s.chg)}${s.chg_unit}</div>${spark(s.series,s.chg)}`;
   if(s.series.length) el.onclick=()=>openDlg(s.label,
     `${fmt(s.value)}${s.unit} (${sgn(s.chg)}${s.chg_unit})`, null, s.series, s.unit);
   cards.appendChild(el);
@@ -424,7 +463,7 @@ try{
       options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
         plugins:{legend:{display:false},
           tooltip:{callbacks:{label:c=>`${per[1]} ${sgn(c.parsed.x)}%`}}},
-        scales:{x:{ticks:{callback:v=>sgn(v)+'%',font:{size:10}},grid:{color:'#eef0f3'}},
+        scales:{x:{ticks:{callback:v=>sgn(v)+'%',font:{size:10}},grid:{color:'#e1e0d9'}},
                 y:{ticks:{font:{size:11}},grid:{display:false}}},
         onClick:(e,els)=>{if(els.length){const s=secs[els[0].index];
           document.getElementById('sec-'+s.symbol)?.scrollIntoView({behavior:'smooth'});}}}});
@@ -456,7 +495,7 @@ if(D.flows){
   // 두 시장의 거래일이 미묘하게 달라 날짜 합집합에 맞춰 정렬한다
   const allDates=[...new Set(Object.values(D.flows)
     .flatMap(f=>f.foreign_cum.map(p=>p[0])))].sort();
-  const dsets=[],colors=[UP,DOWN];let li=0;
+  const dsets=[],colors=['#2a78d6','#eb6834'];let li=0;  // 시장별 고정 색(엔티티), 등락색 재사용 금지
   for(const [mkt,f] of Object.entries(D.flows)){
     if(!f.foreign_cum.length)continue;
     const m=new Map(f.foreign_cum);
@@ -474,7 +513,7 @@ if(D.flows){
         title:{display:true,text:'외국인 누적 순매수 2년 (조원)',align:'start',
                font:{size:13,weight:'bold'},color:'#1a1a1a'}},
       scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
-              y:{ticks:{font:{size:10}},grid:{color:'#eef0f3'}}}}});
+              y:{ticks:{font:{size:10}},grid:{color:'#e1e0d9'}}}}});
   }catch(e){console.error('flowchart:',e);}
 }
 
@@ -503,7 +542,7 @@ D.sectors.forEach(s=>{
     <tbody>${rows}</tbody></table>`;
   secWrap.appendChild(div);
   if(s.series.length) lineChart(document.getElementById('c-'+s.symbol), s.series,
-    {withMA:false, color:s.chg_pct>=0?UP:DOWN, label:s.name});
+    {withMA:false, color:'#0b0b0b', label:s.name});
   div.querySelectorAll('tr.stk').forEach(tr=>tr.onclick=()=>{
     const h=s.holdings.find(x=>x.ticker===tr.dataset.t);
     if(!h)return;
