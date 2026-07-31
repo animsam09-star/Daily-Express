@@ -102,14 +102,18 @@ def _post(token, method, files=None, **kw):
     raise RuntimeError(last or f"{method} 실패")
 
 
-CAPTION_MAX = 1024      # 텔레그램 미디어 캡션 상한
+# 캡션 길이는 여기서 자르지 않는다. 텔레그램 상한(1024자)은 태그를 뺀
+# '보이는 글자수' 기준이고 render.holdings_caption 이 그 기준으로 1000자
+# 이내를 보장한다. 태그 포함 원시 문자열을 1024자에서 자르면 <b> 같은
+# 태그가 중간에서 잘려 텔레그램이 메시지 전체를 400 으로 거부한다
+# (실제로 캡션이 길어진 뒤 섹터 7장이 전부 그렇게 떨어졌다).
 
 
 def _send_photo(token, chat_id, path, caption=None):
     """사진 한 장. 캡션이 사진 바로 아래 붙어 한 묶음으로 읽힌다."""
     data = {"chat_id": chat_id}
     if caption:
-        data["caption"] = caption[:CAPTION_MAX]
+        data["caption"] = caption
         data["parse_mode"] = "HTML"
     with open(path, "rb") as fh:
         _post(token, "sendPhoto",
@@ -129,7 +133,7 @@ def _send_album(token, chat_id, batch):
                       open(item["path"], "rb"), "image/png")
         entry = {"type": "photo", "media": f"attach://{key}"}
         if item.get("caption"):
-            entry["caption"] = item["caption"][:CAPTION_MAX]
+            entry["caption"] = item["caption"]
             entry["parse_mode"] = "HTML"
         media.append(entry)
     try:
