@@ -23,6 +23,11 @@ def build_message(data) -> str:
         parts = [f"{n} ({idx[n]['chg_pct']:+.1f}%)" for n in ("Dow", "S&P500", "Nasdaq") if n in idx]
         lines.append("□ 미국증시: " + ", ".join(parts))
 
+    # 코스피200 야간선물은 무료 시세가 없어 EWY(미국장 한국 ETF)를 프록시로 쓴다
+    px = data.get("kr_proxy")
+    if px and px.get("last") is not None:
+        lines.append(f"□ 코스피 야간 프록시(EWY) ${px['last']:,.2f}({px['chg_pct']:+.1f}%)")
+
     sectors = data.get("sectors") or []
     if sectors:
         lines.append("□ 섹터별 등락:")

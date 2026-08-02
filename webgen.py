@@ -92,6 +92,12 @@ def build_us(data, path):
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
                                          d.get("series")))
+    px = data.get("kr_proxy") or {}
+    if px.get("last") is not None:
+        # 코스피 야간선물 무료 시세 부재 — EWY(미국장 한국 ETF)가 야간 프록시
+        summary.append(_summary_item("코스피 야간 프록시 EWY", round(px["last"], 2),
+                                     round(px["chg_pct"], 2), "달러", "%",
+                                     px.get("series")))
     for sym, label in (("US2Y", "미국채 2년"), ("US10Y", "미국채 10년"),
                        ("US30Y", "미국채 30년")):
         q = now.get(sym)
