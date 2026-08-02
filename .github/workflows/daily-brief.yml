@@ -37,6 +37,10 @@ jobs:
       # 웹 대시보드 배포용 (없으면 배포만 생략)
       CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # pages.dev 서브도메인은 전역 공용이라 흔한 이름은 이미 선점돼 있다
+      # ('daily-express'는 남의 사이트). 계정명을 붙여 고유하게 만들고,
+      # 바꾸고 싶으면 CLOUDFLARE_PAGES_PROJECT 시크릿으로 덮어쓴다.
+      PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT || format('daily-express-{0}', github.repository_owner) }}
     steps:
       # 지연 도착한 schedule 실행이, 정시 dispatch 가 이미 보낸 브리핑을
       # 또 보내지 않게 한다. 하루 1회 발송이므로 6시간 창이면 충분하다.
@@ -126,7 +130,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages project create daily-express --production-branch=main
+          command: pages project create ${{ env.PAGES_PROJECT }} --production-branch=main
 
       - name: Cloudflare Pages 배포
         if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
@@ -135,7 +139,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site --project-name=daily-express --branch=main
+          command: pages deploy site --project-name=${{ env.PAGES_PROJECT }} --branch=main
 
       - name: 실패 시 차트 보관(원인 확인용)
         if: failure()
