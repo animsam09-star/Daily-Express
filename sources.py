@@ -340,6 +340,19 @@ def fetch_sector_holdings(sector_symbols):
     return holdings
 
 
+def fetch_kr_proxy():
+    """한국증시 야간 프록시 — EWY(iShares MSCI South Korea, 미국장 거래).
+
+    코스피200 야간선물 시세는 무료 소스가 없다(야후·네이버 모두 미제공,
+    구 Eurex 연계 야간시장 종료 — 러너 프로브로 실측 확인). 대신 미국장에서
+    거래되는 한국 ETF 의 등락을 야간 대용치로 쓴다. 프록시임을 표기한다.
+    """
+    o = yahoo_ohlc("EWY")
+    s = [(d, c) for d, _, _, c in o]
+    return {"series": s, "ohlc": o, "last": s[-1][1], "chg_pct": pct_change(s),
+            "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
+
+
 def fetch_fx():
     o = yahoo_ohlc("KRW=X")
     s = [(d, c) for d, _, _, c in o]
@@ -498,6 +511,7 @@ def collect_all():
     run("sectors", fetch_sectors)
     run("holdings", lambda: fetch_sector_holdings([s for s, _ in SECTORS]))
     run("fx", fetch_fx)
+    run("kr_proxy", fetch_kr_proxy)
     run("ust_now", fetch_treasury_now)
     run("ust_hist", fetch_treasury_history)
     run("domestic", fetch_domestic)
