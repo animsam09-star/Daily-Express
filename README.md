@@ -175,9 +175,17 @@ claude setup-token
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 계정 ID |
 
 둘 다 없으면 배포만 조용히 생략된다(아티팩트 `site-us`/`site-kr` 로는 받을 수 있다).
-주소는 `https://daily-express.pages.dev`. **기본 상태는 공개**이므로 비공개로
-쓰려면 Cloudflare 대시보드에서 해당 Pages 프로젝트에 Access 정책(이메일 인증)을
-걸어준다 — US-Market-Screener 와 같은 방식.
+
+주소는 `https://daily-express-<계정명>.pages.dev`
+(예: `daily-express-animsam09-star.pages.dev`). `*.pages.dev` 서브도메인은
+**전 세계 공용 네임스페이스**라 `daily-express` 같은 흔한 이름은 이미 남이
+선점해 있다 — 그래서 계정명을 붙인다. 다른 이름을 쓰고 싶으면
+`CLOUDFLARE_PAGES_PROJECT` 시크릿으로 덮어쓴다(선점된 이름이면 프로젝트
+생성이 실패하니 배포 로그를 확인할 것).
+
+**기본 상태는 공개**이므로 비공개로 쓰려면 Cloudflare 대시보드에서 해당
+Pages 프로젝트에 Access 정책(이메일 인증)을 걸어준다 — US-Market-Screener 와
+같은 방식.
 
 ## 실행 시각
 
