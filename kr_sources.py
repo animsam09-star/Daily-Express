@@ -20,8 +20,8 @@ import urllib3
 import kr_universe
 
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at,
-                     fetch_quotes, pct_change, yahoo_candles, yahoo_ohlc,
-                     yahoo_series)
+                     fetch_quotes, mom_score, pct_change, yahoo_candles,
+                     yahoo_ohlc, yahoo_series)
 
 if not VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -44,7 +44,8 @@ def get_pools():
             _POOLS = {"반도체": list(kr_universe.SEMI_LARGE)}
     return _POOLS
 
-TOP_N = 5
+TOP_N = 5           # 텔레그램 캡션용(웹은 WEB_TOP_N 개까지 보여준다)
+WEB_TOP_N = 10
 NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
 NAME_URL = "https://finance.naver.com/item/main.naver?code={code}"
 # 제목은 '삼성전자 : Npay 증권' 형태. 네이버가 표기를 바꾼 적이 있어
@@ -106,17 +107,78 @@ def fetch_names(codes):
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = {ex.submit(yahoo_ohlc, sym): name for sym, name in INDICES}
+        futs = {ex.submit(yahoo_candles, sym): name for sym, name in INDICES}
         for f, name in futs.items():
             try:
                 o = f.result()
             except Exception as e:             # noqa: BLE001
                 print(f"[kr] 지수 {name} 실패: {type(e).__name__}")
                 continue
-            s = [(d, c) for d, _, _, c in o]
+            s = [(d, c) for d, _, _, _, c in o]
             out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
                          "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
+    return out
+
+
+MOM_MIN_CAP = 5_000e8   # 주도주 후보 시가총액 하한(5,000억) — 잡주를 막는다
+MOM_N = 2               # 테마당 주도주 자리 수
+MOM_PRESELECT = 12      # 50일선 이격으로 좁힐 테마당 후보 수(미국판과 같은 구조)
+
+
+def _row(code, quotes, names, rets, pick=None):
+    """종목 한 줄. 시세가 없으면 None(표에서 뺀다)."""
+    q = quotes.get(_ys(code)) or {}
+    if q.get("price") is None:
+        return None
+    r = rets.get(_ys(code)) or {}
+    row = {"ticker": code, "name": names.get(code, code),
+           "price": q.get("price"), "market_cap": q.get("market_cap"),
+           "chg_pct": q.get("chg_pct"),
+           "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),
+           "returns": r.get("returns", {}), "series": r.get("series", []),
+           "ohlc": r.get("ohlc", [])}
+    if pick:
+        row["pick"] = pick
+    return row
+
+
+def _preselect(full_pools, pools, quotes):
+    """주도주 후보를 테마당 MOM_PRESELECT 개로 좁힌다.
+
+    최종 기준은 3개월 등락률인데 그건 시계열을 받아야 나온다. 테마 풀은
+    200종목이 넘는 곳도 있어 전부 받을 수는 없으므로, 시세 요약에 들어 있는
+    50일선 이격으로 '최근 오르고 있는 쪽'만 남긴다. 최종 선별은 _rank_extras.
+    """
+    out = {}
+    for theme, pool in full_pools.items():
+        shown = set(pools.get(theme, [])[:WEB_TOP_N])
+        cands = []
+        for c in pool:
+            if c in shown:
+                continue
+            q = quotes.get(_ys(c)) or {}
+            if (q.get("market_cap") or 0) < MOM_MIN_CAP:
+                continue
+            if q.get("vs_50d") is None or q["vs_50d"] <= 0:
+                continue
+            cands.append((q["vs_50d"], c))
+        cands.sort(reverse=True)
+        if cands:
+            out[theme] = [c for _, c in cands[:MOM_PRESELECT]]
+    return out
+
+
+def _rank_extras(cands, rets):
+    """후보 중 3개월 등락률 상위 MOM_N 개. 자격 미달이면 자리를 비운다."""
+    out = {}
+    for theme, codes in cands.items():
+        scored = [(s, c) for c in codes
+                  if (s := mom_score((rets.get(_ys(c)) or {}).get("returns")))
+                  is not None]
+        scored.sort(reverse=True)
+        if scored:
+            out[theme] = [c for _, c in scored[:MOM_N]]
     return out
 
 
@@ -126,9 +188,10 @@ def fetch_sectors_and_holdings():
     한국은 미국의 SPDR 처럼 테마별 ETF 보유종목 공시가 일관되지 않아,
     후보 풀에서 시총 상위를 골라 직접 집계한다.
     """
-    pools = get_pools()
-    codes = sorted({c for pool in pools.values() for c in pool})
+    full_pools = get_pools()
+    codes = sorted({c for pool in full_pools.values() for c in pool})
     quotes = _resolve_suffixes(codes)          # 코스피/코스닥 접미사 확정
+    pools = full_pools
 
     # 테마마다 시가총액 상위 POOL_TOP 개만 쓴다. 금액 하한으로 자르면
     # 테마별 종목 수가 들쭉날쭉해져 지수 간 비교가 어렵다.
@@ -145,35 +208,37 @@ def fetch_sectors_and_holdings():
              for t, cs in pools.items()}
     pools = {t: cs for t, cs in pools.items() if cs}
 
+    # 시총 상위 5 밖의 주도주 후보. 후보는 상위 20으로 자르기 전의 테마 전체에서
+    # 고른다(업종 풀은 200종목이 넘는 테마도 있어, 시총으로 자르면 급등 중형주가
+    # 구조적으로 사라진다). 최종 선별은 시계열을 받은 뒤 3개월 등락률로 한다.
+    cands = _preselect(full_pools, pools, quotes)
+
     hist_codes = {c for cs in pools.values() for c in cs}
-    name_codes = {c for cs in pools.values() for c in cs[:TOP_N]}
+    hist_codes |= {c for cs in cands.values() for c in cs}
+    name_codes = {c for cs in pools.values() for c in cs[:WEB_TOP_N]}
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f_names = ex.submit(fetch_names, sorted(name_codes))
         f_rets = ex.submit(_fetch_returns, [_ys(c) for c in sorted(hist_codes)])
+        f_names = ex.submit(fetch_names, sorted(name_codes))
     names, rets = f_names.result(), f_rets.result()
+
+    extras = _rank_extras(cands, rets)
+    # 최종 선정된 주도주의 사명은 여기서 마저 받는다(후보 전체를 받으면 낭비다)
+    names.update(fetch_names(sorted({c for cs in extras.values() for c in cs})))
 
     sectors, holdings = [], {}
     for theme, pool in pools.items():
-        rows = []
-        for c in pool:
-            q = quotes.get(_ys(c)) or {}
-            if q.get("price") is None:
-                continue
-            r = rets.get(_ys(c)) or {}
-            rows.append({"ticker": c, "name": names.get(c, c),
-                         "price": q.get("price"), "market_cap": q.get("market_cap"),
-                         "chg_pct": q.get("chg_pct"),
-                         "returns": r.get("returns", {}),
-                         "series": r.get("series", []),
-                         "ohlc": r.get("ohlc", [])})
+        rows = [r for r in (_row(c, quotes, names, rets) for c in pool) if r]
         if not rows:
             continue
         for r in rows:
             r["weight"] = weight(theme, r["ticker"])
         # 지수 가중치와 같은 순서로 보여준다(ETF 테마는 구성비중, 그 외 시총)
         rows.sort(key=lambda r: r["weight"], reverse=True)
-        holdings[theme] = rows[:TOP_N]         # 메시지에는 상위 5종목만
+        # 메시지에는 상위 5종목 + 주도주. 상위 5의 자리는 그대로 두고 뒤에 붙인다.
+        holdings[theme] = rows[:WEB_TOP_N] + [
+            r for r in (_row(c, quotes, names, rets, pick="momentum")
+                        for c in extras.get(theme, [])) if r]
 
         # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.
         # 상위 5개만 쓰면 소부장(12종목)처럼 저변이 넓은 테마의 대표성이 떨어진다.

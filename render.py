@@ -50,13 +50,17 @@ CLOUD_UP, CLOUD_DOWN = "#e8a0a0", "#a0b8e8"     # 양운(붉은) / 음운(푸른
 
 
 def _ichimoku(ohlc):
-    """일목균형표 선행스팬 1·2. [(date, high, low, close), ...] 를 받는다.
+    """일목균형표 선행스팬 1·2.
 
+    입력은 [(date, high, low, close)] 또는 [(date, open, high, low, close)] 둘 다
+    받는다 — 시가는 캔들차트에만 필요해서 소스마다 형태가 다르다.
     전환선 9, 기준선 26, 선행스팬2 52, 선행 이동 26 — 표준 설정.
     구름대는 26일 앞으로 밀어 그리므로 미래 구간이 생긴다.
     """
     if len(ohlc) < 78:                          # 52 + 26. 모자라면 그리지 않는다
         return None
+    if len(ohlc[0]) == 5:                       # (date, open, high, low, close)
+        ohlc = [(d, h, l, c) for d, _o, h, l, c in ohlc]
     dates = [d for d, _, _, _ in ohlc]
     highs = [h for _, h, _, _ in ohlc]
     lows = [l for _, _, l, _ in ohlc]
@@ -393,6 +397,7 @@ CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
 NOTE_MAX = 70               # 종목 메모 최대 글자수(두 문장까지 허용)
 SECTOR_NOTE_MAX = 120       # 섹터 종합 코멘트 최대 글자수
 MAX_NOTES = 3               # 섹터당 뉴스 최대 개수(등락 큰 종목 우선)
+TELEGRAM_TOP = 5            # 캡션에 싣는 시총 상위 종목 수(웹은 10종목)
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -431,18 +436,25 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
 
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
-    for note_cap in (NOTE_MAX, 45, 30):
-        cap = _build_caption(sector, holdings, picked, note_cap, cur, px, bench,
-                             sector_note)
-        if _visible_len(cap) <= CAPTION_LIMIT:
-            return cap
+    # 줄이는 순서: 주도주 자리 → 뉴스 길이 → 뉴스 개수.
+    # 뉴스를 먼저 줄이면 '왜 움직였나'가 사라져 브리핑의 핵심이 빠진다.
+    # 데이터에는 섹터당 10종목이 들어 있다(웹 대시보드용). 텔레그램 캡션은
+    # 1,024자 제한이 빡빡해 앞 TELEGRAM_TOP 개만 싣는다.
+    core = [h for h in holdings if not h.get("pick")][:TELEGRAM_TOP]
+    holdings = core + [h for h in holdings if h.get("pick")]
+    for hs in (holdings, core + [h for h in holdings if h.get("pick")][:1], core):
+        for note_cap in (NOTE_MAX, 45, 30):
+            cap = _build_caption(sector, hs, picked, note_cap, cur, px, bench,
+                                 sector_note)
+            if _visible_len(cap) <= CAPTION_LIMIT:
+                return cap
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, holdings, subset, 30, cur, px, bench, sector_note)
+        cap = _build_caption(sector, core, subset, 30, cur, px, bench, sector_note)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
     # 최후 수단: 섹터 코멘트까지 내려놓고 종목 표만 남긴다
-    return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px, bench)
+    return _build_caption(sector, core, {}, NOTE_MAX, cur, px, bench)
 
 
 NAME_DROP = re.compile(
@@ -521,6 +533,10 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         what = biz_map.get(h["ticker"])
         if what:
             label += f" / {what}"
+        # 시총 상위 5가 아니라 최근 흐름으로 뽑힌 종목은 그렇다고 밝힌다.
+        # 표시가 없으면 시총 순위가 뒤바뀐 것처럼 읽힌다.
+        if h.get("pick"):
+            label = ("🔥 " if h["pick"] == "momentum" else "☆ ") + label
         head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.1f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
