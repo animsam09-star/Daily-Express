@@ -15,6 +15,11 @@ on:
     # 06:30 까지 25분이 남아 Actions 지연을 흡수할 수 있다.
     - cron: "5 21 * * 0-4"
   workflow_dispatch:        # 정시 발송(Routine) + 수동 실행(테스트용)
+    inputs:
+      web_only:
+        description: '텔레그램 발송 없이 웹 대시보드만 갱신·배포'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,9 +97,11 @@ jobs:
 
       # 시크릿은 job 단위 env 로 이미 주입돼 있다.
       # 요약용 인증이 하나도 없으면 요약만 빠지고 나머지는 그대로 발송된다.
+      # web_only 면 --dry-run: 수집·차트·웹 대시보드는 그대로 만들고
+      # 텔레그램 발송만 생략한다. schedule 실행에서는 inputs 가 비어 false.
       - name: 브리핑 발송
         if: steps.guard.outputs.skip != 'true'
-        run: python main.py
+        run: python main.py ${{ inputs.web_only == true && '--dry-run' || '' }}
 
       # ---- 웹 대시보드 (Cloudflare Pages) ----
       # 각 실행은 자기 시장 페이지만 새로 만들므로, 반대 시장 페이지를
