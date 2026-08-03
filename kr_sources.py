@@ -20,7 +20,8 @@ import urllib3
 import kr_universe
 
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at,
-                     fetch_quotes, pct_change, yahoo_ohlc, yahoo_series)
+                     fetch_quotes, pct_change, yahoo_candles, yahoo_ohlc,
+                     yahoo_series)
 
 if not VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -230,10 +231,10 @@ def _fetch_returns(symbols):
     OHLC 로 캔들차트를 그린다 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
     def one(sym):
         try:
-            o = yahoo_ohlc(sym, rng="2y")
+            o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
             return sym, {"returns": {}, "series": [], "ohlc": []}
-        s = [(d, c) for d, _, _, c in o]
+        s = [(d, c) for d, _, _, _, c in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
                      "series": s, "ohlc": o}
 

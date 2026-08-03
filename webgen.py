@@ -45,25 +45,15 @@ def _ds(series):
 
 
 def _ds_ohlc(ohlc):
-    """[(date, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
+    """[(date, open, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
 
-    야후 차트 API 는 시가를 따로 주지 않아 직전 종가를 시가로 쓴다(갭 포함
-    캔들이 된다 — 국내 HTS 관행과 다르지만 일봉 방향은 같다).
     최근 6개월만 담는다: 2년치 캔들은 화면에서 뭉개지고 페이지만 무거워진다.
     """
     if not ohlc:
         return []
     cut = ohlc[-1][0] - dt.timedelta(days=DAILY_KEEP_DAYS)
-    out, prev = [], None
-    for d, h, l, c in ohlc:
-        if d >= cut:
-            o = prev if prev is not None else c
-            # 시가를 고·저 범위 안으로 가둔다(갭이 크면 캔들이 축을 벗어난다)
-            o = min(max(o, l), h)
-            out.append([d.isoformat(), round(o, 4), round(h, 4),
-                        round(l, 4), round(c, 4)])
-        prev = c
-    return out
+    return [[d.isoformat(), round(o, 4), round(h, 4), round(l, 4), round(c, 4)]
+            for d, o, h, l, c in ohlc if d >= cut]
 
 
 def _returns(r):
@@ -411,6 +401,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="head"><b id="dlg-title"></b><span class="meta" id="dlg-meta"></span>
     <button class="close" onclick="document.getElementById('dlg').close()">닫기</button></div>
   <div class="rets" id="dlg-rets"></div>
+  <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
   <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
 </div></dialog>
 
@@ -446,13 +437,18 @@ function ma(vals,w){const o=[];let acc=0;
 function candleChart(canvas, ohlc, {unit=''}={}){
  try{
   const labels=ohlc.map(r=>r[0]);
-  const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승색
+  const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
+  // 시가와 종가가 같은 날(도지)은 몸통 높이가 0 이라 아무것도 안 보인다.
+  // 전체 가격 범위의 0.06% 만큼 최소 두께를 준다 — 실제 봉과 구분되는 실선.
+  const lo=Math.min(...ohlc.map(r=>r[3])), hi=Math.max(...ohlc.map(r=>r[2]));
+  const eps=Math.max((hi-lo)*0.0006, 1e-9);
+  const body=r=>{const a=Math.min(r[1],r[4]), b=Math.max(r[1],r[4]);
+    return b-a<eps ? [a-eps/2, b+eps/2] : [a,b];};
   const ds=[
     {label:'고저', data:ohlc.map(r=>[r[3],r[2]]), backgroundColor:ohlc.map(col),
-     barPercentage:0.12, categoryPercentage:0.9, grouped:false, order:2},
-    {label:'시종', data:ohlc.map(r=>[Math.min(r[1],r[4]),Math.max(r[1],r[4])]),
-     backgroundColor:ohlc.map(col), barPercentage:0.62, categoryPercentage:0.9,
-     grouped:false, order:1, borderRadius:1},
+     barPercentage:0.14, categoryPercentage:0.95, grouped:false, order:2},
+    {label:'시종', data:ohlc.map(body), backgroundColor:ohlc.map(col),
+     barPercentage:0.72, categoryPercentage:0.95, grouped:false, order:1},
   ];
   const closes=ohlc.map(r=>r[4]);
   for(const [w,c] of MA) if(closes.length>w)
@@ -640,11 +636,25 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
       .filter(Boolean).join(''):'';
   const dlg=document.getElementById('dlg');dlg.showModal();
   if(dlgChart){dlgChart.destroy();dlgChart=null;}
-  const cv=document.getElementById('dlg-chart');
-  if(ohlc&&ohlc.length)          // 개별 종목: 일봉 캔들(최근 6개월)
-    dlgChart=candleChart(cv, ohlc, {unit});
-  else if(series&&series.length) // 지수·금리·환율: 2년 라인 + 이동평균
+  const cv=document.getElementById('dlg-chart'), segs=document.getElementById('dlg-segs');
+  segs.innerHTML='';
+  if(ohlc&&ohlc.length){         // 개별 종목: 일봉 캔들 + 기간 토글
+    const draw=days=>{
+      const cut=ohlc.slice(days?-days:0);
+      if(dlgChart)dlgChart.destroy();
+      dlgChart=candleChart(cv, cut, {unit});
+      segs.querySelectorAll('button').forEach(b=>
+        b.classList.toggle('on', +b.dataset.d===days));
+    };
+    [[21,'1M'],[63,'3M'],[0,'6M']].forEach(([d,label])=>{
+      const b=document.createElement('button');
+      b.textContent=label; b.dataset.d=d; b.onclick=()=>draw(d);
+      segs.appendChild(b);
+    });
+    draw(63);                    // 기본 3개월 — 6개월은 봉이 촘촘해 뭉갠다
+  } else if(series&&series.length){ // 지수·금리·환율: 2년 라인 + 이동평균
     dlgChart=lineChart(cv, series, {unit});
+  }
 }
 document.getElementById('dlg').onclick=e=>{
   if(e.target.id==='dlg')e.target.close();};
