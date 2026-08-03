@@ -117,23 +117,42 @@ jobs:
           retention-days: 14
 
       # 배포는 site/ 폴더를 통째로 갈아끼우므로, 반대 시장 페이지를 함께
-      # 올리지 않으면 그 페이지가 사이트에서 사라진다. 이미 배포된 사이트에서
-      # 직접 받아온다 — 아티팩트 회수는 run 선택·보관기간에 걸려 실패했다
-      # ("no valid artifacts found"). 첫 배포 때는 없으니 실패해도 무해.
+      # 올리지 않으면 그 페이지가 사이트에서 사라진다.
+      # 배포 직후에는 CDN 이 빈 응답(200 + 0 bytes)을 주는 일이 있어
+      # (실제로 0 bytes 를 받아 kr.html 이 빈 페이지로 덮였다)
+      # 크기를 검증하고 재시도하며, 그래도 안 되면 아티팩트에서 회수한다.
       - name: 상대편(한국) 대시보드 회수
         if: steps.guard.outputs.skip != 'true'
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           URL="https://${{ env.PAGES_PROJECT }}.pages.dev/kr.html"
-          if curl -fsS --max-time 30 -o site/kr.html "$URL"; then
-            echo "회수 성공: $URL ($(wc -c < site/kr.html) bytes)"
-          else
-            echo "회수 실패(첫 배포거나 아직 없음) — 이번엔 us.html 만 올라간다"
-            rm -f site/kr.html
+          MIN=20000                      # 정상 페이지는 200KB 이상이다
+          ok=""
+          for i in 1 2 3; do
+            if curl -fsS --max-time 60 -o site/kr.html "$URL" \
+               && [ "$(wc -c < site/kr.html)" -ge "$MIN" ]; then
+              echo "회수 성공: $URL ($(wc -c < site/kr.html) bytes)"
+              ok=1; break
+            fi
+            echo "회수 시도 $i 실패($(wc -c < site/kr.html 2>/dev/null || echo 0) bytes) — 8초 후 재시도"
+            rm -f site/kr.html; sleep 8
+          done
+          if [ -z "$ok" ]; then
+            echo "라이브 회수 실패 — 아티팩트에서 회수 시도"
+            for RUN in $(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
+                           -s success -L 5 --json databaseId -q '.[].databaseId'); do
+              if gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-kr -D site/ 2>/dev/null \
+                 && [ "$(wc -c < site/kr.html)" -ge "$MIN" ]; then
+                echo "아티팩트 회수 성공(run $RUN, $(wc -c < site/kr.html) bytes)"; ok=1; break
+              fi
+              rm -f site/kr.html
+            done
           fi
+          [ -z "$ok" ] && echo "::warning::kr.html 회수 실패 — 이번 배포에서 빠진다"
+          exit 0
 
-      # Cloudflare 가 대시보드에서 Pages 생성 메뉴를 없앴다(Workers 로 통합 중).
-      # CLI 로 만든다. 이미 있으면 실패하는데 그건 정상이므로 무시한다.
       - name: Cloudflare Pages 프로젝트 준비
         if: steps.guard.outputs.skip != 'true' && env.CF_TOKEN != '' && env.CF_ACCOUNT != ''
         continue-on-error: true
