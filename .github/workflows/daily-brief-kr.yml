@@ -100,16 +100,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # 배포는 site/ 폴더를 통째로 갈아끼우므로, 반대 시장 페이지를 함께
+      # 올리지 않으면 그 페이지가 사이트에서 사라진다. 이미 배포된 사이트에서
+      # 직접 받아온다 — 아티팩트 회수는 run 선택·보관기간에 걸려 실패했다
+      # ("no valid artifacts found"). 첫 배포 때는 없으니 실패해도 무해.
       - name: 상대편(미국) 대시보드 회수
         if: steps.guard.outputs.skip != 'true'
         continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          RUN=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief.yml \
-            -s success -L 1 --json databaseId -q '.[0].databaseId' || true)
-          if [ -n "$RUN" ]; then
-            gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-us -D site/ || true
+          URL="https://${{ env.PAGES_PROJECT }}.pages.dev/us.html"
+          if curl -fsS --max-time 30 -o site/us.html "$URL"; then
+            echo "회수 성공: $URL ($(wc -c < site/us.html) bytes)"
+          else
+            echo "회수 실패(첫 배포거나 아직 없음) — 이번엔 kr.html 만 올라간다"
+            rm -f site/us.html
           fi
 
       - name: Cloudflare Pages 프로젝트 준비

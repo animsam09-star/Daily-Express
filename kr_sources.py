@@ -164,7 +164,8 @@ def fetch_sectors_and_holdings():
                          "price": q.get("price"), "market_cap": q.get("market_cap"),
                          "chg_pct": q.get("chg_pct"),
                          "returns": r.get("returns", {}),
-                         "series": r.get("series", [])})
+                         "series": r.get("series", []),
+                         "ohlc": r.get("ohlc", [])})
         if not rows:
             continue
         for r in rows:
@@ -225,15 +226,16 @@ def attach_benchmarks(sectors, holdings, indices):
 
 
 def _fetch_returns(symbols):
-    """{sym: {"returns": {...}, "series": [...]}}. 시계열은 웹 대시보드
-    종목 상세 차트용 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
+    """{sym: {"returns", "series", "ohlc"}}. 웹 대시보드 종목 상세는 이
+    OHLC 로 캔들차트를 그린다 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
     def one(sym):
         try:
-            s = yahoo_series(sym, rng="2y")
+            o = yahoo_ohlc(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {"returns": {}, "series": []}
+            return sym, {"returns": {}, "series": [], "ohlc": []}
+        s = [(d, c) for d, _, _, c in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
-                     "series": s}
+                     "series": s, "ohlc": o}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         return dict(ex.map(one, symbols))

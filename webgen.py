@@ -44,6 +44,28 @@ def _ds(series):
     return out
 
 
+def _ds_ohlc(ohlc):
+    """[(date, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
+
+    야후 차트 API 는 시가를 따로 주지 않아 직전 종가를 시가로 쓴다(갭 포함
+    캔들이 된다 — 국내 HTS 관행과 다르지만 일봉 방향은 같다).
+    최근 6개월만 담는다: 2년치 캔들은 화면에서 뭉개지고 페이지만 무거워진다.
+    """
+    if not ohlc:
+        return []
+    cut = ohlc[-1][0] - dt.timedelta(days=DAILY_KEEP_DAYS)
+    out, prev = [], None
+    for d, h, l, c in ohlc:
+        if d >= cut:
+            o = prev if prev is not None else c
+            # 시가를 고·저 범위 안으로 가둔다(갭이 크면 캔들이 축을 벗어난다)
+            o = min(max(o, l), h)
+            out.append([d.isoformat(), round(o, 4), round(h, 4),
+                        round(l, 4), round(c, 4)])
+        prev = c
+    return out
+
+
 def _returns(r):
     r = r or {}
     return {k: (round(r[k], 2) if r.get(k) is not None else None)
@@ -65,6 +87,7 @@ def _holding(h, notes):
         "chg_pct": (round(h["chg_pct"], 2) if h.get("chg_pct") is not None else None),
         "returns": _returns(h.get("returns")),
         "series": _ds(h.get("series") or []),
+        "ohlc": _ds_ohlc(h.get("ohlc") or []),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
     }
@@ -302,7 +325,12 @@ h2{font-size:12.5px;font-weight:700;color:var(--ink2);letter-spacing:.04em;
 h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
 .panel{background:var(--surface);border:1px solid var(--hairline);
   border-radius:12px;padding:16px}
-.secgrid{display:grid;grid-template-columns:1fr;gap:12px}
+/* 섹터 카드는 메모 유무·종목 수에 따라 높이가 제각각이었다.
+   모든 행을 가장 큰 카드에 맞춰 통일하고, 카드 안에서는 표가 남는 높이를 먹는다. */
+.secgrid{display:grid;grid-template-columns:1fr;gap:12px;grid-auto-rows:1fr}
+.secgrid>.panel{display:flex;flex-direction:column}
+.secgrid>.panel>table{margin-top:auto}
+.secnote{min-height:36px}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
 .sechead .spans{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -320,8 +348,14 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
              padding-top:0}
 .note-row a{color:var(--down-t)}
-canvas.mini{width:100%!important;height:200px!important}
-canvas.bar{width:100%!important;height:340px!important}
+/* 캔버스에 !important 로 크기를 강제하면 Chart.js 의 리사이즈 계산과
+   충돌해, 마우스를 올릴 때마다 캔버스가 조금씩 눌린다(피드백 루프).
+   높이는 래퍼가 갖고 캔버스는 그 안을 절대배치로 채운다. */
+.chartbox{position:relative;width:100%}
+.chartbox>canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+.chartbox.mini{height:200px}
+.chartbox.bar{height:360px}
+.chartbox.big{height:400px}
 dialog{border:1px solid var(--hairline);border-radius:14px;padding:0;
   max-width:860px;width:94vw;background:var(--surface);
   box-shadow:0 16px 48px rgba(11,11,11,.22)}
@@ -336,7 +370,6 @@ dialog::backdrop{background:rgba(11,11,11,.38)}
 .dlg .rets{display:flex;gap:16px;margin:10px 0 6px;font-size:12.5px;
            font-variant-numeric:tabular-nums}
 .dlg .rets span{color:var(--muted)}
-canvas.big{width:100%!important;height:380px!important}
 .flowgrid{display:grid;grid-template-columns:1fr;gap:8px;margin:2px 0 12px;font-size:13px}
 .flowline{display:flex;gap:16px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
 .flowline .t{color:var(--muted)}
@@ -357,13 +390,13 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="cards" id="cards"></div>
 
   <h2>섹터별 등락 <span class="segs" id="secbar-segs"></span></h2>
-  <div class="panel"><canvas id="secbar" class="bar"></canvas></div>
+  <div class="panel"><div class="chartbox bar"><canvas id="secbar"></canvas></div></div>
 
   <div id="flows-sec" style="display:none">
     <h2>외국인 수급</h2>
     <div class="panel">
       <div id="flowlines" class="flowgrid"></div>
-      <canvas id="flowchart" class="mini" style="height:260px!important"></canvas>
+      <div class="chartbox mini" style="height:260px"><canvas id="flowchart"></canvas></div>
     </div>
   </div>
 
@@ -378,7 +411,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="head"><b id="dlg-title"></b><span class="meta" id="dlg-meta"></span>
     <button class="close" onclick="document.getElementById('dlg').close()">닫기</button></div>
   <div class="rets" id="dlg-rets"></div>
-  <canvas id="dlg-chart" class="big"></canvas>
+  <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
 </div></dialog>
 
 <script id="data" type="application/json">__DATA__</script>
@@ -406,6 +439,42 @@ oth.textContent=D.other.label; oth.href=D.other.href;
 function ma(vals,w){const o=[];let acc=0;
   for(let i=0;i<vals.length;i++){acc+=vals[i];if(i>=w)acc-=vals[i-w];
     o.push(i>=w-1?acc/w:null);}return o;}
+
+// 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
+// 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
+// grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
+function candleChart(canvas, ohlc, {unit=''}={}){
+ try{
+  const labels=ohlc.map(r=>r[0]);
+  const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승색
+  const ds=[
+    {label:'고저', data:ohlc.map(r=>[r[3],r[2]]), backgroundColor:ohlc.map(col),
+     barPercentage:0.12, categoryPercentage:0.9, grouped:false, order:2},
+    {label:'시종', data:ohlc.map(r=>[Math.min(r[1],r[4]),Math.max(r[1],r[4])]),
+     backgroundColor:ohlc.map(col), barPercentage:0.62, categoryPercentage:0.9,
+     grouped:false, order:1, borderRadius:1},
+  ];
+  const closes=ohlc.map(r=>r[4]);
+  for(const [w,c] of MA) if(closes.length>w)
+    ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
+             borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0});
+  return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},options:{
+    responsive:true,maintainAspectRatio:false,animation:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{legend:{display:true,labels:{boxWidth:14,font:{size:10},
+        // 캔들(고저·시종)은 봉마다 색이 달라 범례에 단색으로 뜨면 오해를 준다
+        filter:it=>it.text!=='고저'&&it.text!=='시종'}},
+      tooltip:{callbacks:{title:it=>it[0].label,label:c=>{
+        if(c.datasetIndex>1) return c.dataset.label+': '+fmt(c.parsed.y);
+        if(c.datasetIndex===1){const r=ohlc[c.dataIndex];
+          return [`시 ${fmt(r[1])}`,`고 ${fmt(r[2])}`,`저 ${fmt(r[3])}`,`종 ${fmt(r[4])}${unit}`];}
+        return null;}}}},
+    scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false},
+               stacked:false},
+            y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
+               beginAtZero:false}}}});
+ }catch(e){console.error('candleChart:',e);return null;}
+}
 
 // 차트 하나가 실패해도(라이브러리 미로드 등) 표·카드는 계속 보여야 한다
 function lineChart(canvas, series, {label='종가', withMA=true, unit='', color='#1a1a1a'}={}){
@@ -543,7 +612,7 @@ D.sectors.forEach(s=>{
       <b class="${cls(s.chg_pct)}">${s.chg_pct>=0?'▲':'▼'} ${s.name}${s.symbol!==s.name?` (${s.symbol})`:''} ${sgn(s.chg_pct)}%</b>
       <span class="spans">${spans(s.returns)}</span></div>
     ${s.note?`<div class="secnote">💬 ${s.note}</div>`:''}
-    ${s.series.length?`<canvas class="mini" id="c-${s.symbol}"></canvas>`:''}
+    <div class="chartbox mini">${s.series.length?`<canvas id="c-${s.symbol}"></canvas>`:''}</div>
     <table><thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
   secWrap.appendChild(div);
@@ -556,13 +625,13 @@ D.sectors.forEach(s=>{
                 capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`,
       `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, h.series,
-      '', h.note?`↳ ${h.note}`:'');
+      '', h.note?`↳ ${h.note}`:'', h.ohlc);
   });
 });
 
 // ---- 상세 모달 (지수 차트와 같은 형식: 2년 + 이동평균)
 let dlgChart=null;
-function openDlg(title, meta, rets, series, unit='', sub=''){
+function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
   document.getElementById('dlg-title').textContent=title;
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
   document.getElementById('dlg-rets').innerHTML=rets?
@@ -571,8 +640,11 @@ function openDlg(title, meta, rets, series, unit='', sub=''){
       .filter(Boolean).join(''):'';
   const dlg=document.getElementById('dlg');dlg.showModal();
   if(dlgChart){dlgChart.destroy();dlgChart=null;}
-  if(series&&series.length)
-    dlgChart=lineChart(document.getElementById('dlg-chart'), series, {unit});
+  const cv=document.getElementById('dlg-chart');
+  if(ohlc&&ohlc.length)          // 개별 종목: 일봉 캔들(최근 6개월)
+    dlgChart=candleChart(cv, ohlc, {unit});
+  else if(series&&series.length) // 지수·금리·환율: 2년 라인 + 이동평균
+    dlgChart=lineChart(cv, series, {unit});
 }
 document.getElementById('dlg').onclick=e=>{
   if(e.target.id==='dlg')e.target.close();};
