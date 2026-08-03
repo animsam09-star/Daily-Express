@@ -23,9 +23,9 @@ import os
 # 최근 6개월은 일별, 그 이전은 주별로 다운샘플해 페이지 크기를 줄인다.
 # 종목 55개 × 500포인트를 그대로 실으면 페이지가 1MB 를 넘는다.
 DAILY_KEEP_DAYS = 182
-# 종목 캔들은 1년치를 싣는다(모달에서 1M~1Y 로 잘라 본다). 늘어난 만큼은
+# 종목 캔들은 2년치를 싣는다(모달에서 1M~2Y 로 잘라 본다). 늘어난 만큼은
 # 종목의 종가 시계열을 빼서 상쇄했다 — 캔들이 있으면 쓰이지 않는 데이터다.
-CANDLE_DAYS = 365
+CANDLE_DAYS = 730
 
 
 def _ds(series):
@@ -50,42 +50,18 @@ def _ds(series):
 def _ds_ohlc(ohlc):
     """[(date, open, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
 
-    최근 1년치. 2년을 다 실으면 페이지가 무거워지고, 화면에서도 봉이 뭉개져
-    읽히지 않는다. 가격은 소수 2자리면 충분하다(자릿수도 용량이다).
-
-    최근 6개월은 일봉, 그 이전은 주봉으로 묶는다. 섹터당 10종목을 실으면서
-    1년을 전부 일봉으로 담으면 페이지가 메가바이트 단위가 된다. 주봉은
-    시가=첫날 시가, 고가=최고, 저가=최저, 종가=마지막날 종가로 제대로 합친다
-    (샘플링하면 봉이 실제와 달라진다).
+    2년치를 전부 일봉으로 싣는다. 오래된 구간을 주봉으로 묶으면 용량은
+    절반이 되지만, 브라우저에서 이동평균과 일목균형표를 '봉 단위'로 계산하기
+    때문에 그 구간의 20일선이 20주선이 되고 구름대도 어긋난다. 지표가 틀리는
+    것보다 용량이 낫다 — 11섹터×12종목이면 원본 3MB 남짓이지만 전송은
+    압축되므로 실제로는 수백 KB다.
+    가격은 소수 2자리면 충분하다 — 자릿수도 용량이다.
     """
     if not ohlc:
         return []
-    last = ohlc[-1][0]
-    cut, daily_from = (last - dt.timedelta(days=CANDLE_DAYS),
-                       last - dt.timedelta(days=DAILY_KEEP_DAYS))
-    out, week = [], []
-
-    def flush():
-        if week:
-            out.append([week[0][0].isoformat(), round(week[0][1], 2),
-                        round(max(r[2] for r in week), 2),
-                        round(min(r[3] for r in week), 2), round(week[-1][4], 2)])
-            week.clear()
-
-    for row in ohlc:
-        d = row[0]
-        if d < cut:
-            continue
-        if d >= daily_from:
-            flush()
-            out.append([d.isoformat(), round(row[1], 2), round(row[2], 2),
-                        round(row[3], 2), round(row[4], 2)])
-        else:
-            if week and d.isocalendar()[:2] != week[0][0].isocalendar()[:2]:
-                flush()
-            week.append(row)
-    flush()
-    return out
+    cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
+    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
+            for d, o, h, l, c in ohlc if d >= cut]
 
 
 def _returns(r):
@@ -550,7 +526,7 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   for(const [w,c] of MA) if(closes.length>w)
     ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
              borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0});
-  // 1년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
+  // 2년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
   // 잡힌다 — 네이버 차트와 같은 조작감.
   const total=labels.length;                  // 캔들 + 미래 26봉
@@ -797,7 +773,8 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
         b.classList.toggle('on', +b.dataset.d===days));
     };
     dlgChart=candleChart(cv, ohlc, {unit, span:63});   // 기본 3개월 구간
-    [[21,'1M'],[63,'3M'],[126,'6M'],[0,'1Y']].forEach(([d,label])=>{
+    // 봉 수 기준(전부 일봉이라 21≈1개월, 252≈1년). 0 은 전체(2년).
+    [[21,'1M'],[63,'3M'],[126,'6M'],[252,'1Y'],[0,'2Y']].forEach(([d,label])=>{
       const b=document.createElement('button');
       b.textContent=label; b.dataset.d=d; b.onclick=()=>setSpan(d);
       if(d===63) b.classList.add('on');
