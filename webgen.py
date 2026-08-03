@@ -368,6 +368,11 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
              padding-top:0}
 .note-row a{color:var(--down-t)}
+/* 표 안의 구분선 — 시총 상위 / 주도주는 뽑은 기준이 달라 섞으면 안 읽힌다 */
+.grp td{text-align:left;font-weight:700;font-size:10.5px;letter-spacing:.04em;
+        color:var(--muted);background:var(--plane);padding:5px 8px;
+        border-bottom:1px solid var(--grid)}
+tr.stk.extra td:first-child{font-weight:650}
 /* 시총 상위가 아니라 최근 흐름으로 뽑힌 자리라는 표시 */
 .badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;
        font-size:10.5px;font-weight:700;letter-spacing:.02em;vertical-align:1px;
@@ -711,15 +716,21 @@ const spans=r=>['m1','m3','m6','m12'].map((k,i)=>
 const secWrap=document.getElementById('sectors');
 D.sectors.forEach(s=>{
   const div=document.createElement('div');div.className='panel';div.id='sec-'+s.symbol;
+  // 시총 상위와 주도주는 뽑은 기준이 아예 다르다. 한 표에 섞어 놓으면
+  // 주도주가 시총 순위 뒤에 붙은 것처럼 읽히므로 구분선으로 갈라 놓는다.
+  const grp=t=>`<tr class="grp"><td colspan="5">${t}</td></tr>`;
+  let opened=false;
   const rows=s.holdings.map((h,i)=>{
+    let head=i===0?grp('시가총액 상위'):'';
+    if(h.pick&&!opened){opened=true; head=grp('주도주 · 최근 3개월 상승률 상위');}
     const note=h.note?`<tr class="note-row"><td colspan="5">↳ ${h.note}
       ${h.note_url?` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>`:''}</td></tr>`:'';
-    return `<tr class="stk" data-t="${h.ticker}">
+    return head+`<tr class="stk${h.pick?' extra':''}" data-t="${h.ticker}">
       <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
         h.pick?`<span class="badge" title="${h.pick==='momentum'
           ?'시총 상위는 아니지만 최근 3개월 상승률이 높고 최근 한 달도 꺾이지 않은 종목'
           :'항상 표시하도록 지정한 종목'}">${h.pick==='momentum'
-          ?'주도주'+(h.returns.m3!=null?` 3M ${sgn(h.returns.m3)}`:'') :'관심'}</span>`:''}</td>
+          ?(h.returns.m3!=null?`3M ${sgn(h.returns.m3)}`:'주도주') :'관심'}</span>`:''}</td>
       <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
       <td>${h.price==null?'–':(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price))}</td>
       <td>${capF(h.market_cap,D.currency)}</td>
