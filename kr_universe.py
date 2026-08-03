@@ -71,6 +71,10 @@ UPJONG_THEME = {
 PINNED_THEME = {
     "034020": "전력기기",   # 두산에너빌리티 — 원전·발전설비. 신재생 ETF 비중 탓에 신재생으로 끌려감
     "000150": None,          # 두산(지주) — 지주사는 특정 테마 지수를 흐린다
+    "402340": "반도체",     # SK스퀘어 — 업종상 반도체와반도체장비라 소부장으로 잡히지만
+                             # 실질은 SK하이닉스 지분 프록시. 대형 반도체로 묶는다
+    "007660": "전기전자",   # 이수페타시스 — AI 가속기용 기판(MLB). 소부장이 아니라 전자부품
+    "005935": "반도체",     # 삼성전자우 — 우선주 일괄 제외의 예외. 고정 분류는 필터를 통과한다
 }
 
 # '반도체와반도체장비' 안에서 메모리 대형 2사. 나머지(파운드리·장비·소재)는
@@ -234,5 +238,8 @@ def build_pools() -> dict[str, list[str]]:
 
     # 우선주 제외. 보통주는 코드가 0 으로 끝나고 우선주는 5·7 로 끝난다
     # (삼성전자우 005935 가 '반도체 소부장' 1위로 올라왔다).
-    return {t: [c for c in dict.fromkeys(cs) if c.endswith("0")]
+    # 단, 고정 분류(PINNED_THEME)로 명시된 우선주는 예외 — 삼성전자우는
+    # 반도체 테마에 일부러 넣는다.
+    pinned_keep = {c for c, t in PINNED_THEME.items() if t}
+    return {t: [c for c in dict.fromkeys(cs) if c.endswith("0") or c in pinned_keep]
             for t, cs in pools.items() if cs}

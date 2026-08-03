@@ -258,6 +258,18 @@ def sector_series(theme: str, members) -> list:
     if not series_list:
         return []
 
+    # 지수는 공통 거래일 교집합으로 만드는데, 상장 2년 미만 종목이 하나라도
+    # 있으면 차트 전체가 그 종목의 상장일부터로 잘린다(조선·기계가
+    # 2024년 상장한 HD현대마린솔루션 때문에 1년 남짓만 그려졌다).
+    # 창 시작보다 90일 넘게 늦게 시작하는 종목은 지수에서 뺀다.
+    window_start = min(s[0][0] for _, s in series_list)
+    kept = [(w, s) for w, s in series_list
+            if (s[0][0] - window_start).days <= 90]
+    if len(kept) < len(series_list):
+        print(f"[kr] {theme}: 시계열 짧은 {len(series_list) - len(kept)}종목은 "
+              f"지수에서 제외(차트 창 보존)")
+    series_list = kept or series_list
+
     common = set(d for _, s in series_list for d, _ in s)
     for _, s in series_list:
         common &= {d for d, _ in s}
