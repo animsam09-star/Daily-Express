@@ -189,9 +189,12 @@ def fetch_sectors_and_holdings():
                 sec_ret[k] = sum(v * w for v, w in vals) / tw if tw else None
         sectors.append({"symbol": theme, "name": theme, "chg_pct": chg,
                         "returns": sec_ret, "series": None,
-                        "members": rows, "member_count": len(rows)})
+                        "members": rows, "member_count": len(rows),
+                        "cap_sum": sum((r.get("market_cap") or 0) for r in rows)})
 
-    sectors.sort(key=lambda s: s["chg_pct"], reverse=True)
+    # 시가총액 큰 순으로 고정. 등락률 순으로 두면 순서가 매일 바뀌어
+    # 어제 화면과 대조하기 어렵다(반도체 → 전기전자 → … 로 자리가 고정된다).
+    sectors.sort(key=lambda s: s.get("cap_sum") or 0, reverse=True)
     return sectors, holdings
 
 

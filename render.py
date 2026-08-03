@@ -365,7 +365,7 @@ def build_all(data, outdir):
     holdings = data.get("holdings") or {}
     notes = data.get("notes") or {}
     sector_notes = data.get("sector_notes") or {}
-    for s in sectors:                          # 당일 등락률 높은 순
+    for s in sectors:                          # 시가총액 큰 순(자리 고정)
         if s.get("series"):
             add(line_chart, os.path.join(outdir, f"sector_{s['symbol']}.png"),
                 f"{s['name']} ({s['symbol']}) 2년 추이", s["series"],

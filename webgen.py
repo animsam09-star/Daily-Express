@@ -584,8 +584,9 @@ try{
   let barChart=null;
   function drawBar(key){
     const per=PERIODS.find(p=>p[0]===key);
-    // 선택한 기간 기준으로 내림차순 정렬해 다시 그린다
-    const secs=[...D.sectors].sort((a,b)=>(per[2](b)??-1e9)-(per[2](a)??-1e9));
+    // 순서는 시가총액 순으로 고정한다(payload 순서 그대로). 기간을 바꿔도
+    // 자리가 그대로라 어제 화면·다른 기간과 눈으로 대조할 수 있다.
+    const secs=D.sectors;
     const vals=secs.map(s=>per[2](s));
     if(barChart)barChart.destroy();
     barChart=new Chart(document.getElementById('secbar'),{type:'bar',data:{

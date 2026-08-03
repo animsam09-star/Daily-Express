@@ -133,7 +133,8 @@ def fetch_sectors():
             out.append({"symbol": sym, "name": name, "ohlc": o,
                         "chg_pct": pct_change(s), "series": s,
                         "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}})
-    out.sort(key=lambda d: d["chg_pct"], reverse=True)
+    # 정렬은 collect_all 에서 시가총액 순으로 한다(등락률 순으로 두면 순서가
+    # 매일 바뀌어 어제와 대조하기 어렵다).
     return out
 
 
@@ -381,6 +382,24 @@ def fetch_kr_proxy():
             "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
 
 
+def sort_sectors_by_cap(sectors, holdings):
+    """섹터를 시가총액 큰 순으로 고정 정렬한다(제자리 정렬).
+
+    등락률 순으로 두면 순서가 매일 바뀌어 어제 화면과 대조하기 어렵다.
+    시총 순위는 거의 변하지 않으므로 사실상 고정된 자리표가 된다.
+    섹터 전체 시총 대신 상위 보유종목 시총 합을 쓴다 — 순위는 같다.
+    """
+    if not sectors:
+        return sectors
+    holdings = holdings or {}
+
+    def cap(s):
+        return sum((h.get("market_cap") or 0) for h in holdings.get(s["symbol"], []))
+
+    sectors.sort(key=cap, reverse=True)
+    return sectors
+
+
 def fetch_fx():
     o = yahoo_ohlc("KRW=X")
     s = [(d, c) for d, _, _, c in o]
@@ -538,6 +557,7 @@ def collect_all():
     run("indices", fetch_indices)
     run("sectors", fetch_sectors)
     run("holdings", lambda: fetch_sector_holdings([s for s, _ in SECTORS]))
+    sort_sectors_by_cap(data.get("sectors"), data.get("holdings"))
     run("fx", fetch_fx)
     run("kr_proxy", fetch_kr_proxy)
     run("ust_now", fetch_treasury_now)
