@@ -2,108 +2,89 @@
 
 개발 컨테이너는 야후·SSGA 로 나가는 길이 프록시에서 막혀 있어(403),
 '후보를 어디까지 넓힐 수 있는지'를 기억이 아니라 실측으로 확인하려면
-러너에서 한 번 찍어봐야 한다. 확인 대상:
+러너에서 한 번 찍어봐야 한다.
 
-  1) 야후 quote 응답에 모멘텀에 쓸 필드(52주 등락률 등)가 실제로 오는가
-  2) SPDR 섹터 ETF 보유목록 전체(비중 상위 25 밖)에 팔란티어·블룸에너지가 있는가
-  3) 있다면 시총 순위 몇 위인가 — 지금 규칙(시총 상위 5)으로 왜 잘리는가
+1차 프로브에서 확인한 것:
+  - 팔란티어는 XLK 안에 있지만 섹터 내 시총 12/76위 — 상위 5 규칙에 잘린다
+  - 앱러빈 8/24(XLC), 비스트라 8/34(XLU) 도 같은 이유로 잘린다
+  - 블룸에너지는 11개 섹터 ETF 어디에도 없다(시총 64B 인데 S&P500 미편입)
+  - quote 응답에 fiftyTwoWeekChangePercent / twoHundredDayAverageChangePercent /
+    fiftyDayAverageChangePercent / averageDailyVolume3Month 가 전부 온다(한국 포함)
+
+2차 프로브(이 파일)에서 확인할 것:
+  - S&P500 밖 대형주를 담는 SSGA 파일이 있는가(중형·소형·전체시장)
+  - 그 파일에 GICS 섹터 열이 있어 11개 섹터로 매핑할 수 있는가
 """
-import json
+import io
 import sys
 
 sys.path.insert(0, ".")
 
 import sources  # noqa: E402
 
-WATCH = {"PLTR": "팔란티어", "BE": "블룸에너지", "VST": "비스트라", "APP": "앱러빈"}
+WATCH = {"BE": "블룸에너지", "PLTR": "팔란티어", "APP": "앱러빈", "VST": "비스트라"}
+
+# 같은 SSGA 주소 규칙을 쓰는 광범위 ETF 후보.
+# SPMD=S&P400 중형, SPSM=S&P600 소형, SPTM=S&P1500 전체, SPY=S&P500,
+# MDY=S&P400(구형), TOTL 은 채권이라 제외.
+BROAD = ["sptm", "spmd", "spsm", "mdy", "spy"]
 
 
-def probe_quote_fields():
+def _rows(etf):
+    import openpyxl
+    raw = sources._get(sources.SSGA_HOLDINGS.format(etf=etf)).content
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    try:
+        return [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+
+def probe_broad():
     print("=" * 60)
-    print("[1] 야후 quote 응답 필드")
-    session, crumb = sources._crumb_session()
-    if not (session and crumb):
-        print("  crumb 실패 — quote API 를 못 씀")
-        return
-    r = session.get(sources.QUOTE_URL,
-                    params={"symbols": ",".join(WATCH), "crumb": crumb},
-                    timeout=sources.TIMEOUT)
-    r.raise_for_status()
-    res = r.json().get("quoteResponse", {}).get("result", [])
-    if not res:
-        print("  결과 없음")
-        return
-    keys = sorted(res[0])
-    print(f"  필드 {len(keys)}개: {', '.join(keys)}")
-    for q in res:
-        print("   ", json.dumps({k: q.get(k) for k in (
-            "symbol", "marketCap", "regularMarketChangePercent",
-            "fiftyTwoWeekChangePercent", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
-            "twoHundredDayAverageChangePercent", "fiftyDayAverageChangePercent",
-            "averageDailyVolume3Month")}, ensure_ascii=False))
-
-
-def probe_holdings():
-    print("=" * 60)
-    print("[2] SPDR 섹터 ETF 보유목록 전체 — 감시 종목이 어디에 있나")
-    universe = {}
-    for etf, name in sources.SECTORS:
+    print("[1] S&P500 밖 종목을 담는 SSGA 파일 탐색")
+    for etf in BROAD:
         try:
-            hs = sources._top_holdings(etf, n=999)
+            rows = _rows(etf)
         except Exception as e:                     # noqa: BLE001
-            print(f"  {etf}({name}) 실패: {type(e).__name__}: {e}")
+            print(f"  {etf.upper()}: 실패 {type(e).__name__}: {e}")
             continue
-        universe[etf] = hs
-        hit = [h["ticker"] for h in hs if h["ticker"] in WATCH]
-        print(f"  {etf}({name}) 보유 {len(hs)}종목"
-              + (f"  ← 감시종목 {hit}" if hit else ""))
-
-    print("-" * 60)
-    print("[3] 감시 종목의 섹터 내 시총 순위(지금 규칙은 상위 5만 남긴다)")
-    for etf, hs in universe.items():
-        if not any(h["ticker"] in WATCH for h in hs):
+        hi = next((i for i, r in enumerate(rows)
+                   if r and any(str(c).strip() == "Ticker" for c in r if c)), None)
+        if hi is None:
+            print(f"  {etf.upper()}: Ticker 헤더 없음")
             continue
-        quotes = sources.fetch_quotes([h["ticker"] for h in hs])
-        ranked = sorted(hs, key=lambda h: (quotes.get(h["ticker"]) or {})
-                        .get("market_cap") or 0, reverse=True)
-        for i, h in enumerate(ranked, 1):
-            if h["ticker"] in WATCH:
-                cap = (quotes.get(h["ticker"]) or {}).get("market_cap") or 0
-                print(f"  {etf}: {h['ticker']}({WATCH[h['ticker']]}) "
-                      f"시총 {cap/1e9:,.0f}B — 섹터 내 {i}/{len(ranked)}위")
-        print(f"    (참고) {etf} 시총 상위 5: "
-              + ", ".join(h["ticker"] for h in ranked[:5]))
+        hdr = [str(c).strip() if c else "" for c in rows[hi]]
+        ti = hdr.index("Ticker")
+        body = [r for r in rows[hi + 1:] if r and r[ti]]
+        tick = {str(r[ti]).strip().upper() for r in body}
+        hit = [f"{t}({n})" for t, n in WATCH.items() if t in tick]
+        print(f"  {etf.upper()}: {len(body)}종목 | 열={hdr}")
+        print(f"      감시종목: {', '.join(hit) if hit else '없음'}")
+        # 감시종목이 있으면 그 행을 통째로 보여준다(섹터 열 값 확인용)
+        si = hdr.index("Sector") if "Sector" in hdr else None
+        for r in body:
+            t = str(r[ti]).strip().upper()
+            if t in WATCH:
+                print(f"      → {t}: 섹터={r[si] if si is not None else '(열 없음)'}")
+        if si is not None:
+            secs = {}
+            for r in body:
+                secs[str(r[si]).strip()] = secs.get(str(r[si]).strip(), 0) + 1
+            print(f"      섹터 값: {sorted(secs.items(), key=lambda kv: -kv[1])}")
 
-    print("-" * 60)
-    print("[4] 감시 종목 중 어느 ETF 에도 없는 것")
-    inside = {h["ticker"] for hs in universe.values() for h in hs}
-    missing = [f"{t}({n})" for t, n in WATCH.items() if t not in inside]
-    print("  " + (", ".join(missing) if missing else "없음 — 전부 커버됨"))
 
-
-def probe_kr():
+def probe_sector_file_columns():
     print("=" * 60)
-    print("[5] 한국 테마 풀 크기 + KRX 종목 52주 등락률 수신 여부")
-    import kr_sources
-    pools = kr_sources.get_pools()
-    for t, cs in sorted(pools.items(), key=lambda kv: -len(kv[1])):
-        print(f"  {t}: 후보 {len(cs)}종목")
-    sample = ["005930.KS", "042660.KS", "112040.KQ", "277810.KQ"]
-    session, crumb = sources._crumb_session()
-    if not (session and crumb):
-        print("  crumb 실패")
-        return
-    r = session.get(sources.QUOTE_URL,
-                    params={"symbols": ",".join(sample), "crumb": crumb},
-                    timeout=sources.TIMEOUT)
-    for q in r.json().get("quoteResponse", {}).get("result", []):
-        print("   ", json.dumps({k: q.get(k) for k in (
-            "symbol", "marketCap", "fiftyTwoWeekChangePercent",
-            "twoHundredDayAverageChangePercent")}, ensure_ascii=False))
+    print("[2] 섹터 ETF 파일에도 섹터 열이 있나(있으면 매핑 기준을 통일할 수 있다)")
+    rows = _rows("xlk")
+    hi = next((i for i, r in enumerate(rows)
+               if r and any(str(c).strip() == "Ticker" for c in r if c)), None)
+    print("  XLK 열:", [str(c).strip() if c else "" for c in rows[hi]])
 
 
 if __name__ == "__main__":
-    for fn in (probe_quote_fields, probe_holdings, probe_kr):
+    for fn in (probe_broad, probe_sector_file_columns):
         try:
             fn()
         except Exception as e:                     # noqa: BLE001
