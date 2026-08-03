@@ -397,6 +397,9 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <h2>섹터별 등락 <span class="segs" id="secbar-segs"></span></h2>
   <div class="panel"><div class="chartbox bar"><canvas id="secbar"></canvas></div></div>
 
+  <h2>섹터 2년 상대성과 <span class="hint">— 2년 전 = 100</span></h2>
+  <div class="panel"><div class="chartbox bar"><canvas id="sectrend"></canvas></div></div>
+
   <div id="flows-sec" style="display:none">
     <h2>외국인 수급</h2>
     <div class="panel">
@@ -453,7 +456,7 @@ function ma(vals,w){const o=[];let acc=0;
 // grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
 function candleChart(canvas, ohlc, {unit='', span=null}={}){
  try{
-  const labels=ohlc.map(r=>r[0]);
+  const labels=ohlc.map(r=>r[0]), n=ohlc.length;
   const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
   // 시가와 종가가 같은 날(도지)은 몸통 높이가 0 이라 아무것도 안 보인다.
   // 전체 가격 범위의 0.06% 만큼 최소 두께를 준다 — 실제 봉과 구분되는 실선.
@@ -461,7 +464,34 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   const eps=Math.max((hi-lo)*0.0006, 1e-9);
   const body=r=>{const a=Math.min(r[1],r[4]), b=Math.max(r[1],r[4]);
     return b-a<eps ? [a-eps/2, b+eps/2] : [a,b];};
+  // 일목균형표 구름대 — 선행스팬을 26봉 앞으로 밀어 그리므로 미래 라벨이
+  // 필요하다(주말을 건너뛴 영업일). 텔레그램 차트와 같은 표준 설정(9/26/52).
+  const AHEAD=26, hi9=[],lo9=[],future=[];
+  const mid=(from,to)=>{let h=-Infinity,l=Infinity;
+    for(let i=from;i<=to;i++){h=Math.max(h,ohlc[i][2]);l=Math.min(l,ohlc[i][3]);}
+    return (h+l)/2;};
+  const spanA=[], spanB=[];
+  for(let i=0;i<n;i++){
+    spanA.push(i>=25 ? (mid(i-8,i)+mid(i-25,i))/2 : null);   // (전환9+기준26)/2
+    spanB.push(i>=51 ? mid(i-51,i) : null);                  // 52기간 중간
+  }
+  // 26봉 앞으로 이동: 앞쪽 26칸을 비우고 뒤쪽에 미래 라벨을 붙인다
+  const pad=Array(AHEAD).fill(null);
+  const cloudA=pad.concat(spanA), cloudB=pad.concat(spanB);
+  let d=new Date(labels[n-1]);
+  while(future.length<AHEAD){
+    d=new Date(d.getTime()+86400000);
+    if(d.getUTCDay()!==0 && d.getUTCDay()!==6) future.push(d.toISOString().slice(0,10));
+  }
+  labels.push(...future);
+
   const ds=[
+    // 구름: 선행1이 선행2보다 위면 양운(붉은), 아래면 음운(푸른)
+    {type:'line', label:'일목 구름대', data:cloudA, borderColor:'transparent',
+     pointRadius:0, pointHitRadius:0, tension:0, order:9,
+     fill:{target:'+1', above:'rgba(227,73,72,.16)', below:'rgba(42,120,214,.16)'}},
+    {type:'line', label:'__spanB', data:cloudB, borderColor:'transparent',
+     pointRadius:0, pointHitRadius:0, tension:0, order:9, fill:false},
     {label:'고저', data:ohlc.map(r=>[r[3],r[2]]), backgroundColor:ohlc.map(col),
      barPercentage:0.14, categoryPercentage:0.95, grouped:false, order:2},
     {label:'시종', data:ohlc.map(body), backgroundColor:ohlc.map(col),
@@ -474,19 +504,21 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   // 1년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
   // 잡힌다 — 네이버 차트와 같은 조작감.
-  const n=ohlc.length, x0=span?Math.max(0,n-span):0;
+  const total=labels.length;                  // 캔들 + 미래 26봉
+  const x0=span?Math.max(0,n-span):0;
   return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},options:{
     responsive:true,maintainAspectRatio:false,animation:false,
     interaction:{mode:'index',intersect:false},
     plugins:{legend:{display:true,labels:{boxWidth:14,font:{size:10},
         // 캔들(고저·시종)은 봉마다 색이 달라 범례에 단색으로 뜨면 오해를 준다
-        filter:it=>it.text!=='고저'&&it.text!=='시종'}},
+        filter:it=>!['고저','시종','__spanB'].includes(it.text)}},
       tooltip:{callbacks:{title:it=>it[0].label,label:c=>{
-        if(c.datasetIndex>1) return c.dataset.label+': '+fmt(c.parsed.y);
-        if(c.datasetIndex===1){const r=ohlc[c.dataIndex];
+        const lb=c.dataset.label;
+        if(lb==='__spanB'||lb==='고저'||lb==='일목 구름대') return null;
+        if(lb==='시종'){const r=ohlc[c.dataIndex]; if(!r) return null;
           return [`시 ${fmt(r[1])}`,`고 ${fmt(r[2])}`,`저 ${fmt(r[3])}`,`종 ${fmt(r[4])}${unit}`];}
-        return null;}}},
-      zoom:{limits:{x:{min:0, max:n-1, minRange:10}},
+        return c.parsed.y==null?null:lb+': '+fmt(c.parsed.y);}}},
+      zoom:{limits:{x:{min:0, max:total-1, minRange:10}},
             pan:{enabled:true, mode:'x', modifierKey:null},
             zoom:{wheel:{enabled:true, speed:0.12}, pinch:{enabled:true},
                   mode:'x',
@@ -495,7 +527,7 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
                     document.querySelectorAll('#dlg-segs button.on')
                       .forEach(b=>b.classList.remove('on'));
                     chart.update('none');}}}},
-    scales:{x:{min:x0, max:n-1, ticks:{maxTicksLimit:8,font:{size:10}},
+    scales:{x:{min:x0, max:total-1, ticks:{maxTicksLimit:8,font:{size:10}},
                grid:{display:false}, stacked:false},
             y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
                beginAtZero:false}}}});
@@ -579,6 +611,33 @@ try{
   });
   drawBar('d');
 }catch(e){console.error('secbar:',e);}
+
+// ---- 섹터 2년 상대성과 (텔레그램 sectors_2y 와 같은 내용)
+try{
+  const usable=D.sectors.filter(s=>(s.series||[]).length>30);
+  if(usable.length){
+    // 성과 좋은 순으로 색을 배분해야 범례가 읽힌다
+    const perf=s=>s.series[s.series.length-1][1]/s.series[0][1]*100;
+    const sorted=[...usable].sort((a,b)=>perf(b)-perf(a));
+    // 날짜 합집합으로 축을 맞춘다(섹터마다 거래일이 미묘하게 다르다)
+    const allD=[...new Set(sorted.flatMap(s=>s.series.map(p=>p[0])))].sort();
+    const hue=i=>`hsl(${Math.round(i*(360/sorted.length))},68%,45%)`;
+    new Chart(document.getElementById('sectrend'),{type:'line',
+      data:{labels:allD, datasets:sorted.map((s,i)=>{
+        const m=new Map(s.series), base=s.series[0][1];
+        return {label:`${s.name} ${(perf(s)).toFixed(0)}`,
+          data:allD.map(d=>m.has(d)?m.get(d)/base*100:null),
+          borderColor:hue(i), borderWidth:1.35, pointRadius:0, pointHitRadius:6,
+          tension:0, spanGaps:true};})},
+      options:{responsive:true,maintainAspectRatio:false,
+        interaction:{mode:'index',intersect:false},
+        plugins:{legend:{position:'right',labels:{boxWidth:12,font:{size:10.5}}},
+          tooltip:{callbacks:{label:c=>c.parsed.y==null?null:
+            c.dataset.label.replace(/ [-\d.]+$/,'')+': '+fmt(c.parsed.y,1)}}},
+        scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
+                y:{ticks:{font:{size:10}},grid:{color:'#e1e0d9'}}}}});
+  }
+}catch(e){console.error('sectrend:',e);}
 
 // ---- 외국인 수급 (한국판)
 if(D.flows){
@@ -673,9 +732,9 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
     // 차트는 한 번만 만들고(1년 전체), 프리셋은 x 축 범위만 바꾼다.
     // 다시 그리면 줌 상태가 초기화돼 조작감이 끊긴다.
     const setSpan=days=>{
-      const n=ohlc.length;
+      const n=ohlc.length, total=dlgChart.data.labels.length;
       dlgChart.options.scales.x.min = days ? Math.max(0, n-days) : 0;
-      dlgChart.options.scales.x.max = n-1;
+      dlgChart.options.scales.x.max = total-1;   // 구름 앞부분(미래)까지
       dlgChart.update('none');
       segs.querySelectorAll('button').forEach(b=>
         b.classList.toggle('on', +b.dataset.d===days));
