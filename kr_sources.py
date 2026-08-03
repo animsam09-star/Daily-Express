@@ -121,6 +121,8 @@ def fetch_indices():
 
 
 MOM_MIN_CAP = 5_000e8   # 주도주 후보 시가총액 하한(5,000억) — 잡주를 막는다
+MOM_MIN_RET = 30.0      # 1년 등락률 하한(%) — 이 아래면 '주도주'라 부를 게 못 된다
+MOM_MIN_TREND = 0.03    # 200일선 대비 최소 이격 — 겨우 걸친 종목은 매일 들락거린다
 MOM_N = 2               # 테마당 주도주 자리 수
 
 
@@ -159,7 +161,9 @@ def _pick_extras(full_pools, pools, quotes):
             r12, vs200 = q.get("chg_52w"), q.get("vs_200d")
             if (q.get("market_cap") or 0) < MOM_MIN_CAP:
                 continue
-            if r12 is None or vs200 is None or r12 <= 0 or vs200 <= 0:
+            if r12 is None or vs200 is None:
+                continue
+            if r12 < MOM_MIN_RET or vs200 < MOM_MIN_TREND:
                 continue
             scored.append((r12, c))
         scored.sort(reverse=True)

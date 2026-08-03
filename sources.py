@@ -405,6 +405,8 @@ NOT_COMMON = re.compile(
 
 MOM_MIN_CAP = 10e9      # 주도주 후보 시가총액 하한(100억 달러) — 잡주를 막는다
 MOM_MIN_VOL = 300_000   # 하루 거래량 하한 — 유동성 없는 종목은 뉴스도 없다
+MOM_MIN_RET = 30.0      # 1년 등락률 하한(%) — 이 아래면 '주도주'라 부를 게 못 된다
+MOM_MIN_TREND = 0.03    # 200일선 대비 최소 이격 — 겨우 걸친 종목은 매일 들락거린다
 MOM_N = 2               # 섹터당 주도주 자리 수
 
 # 점수와 무관하게 항상 넣을 종목. 값은 넣을 섹터(None 이면 스크리너 분류를 따른다).
@@ -415,7 +417,12 @@ WATCHLIST = {
 }
 
 
-def _num(v):
+def _cell(v):
+    """스크리너 표의 '64,301,210,179.00' / '$218.32' 같은 값을 수로. 없으면 0.
+
+    이름을 _num 으로 두면 파일 아래쪽의 국채 파싱용 _num(실패 시 None 반환)에
+    가려져 시가총액이 통째로 None 이 된다(실측: 정렬에서 TypeError).
+    """
     try:
         return float(str(v).replace(",", "").replace("$", "").replace("%", ""))
     except (TypeError, ValueError):
@@ -445,8 +452,8 @@ def fetch_market_universe():
             continue
         out.setdefault(sector, []).append({
             "ticker": _yahoo_ticker(sym), "name": name,
-            "market_cap": _num(row.get("marketCap")),
-            "volume": _num(row.get("volume")),
+            "market_cap": _cell(row.get("marketCap")),
+            "volume": _cell(row.get("volume")),
         })
     for hs in out.values():
         hs.sort(key=lambda h: h["market_cap"], reverse=True)
@@ -458,11 +465,15 @@ def _mom_score(q):
 
     1년 수익률만 보면 작년에 오르고 올해 내내 흘러내린 종목이 뽑힌다.
     200일 이동평균 위에 있을 것을 함께 요구해 '아직 오르는 중'만 남긴다.
+    하한을 두는 이유는 실측(한국판)에서 나왔다 — 조건이 등락률 0% 이상이면
+    아무도 안 오른 섹터에서 1년 +13% 짜리가 '주도주'로 올라온다.
     """
     if not q:
         return None
     r12, vs200 = q.get("chg_52w"), q.get("vs_200d")
-    if r12 is None or vs200 is None or r12 <= 0 or vs200 <= 0:
+    if r12 is None or vs200 is None:
+        return None
+    if r12 < MOM_MIN_RET or vs200 < MOM_MIN_TREND:
         return None
     return r12
 
