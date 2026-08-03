@@ -367,10 +367,14 @@ h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
    페이지 전체에 가로 스크롤이 생겨 화면이 오른쪽으로 치우쳐 보인다. */
 .secgrid>.panel{display:flex;flex-direction:column;min-width:0}
 .secgrid>.panel>*{min-width:0}
-.secgrid>.panel>.tablewrap{margin-top:auto}
-.secnote{min-height:36px}
 /* 표가 좁은 화면에서 넘치면 표 안에서만 스크롤한다(본문은 절대 안 밀린다) */
 .tablewrap{overflow-x:auto}
+/* 섹터 코멘트는 길이가 제각각이라, 그대로 두면 아래 표가 카드마다 다른
+   높이에서 시작해 옆 카드와 줄이 어긋난다. 두 줄로 고정하고 넘치면 자른다
+   (전문은 title 툴팁). 코멘트가 없는 카드도 같은 자리를 비워 둔다. */
+.secnote{height:56px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
+         -webkit-box-orient:vertical}
+.secnote.empty{background:transparent}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
 .sechead .spans{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -424,7 +428,13 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   color:var(--ink2);transition:border-color .15s}
 .segs button:hover{border-color:rgba(11,11,11,.3)}
 .segs button.on{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:700}
-@media(min-width:760px){.secgrid{grid-template-columns:1fr 1fr}}
+/* 두 칸으로 놓이는 화면에서는 표 높이까지 고정해 카드 크기를 완전히 통일한다
+   (종목 수·뉴스 줄 수가 카드마다 달라 그냥 두면 높이가 제각각이다).
+   한 칸으로 접히는 좁은 화면에서는 카드 안 스크롤이 성가시므로 풀어 준다. */
+@media(min-width:760px){
+  .secgrid{grid-template-columns:1fr 1fr}
+  .secgrid>.panel>.tablewrap{height:340px;overflow-y:auto}
+}
 </style></head>
 <body>
 <div class="topbar"><div class="topbar-in">
@@ -742,7 +752,8 @@ D.sectors.forEach(s=>{
   div.innerHTML=`<div class="sechead">
       <b class="${cls(s.chg_pct)}">${s.chg_pct>=0?'▲':'▼'} ${s.name}${s.symbol!==s.name?` (${s.symbol})`:''} ${sgn(s.chg_pct)}%</b>
       <span class="spans">${spans(s.returns)}</span></div>
-    ${s.note?`<div class="secnote">💬 ${s.note}</div>`:''}
+    <div class="secnote${s.note?'':' empty'}" title="${
+      (s.note||'').replace(/"/g,'&quot;')}">${s.note?'💬 '+s.note:''}</div>
     <div class="chartbox mini">${s.series.length?`<canvas id="c-${s.symbol}"></canvas>`:''}</div>
     <div class="tablewrap"><table>
       <thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
