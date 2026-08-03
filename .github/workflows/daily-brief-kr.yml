@@ -11,6 +11,11 @@ on:
     # UTC 06:45 는 한국시간과 같은 날이므로 요일도 월~금(1-5) 그대로 쓴다.
     - cron: "45 6 * * 1-5"
   workflow_dispatch:        # 정시 발송(Routine) + 수동 실행(테스트용)
+    inputs:
+      web_only:
+        description: '텔레그램 발송 없이 웹 대시보드만 갱신·배포'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -79,9 +84,11 @@ jobs:
         if: steps.guard.outputs.skip != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         run: npm install -g @anthropic-ai/claude-code
 
+      # web_only 면 --dry-run: 수집·차트·웹 대시보드는 그대로 만들고
+      # 텔레그램 발송만 생략한다. schedule 실행에서는 inputs 가 비어 false.
       - name: 브리핑 발송
         if: steps.guard.outputs.skip != 'true'
-        run: python main_kr.py
+        run: python main_kr.py ${{ inputs.web_only == true && '--dry-run' || '' }}
 
       # ---- 웹 대시보드 (Cloudflare Pages) ---- daily-brief.yml 과 같은 구조
       - name: 웹 대시보드 아티팩트 보관
