@@ -540,7 +540,10 @@ def pick_extras(holdings, universe):
             picked.append({**r, "pick": "momentum"})
         for p in picked:
             r = rets.get(p["ticker"]) or {}
-            p.update(quotes.get(p["ticker"]) or {})
+            # 시세가 비는 값(None)으로 스크리너 값을 덮지 않는다. 덮으면 시총이
+            # 통째로 사라진다(실측: SharkNinja·Hormel 등이 0B 로 찍혔다).
+            p.update({k: v for k, v in (quotes.get(p["ticker"]) or {}).items()
+                      if v is not None})
             p["returns"] = r.get("returns", {})
             p["series"] = r.get("series", [])
             p["ohlc"] = r.get("ohlc", [])
