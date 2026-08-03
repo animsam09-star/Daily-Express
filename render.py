@@ -431,18 +431,22 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
 
     # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
-    for note_cap in (NOTE_MAX, 45, 30):
-        cap = _build_caption(sector, holdings, picked, note_cap, cur, px, bench,
-                             sector_note)
-        if _visible_len(cap) <= CAPTION_LIMIT:
-            return cap
+    # 줄이는 순서: 주도주 자리 → 뉴스 길이 → 뉴스 개수.
+    # 뉴스를 먼저 줄이면 '왜 움직였나'가 사라져 브리핑의 핵심이 빠진다.
+    core = [h for h in holdings if not h.get("pick")]
+    for hs in (holdings, core + [h for h in holdings if h.get("pick")][:1], core):
+        for note_cap in (NOTE_MAX, 45, 30):
+            cap = _build_caption(sector, hs, picked, note_cap, cur, px, bench,
+                                 sector_note)
+            if _visible_len(cap) <= CAPTION_LIMIT:
+                return cap
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, holdings, subset, 30, cur, px, bench, sector_note)
+        cap = _build_caption(sector, core, subset, 30, cur, px, bench, sector_note)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
     # 최후 수단: 섹터 코멘트까지 내려놓고 종목 표만 남긴다
-    return _build_caption(sector, holdings, {}, NOTE_MAX, cur, px, bench)
+    return _build_caption(sector, core, {}, NOTE_MAX, cur, px, bench)
 
 
 NAME_DROP = re.compile(
@@ -521,6 +525,10 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
         what = biz_map.get(h["ticker"])
         if what:
             label += f" / {what}"
+        # 시총 상위 5가 아니라 최근 흐름으로 뽑힌 종목은 그렇다고 밝힌다.
+        # 표시가 없으면 시총 순위가 뒤바뀐 것처럼 읽힌다.
+        if h.get("pick"):
+            label = ("🔥 " if h["pick"] == "momentum" else "☆ ") + label
         head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.1f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)

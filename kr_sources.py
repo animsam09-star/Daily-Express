@@ -120,15 +120,64 @@ def fetch_indices():
     return out
 
 
+MOM_MIN_CAP = 5_000e8   # 주도주 후보 시가총액 하한(5,000억) — 잡주를 막는다
+MOM_N = 2               # 테마당 주도주 자리 수
+
+
+def _row(code, quotes, names, rets, pick=None):
+    """종목 한 줄. 시세가 없으면 None(표에서 뺀다)."""
+    q = quotes.get(_ys(code)) or {}
+    if q.get("price") is None:
+        return None
+    r = rets.get(_ys(code)) or {}
+    row = {"ticker": code, "name": names.get(code, code),
+           "price": q.get("price"), "market_cap": q.get("market_cap"),
+           "chg_pct": q.get("chg_pct"),
+           "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),
+           "returns": r.get("returns", {}), "series": r.get("series", []),
+           "ohlc": r.get("ohlc", [])}
+    if pick:
+        row["pick"] = pick
+    return row
+
+
+def _pick_extras(full_pools, pools, quotes):
+    """테마별 주도주 — 상위 20 밖에서 최근 1년 많이 오르고 추세가 살아 있는 종목.
+
+    1년 등락률만 보면 작년에 오르고 올해 내내 흘러내린 종목이 뽑히므로,
+    200일 이동평균 위에 있을 것을 함께 요구한다. 미국판(sources.pick_extras)과
+    같은 기준이다.
+    """
+    out = {}
+    for theme, pool in full_pools.items():
+        shown = set(pools.get(theme, [])[:TOP_N])
+        scored = []
+        for c in pool:
+            if c in shown:
+                continue
+            q = quotes.get(_ys(c)) or {}
+            r12, vs200 = q.get("chg_52w"), q.get("vs_200d")
+            if (q.get("market_cap") or 0) < MOM_MIN_CAP:
+                continue
+            if r12 is None or vs200 is None or r12 <= 0 or vs200 <= 0:
+                continue
+            scored.append((r12, c))
+        scored.sort(reverse=True)
+        if scored:
+            out[theme] = [c for _, c in scored[:MOM_N]]
+    return out
+
+
 def fetch_sectors_and_holdings():
     """테마별 시가총액 상위 5종목과, 그 시총 가중 등락률로 만든 섹터 지표.
 
     한국은 미국의 SPDR 처럼 테마별 ETF 보유종목 공시가 일관되지 않아,
     후보 풀에서 시총 상위를 골라 직접 집계한다.
     """
-    pools = get_pools()
-    codes = sorted({c for pool in pools.values() for c in pool})
+    full_pools = get_pools()
+    codes = sorted({c for pool in full_pools.values() for c in pool})
     quotes = _resolve_suffixes(codes)          # 코스피/코스닥 접미사 확정
+    pools = full_pools
 
     # 테마마다 시가총액 상위 POOL_TOP 개만 쓴다. 금액 하한으로 자르면
     # 테마별 종목 수가 들쭉날쭉해져 지수 간 비교가 어렵다.
@@ -145,8 +194,15 @@ def fetch_sectors_and_holdings():
              for t, cs in pools.items()}
     pools = {t: cs for t, cs in pools.items() if cs}
 
+    # 시총 상위 5 밖의 주도주. 후보는 상위 20으로 자르기 전의 테마 전체다
+    # (업종 풀은 200종목이 넘는 테마도 있어, 시총으로 자르면 급등 중형주가
+    #  구조적으로 사라진다).
+    extras = _pick_extras(full_pools, pools, quotes)
+
     hist_codes = {c for cs in pools.values() for c in cs}
+    hist_codes |= {c for cs in extras.values() for c in cs}
     name_codes = {c for cs in pools.values() for c in cs[:TOP_N]}
+    name_codes |= {c for cs in extras.values() for c in cs}
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_names = ex.submit(fetch_names, sorted(name_codes))
@@ -155,25 +211,17 @@ def fetch_sectors_and_holdings():
 
     sectors, holdings = [], {}
     for theme, pool in pools.items():
-        rows = []
-        for c in pool:
-            q = quotes.get(_ys(c)) or {}
-            if q.get("price") is None:
-                continue
-            r = rets.get(_ys(c)) or {}
-            rows.append({"ticker": c, "name": names.get(c, c),
-                         "price": q.get("price"), "market_cap": q.get("market_cap"),
-                         "chg_pct": q.get("chg_pct"),
-                         "returns": r.get("returns", {}),
-                         "series": r.get("series", []),
-                         "ohlc": r.get("ohlc", [])})
+        rows = [r for r in (_row(c, quotes, names, rets) for c in pool) if r]
         if not rows:
             continue
         for r in rows:
             r["weight"] = weight(theme, r["ticker"])
         # 지수 가중치와 같은 순서로 보여준다(ETF 테마는 구성비중, 그 외 시총)
         rows.sort(key=lambda r: r["weight"], reverse=True)
-        holdings[theme] = rows[:TOP_N]         # 메시지에는 상위 5종목만
+        # 메시지에는 상위 5종목 + 주도주. 상위 5의 자리는 그대로 두고 뒤에 붙인다.
+        holdings[theme] = rows[:TOP_N] + [
+            r for r in (_row(c, quotes, names, rets, pick="momentum")
+                        for c in extras.get(theme, [])) if r]
 
         # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.
         # 상위 5개만 쓰면 소부장(12종목)처럼 저변이 넓은 테마의 대표성이 떨어진다.

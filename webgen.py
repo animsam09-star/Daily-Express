@@ -85,6 +85,10 @@ def _holding(h, notes):
         "ohlc": _ds_ohlc(h.get("ohlc") or []),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
+        # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
+        # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
+        "pick": h.get("pick") or "",
+        "chg_52w": (round(h["chg_52w"], 1) if h.get("chg_52w") is not None else None),
     }
 
 
@@ -353,6 +357,10 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
              padding-top:0}
 .note-row a{color:var(--down-t)}
+/* 시총 상위가 아니라 최근 흐름으로 뽑힌 자리라는 표시 */
+.badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;
+       font-size:10.5px;font-weight:700;letter-spacing:.02em;vertical-align:1px;
+       color:var(--up-t);background:rgba(180,60,40,.10);white-space:nowrap}
 /* 캔버스에 !important 로 크기를 강제하면 Chart.js 의 리사이즈 계산과
    충돌해, 마우스를 올릴 때마다 캔버스가 조금씩 눌린다(피드백 루프).
    높이는 래퍼가 갖고 캔버스는 그 안을 절대배치로 채운다. */
@@ -688,7 +696,11 @@ D.sectors.forEach(s=>{
     const note=h.note?`<tr class="note-row"><td colspan="5">↳ ${h.note}
       ${h.note_url?` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>`:''}</td></tr>`:'';
     return `<tr class="stk" data-t="${h.ticker}">
-      <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span></td>
+      <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
+        h.pick?`<span class="badge" title="${h.pick==='momentum'
+          ?'시총 상위는 아니지만 최근 1년 상승률이 높고 200일선 위에 있는 종목'
+          :'항상 표시하도록 지정한 종목'}">${h.pick==='momentum'
+          ?'주도주'+(h.chg_52w!=null?` 1Y ${sgn(h.chg_52w)}`:'') :'관심'}</span>`:''}</td>
       <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
       <td>${h.price==null?'–':(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price))}</td>
       <td>${capF(h.market_cap,D.currency)}</td>
