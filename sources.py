@@ -112,10 +112,10 @@ def pct_change(series):
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(yahoo_ohlc, sym): (sym, name) for sym, name in INDICES}
+        futs = {ex.submit(yahoo_candles, sym): (sym, name) for sym, name in INDICES}
         for f, (sym, name) in futs.items():
             o = f.result()
-            s = [(d, c) for d, _, _, c in o]
+            s = [(d, c) for d, _, _, _, c in o]
             out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
                          "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
@@ -142,7 +142,8 @@ SSGA_HOLDINGS = (
     "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/"
     "etfs/us/holdings-daily-us-en-{etf}.xlsx"
 )
-TOP_N = 5
+TOP_N = 5          # 텔레그램 캡션에 넣는 종목 수(길이 제한이 빡빡하다)
+WEB_TOP_N = 10     # 웹 대시보드에 싣는 종목 수 — 화면은 길이 제약이 없다
 
 
 def _yahoo_ticker(t: str) -> str:
@@ -344,10 +345,10 @@ def fetch_returns(tickers):
 
 
 def fetch_sector_holdings(sector_symbols):
-    """섹터별 상위 5개 종목 + 각 종목의 주가·시가총액·당일 등락률·2개년 시계열.
+    """섹터별 시총 상위 종목 + 각 종목의 주가·시가총액·당일 등락률·2개년 시계열.
 
-    상위 5개 선정은 ETF 내 비중 순인데, 비중은 시가총액 가중이라
-    사실상 섹터 내 시가총액 상위와 같다. 비중 자체는 표시하지 않는다.
+    WEB_TOP_N 개까지 담는다. 텔레그램 캡션은 그중 앞 TOP_N 개만 쓰고,
+    웹 대시보드는 전부 보여준다(화면은 길이 제약이 없다).
     """
     with ThreadPoolExecutor(max_workers=6) as ex:
         holdings = dict(zip(sector_symbols,
@@ -356,12 +357,12 @@ def fetch_sector_holdings(sector_symbols):
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
     quotes = fetch_quotes(tickers)
 
-    # 시가총액 순으로 다시 세워 상위 TOP_N 만 남긴다
+    # 시가총액 순으로 다시 세워 상위 WEB_TOP_N 만 남긴다
     for sym, hs in list(holdings.items()):
         for h in hs:
             h.update(quotes.get(h["ticker"], {}))
         hs.sort(key=lambda h: h.get("market_cap") or 0, reverse=True)
-        holdings[sym] = hs[:TOP_N]
+        holdings[sym] = hs[:WEB_TOP_N]
 
     kept = sorted({h["ticker"] for hs in holdings.values() for h in hs})
     rets = fetch_returns(kept)
@@ -405,9 +406,18 @@ NOT_COMMON = re.compile(
 
 MOM_MIN_CAP = 10e9      # 주도주 후보 시가총액 하한(100억 달러) — 잡주를 막는다
 MOM_MIN_VOL = 300_000   # 하루 거래량 하한 — 유동성 없는 종목은 뉴스도 없다
-MOM_MIN_RET = 30.0      # 1년 등락률 하한(%) — 이 아래면 '주도주'라 부를 게 못 된다
-MOM_MIN_TREND = 0.03    # 200일선 대비 최소 이격 — 겨우 걸친 종목은 매일 들락거린다
 MOM_N = 2               # 섹터당 주도주 자리 수
+
+# 주도주는 '지금 시장을 이끄는 종목'이다. 1년 등락률로 뽑으면 작년에 오르고
+# 올해 내내 흘러내린 종목이 올라온다(실측: 팔란티어는 1년 -23%인데도 한때
+# 주도주였고, 1년 +470% 인 종목이 최근 50일선 아래인 경우도 있었다).
+# 그래서 3개월 등락률을 주 지표로 쓰고, 최근 1개월이 무너지지 않았는지로 거른다.
+MOM_MIN_3M = 15.0       # 3개월 등락률 하한(%)
+MOM_MIN_1M = 0.0        # 1개월 등락률 하한(%) — 최근에 꺾인 종목은 뺀다
+# 3개월 등락률은 시세 요약(quote)에 없고 시계열을 받아야 나온다. 전 종목의
+# 시계열을 받을 수는 없으니, 50일선 이격(quote 에 있다)으로 섹터당 후보를
+# 이만큼 좁힌 뒤 그 후보만 실제 시계열로 재계산한다.
+MOM_PRESELECT = 12
 
 # 점수와 무관하게 항상 넣을 종목. 값은 넣을 섹터(None 이면 스크리너 분류를 따른다).
 # '지금은 모멘텀이 죽었지만 계속 보고 싶은' 종목을 여기에 적는다.
@@ -460,22 +470,19 @@ def fetch_market_universe():
     return out
 
 
-def _mom_score(q):
-    """최근 흐름 점수 — 1년 등락률. 단, 추세가 살아 있는 종목만 후보로 둔다.
+def mom_score(returns):
+    """주도주 점수 — 3개월 등락률. 자격 미달이면 None.
 
-    1년 수익률만 보면 작년에 오르고 올해 내내 흘러내린 종목이 뽑힌다.
-    200일 이동평균 위에 있을 것을 함께 요구해 '아직 오르는 중'만 남긴다.
-    하한을 두는 이유는 실측(한국판)에서 나왔다 — 조건이 등락률 0% 이상이면
-    아무도 안 오른 섹터에서 1년 +13% 짜리가 '주도주'로 올라온다.
+    한 달 등락률까지 함께 보는 이유는 3개월 안에서 앞에 오르고 최근에 꺾인
+    종목을 걸러내기 위해서다. 자격을 못 갖추면 자리를 비운다 — 아무도 안 오른
+    섹터에 억지로 '주도주'를 앉히면 그 표시 자체가 의미를 잃는다.
     """
-    if not q:
+    r3, r1 = (returns or {}).get("m3"), (returns or {}).get("m1")
+    if r3 is None or r3 < MOM_MIN_3M:
         return None
-    r12, vs200 = q.get("chg_52w"), q.get("vs_200d")
-    if r12 is None or vs200 is None:
+    if r1 is not None and r1 < MOM_MIN_1M:
         return None
-    if r12 < MOM_MIN_RET or vs200 < MOM_MIN_TREND:
-        return None
-    return r12
+    return r3
 
 
 def pick_extras(holdings, universe):
@@ -502,29 +509,43 @@ def pick_extras(holdings, universe):
 
     quotes = fetch_quotes(sorted({r["ticker"] for rs in cands.values() for r in rs}))
 
-    extras = {}
+    # 1차: 50일선 위에 있는 종목만, 이격이 큰 순으로 섹터당 MOM_PRESELECT 개.
+    #      전 종목의 시계열을 받는 건 불가능하므로 여기서 후보를 줄인다.
+    short = {}
     for sector, rows in cands.items():
+        keep = [r for r in rows
+                if (quotes.get(r["ticker"]) or {}).get("vs_50d") is not None
+                and quotes[r["ticker"]]["vs_50d"] > 0]
+        keep.sort(key=lambda r: quotes[r["ticker"]]["vs_50d"], reverse=True)
+        watch = [r for r in rows if r["ticker"] in WATCHLIST
+                 and WATCHLIST[r["ticker"]] in (None, sector)]
+        short[sector] = watch + [r for r in keep[:MOM_PRESELECT]
+                                 if r["ticker"] not in {w["ticker"] for w in watch}]
+
+    # 2차: 후보의 실제 시계열로 3개월·1개월 등락률을 재고 자격을 본다
+    rets = fetch_returns(sorted({r["ticker"] for rs in short.values() for r in rs}))
+
+    extras = {}
+    for sector, rows in short.items():
         picked, seen = [], set()
         for r in rows:                       # 워치리스트가 먼저 자리를 잡는다
             if r["ticker"] in WATCHLIST and WATCHLIST[r["ticker"]] in (None, sector):
                 picked.append({**r, "pick": "watch"})
                 seen.add(r["ticker"])
         scored = [(s, r) for r in rows if r["ticker"] not in seen
-                  and (s := _mom_score(quotes.get(r["ticker"]))) is not None]
+                  and (s := mom_score((rets.get(r["ticker"]) or {})
+                                      .get("returns"))) is not None]
         scored.sort(key=lambda sr: sr[0], reverse=True)
         for _, r in scored[:MOM_N]:
             picked.append({**r, "pick": "momentum"})
-        if picked:
-            extras[sector] = [{**p, **(quotes.get(p["ticker"]) or {})} for p in picked]
-
-    tickers = sorted({p["ticker"] for ps in extras.values() for p in ps})
-    rets = fetch_returns(tickers)
-    for ps in extras.values():
-        for p in ps:
+        for p in picked:
             r = rets.get(p["ticker"]) or {}
+            p.update(quotes.get(p["ticker"]) or {})
             p["returns"] = r.get("returns", {})
             p["series"] = r.get("series", [])
             p["ohlc"] = r.get("ohlc", [])
+        if picked:
+            extras[sector] = picked
     return extras
 
 
@@ -535,8 +556,8 @@ def fetch_kr_proxy():
     구 Eurex 연계 야간시장 종료 — 러너 프로브로 실측 확인). 대신 미국장에서
     거래되는 한국 ETF 의 등락을 야간 대용치로 쓴다. 프록시임을 표기한다.
     """
-    o = yahoo_ohlc("EWY")
-    s = [(d, c) for d, _, _, c in o]
+    o = yahoo_candles("EWY")
+    s = [(d, c) for d, _, _, _, c in o]
     return {"series": s, "ohlc": o, "last": s[-1][1], "chg_pct": pct_change(s),
             "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
 
@@ -563,8 +584,8 @@ def sort_sectors_by_cap(sectors, holdings):
 
 
 def fetch_fx():
-    o = yahoo_ohlc("KRW=X")
-    s = [(d, c) for d, _, _, c in o]
+    o = yahoo_candles("KRW=X")
+    s = [(d, c) for d, _, _, _, c in o]
     diff = s[-1][1] - s[-2][1] if len(s) > 1 else 0.0
     return {"series": s, "ohlc": o, "last": s[-1][1], "chg": diff}
 

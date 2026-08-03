@@ -50,13 +50,17 @@ CLOUD_UP, CLOUD_DOWN = "#e8a0a0", "#a0b8e8"     # 양운(붉은) / 음운(푸른
 
 
 def _ichimoku(ohlc):
-    """일목균형표 선행스팬 1·2. [(date, high, low, close), ...] 를 받는다.
+    """일목균형표 선행스팬 1·2.
 
+    입력은 [(date, high, low, close)] 또는 [(date, open, high, low, close)] 둘 다
+    받는다 — 시가는 캔들차트에만 필요해서 소스마다 형태가 다르다.
     전환선 9, 기준선 26, 선행스팬2 52, 선행 이동 26 — 표준 설정.
     구름대는 26일 앞으로 밀어 그리므로 미래 구간이 생긴다.
     """
     if len(ohlc) < 78:                          # 52 + 26. 모자라면 그리지 않는다
         return None
+    if len(ohlc[0]) == 5:                       # (date, open, high, low, close)
+        ohlc = [(d, h, l, c) for d, _o, h, l, c in ohlc]
     dates = [d for d, _, _, _ in ohlc]
     highs = [h for _, h, _, _ in ohlc]
     lows = [l for _, _, l, _ in ohlc]
@@ -393,6 +397,7 @@ CAPTION_LIMIT = 1000        # 텔레그램 상한 1024 에 여유를 둔다
 NOTE_MAX = 70               # 종목 메모 최대 글자수(두 문장까지 허용)
 SECTOR_NOTE_MAX = 120       # 섹터 종합 코멘트 최대 글자수
 MAX_NOTES = 3               # 섹터당 뉴스 최대 개수(등락 큰 종목 우선)
+TELEGRAM_TOP = 5            # 캡션에 싣는 시총 상위 종목 수(웹은 10종목)
 TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -433,7 +438,10 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
     # 줄이는 순서: 주도주 자리 → 뉴스 길이 → 뉴스 개수.
     # 뉴스를 먼저 줄이면 '왜 움직였나'가 사라져 브리핑의 핵심이 빠진다.
-    core = [h for h in holdings if not h.get("pick")]
+    # 데이터에는 섹터당 10종목이 들어 있다(웹 대시보드용). 텔레그램 캡션은
+    # 1,024자 제한이 빡빡해 앞 TELEGRAM_TOP 개만 싣는다.
+    core = [h for h in holdings if not h.get("pick")][:TELEGRAM_TOP]
+    holdings = core + [h for h in holdings if h.get("pick")]
     for hs in (holdings, core + [h for h in holdings if h.get("pick")][:1], core):
         for note_cap in (NOTE_MAX, 45, 30):
             cap = _build_caption(sector, hs, picked, note_cap, cur, px, bench,

@@ -52,12 +52,40 @@ def _ds_ohlc(ohlc):
 
     최근 1년치. 2년을 다 실으면 페이지가 무거워지고, 화면에서도 봉이 뭉개져
     읽히지 않는다. 가격은 소수 2자리면 충분하다(자릿수도 용량이다).
+
+    최근 6개월은 일봉, 그 이전은 주봉으로 묶는다. 섹터당 10종목을 실으면서
+    1년을 전부 일봉으로 담으면 페이지가 메가바이트 단위가 된다. 주봉은
+    시가=첫날 시가, 고가=최고, 저가=최저, 종가=마지막날 종가로 제대로 합친다
+    (샘플링하면 봉이 실제와 달라진다).
     """
     if not ohlc:
         return []
-    cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
-    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
-            for d, o, h, l, c in ohlc if d >= cut]
+    last = ohlc[-1][0]
+    cut, daily_from = (last - dt.timedelta(days=CANDLE_DAYS),
+                       last - dt.timedelta(days=DAILY_KEEP_DAYS))
+    out, week = [], []
+
+    def flush():
+        if week:
+            out.append([week[0][0].isoformat(), round(week[0][1], 2),
+                        round(max(r[2] for r in week), 2),
+                        round(min(r[3] for r in week), 2), round(week[-1][4], 2)])
+            week.clear()
+
+    for row in ohlc:
+        d = row[0]
+        if d < cut:
+            continue
+        if d >= daily_from:
+            flush()
+            out.append([d.isoformat(), round(row[1], 2), round(row[2], 2),
+                        round(row[3], 2), round(row[4], 2)])
+        else:
+            if week and d.isocalendar()[:2] != week[0][0].isocalendar()[:2]:
+                flush()
+            week.append(row)
+    flush()
+    return out
 
 
 def _returns(r):
@@ -88,13 +116,16 @@ def _holding(h, notes):
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
-        "chg_52w": (round(h["chg_52w"], 1) if h.get("chg_52w") is not None else None),
     }
 
 
-def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num"):
+def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num",
+                  ohlc=None):
+    # ohlc 를 주면 카드를 눌렀을 때 라인 대신 일봉 캔들 + 일목균형표 구름대가
+    # 뜬다. 지수·환율에는 있고 금리(재무부 CMT·네이버)에는 없다.
     return {"label": label, "value": value, "chg": chg, "unit": unit,
-            "chg_unit": chg_unit, "series": _ds(series or []), "fmt": fmt}
+            "chg_unit": chg_unit, "series": _ds(series or []), "fmt": fmt,
+            "ohlc": _ds_ohlc(ohlc or [])}
 
 
 def build_us(data, path):
@@ -113,13 +144,13 @@ def build_us(data, path):
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series")))
+                                         d.get("series"), ohlc=d.get("ohlc")))
     px = data.get("kr_proxy") or {}
     if px.get("last") is not None:
         # 코스피 야간선물 무료 시세 부재 — EWY(미국장 한국 ETF)가 야간 프록시
         summary.append(_summary_item("코스피 야간 프록시 EWY", round(px["last"], 2),
                                      round(px["chg_pct"], 2), "달러", "%",
-                                     px.get("series")))
+                                     px.get("series"), ohlc=px.get("ohlc")))
     for sym, label in (("US2Y", "미국채 2년"), ("US10Y", "미국채 10년"),
                        ("US30Y", "미국채 30년")):
         q = now.get(sym)
@@ -130,7 +161,7 @@ def build_us(data, path):
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series")))
+                                     fx.get("series"), ohlc=fx.get("ohlc")))
     corp, spread = dom.get("corp_aa3y") or {}, dom.get("spread") or {}
     if corp.get("last") is not None:
         summary.append(_summary_item("회사채 AA- 3년", round(corp["last"], 2),
@@ -181,11 +212,11 @@ def build_kr(data, path):
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series")))
+                                         d.get("series"), ohlc=d.get("ohlc")))
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series")))
+                                     fx.get("series"), ohlc=fx.get("ohlc")))
     for key, label in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "AA- 3년 Spread")):
         d = dom.get(key) or {}
@@ -579,8 +610,10 @@ D.summary.forEach((s,i)=>{
   el.innerHTML=`<div class="lb">${s.label}</div>
     <div class="v">${fmt(s.value, s.unit==='%'?(s.label.includes('국채')?3:2):s.unit==='bp'?1:s.unit==='원'?1:2)}${s.unit}</div>
     <div class="c ${cls(s.chg)}">${sgn(s.chg)}${s.chg_unit}</div>${spark(s.series,s.chg)}`;
-  if(s.series.length) el.onclick=()=>openDlg(s.label,
-    `${fmt(s.value)}${s.unit} (${sgn(s.chg)}${s.chg_unit})`, null, s.series, s.unit);
+  // 지수·환율은 ohlc 가 있어 캔들 + 일목균형표로 열리고, 금리는 라인으로 열린다
+  if(s.series.length||s.ohlc.length) el.onclick=()=>openDlg(s.label,
+    `${fmt(s.value)}${s.unit} (${sgn(s.chg)}${s.chg_unit})`, null, s.series,
+    s.unit, '', s.ohlc);
   cards.appendChild(el);
 });
 
@@ -698,9 +731,9 @@ D.sectors.forEach(s=>{
     return `<tr class="stk" data-t="${h.ticker}">
       <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
         h.pick?`<span class="badge" title="${h.pick==='momentum'
-          ?'시총 상위는 아니지만 최근 1년 상승률이 높고 200일선 위에 있는 종목'
+          ?'시총 상위는 아니지만 최근 3개월 상승률이 높고 최근 한 달도 꺾이지 않은 종목'
           :'항상 표시하도록 지정한 종목'}">${h.pick==='momentum'
-          ?'주도주'+(h.chg_52w!=null?` 1Y ${sgn(h.chg_52w)}`:'') :'관심'}</span>`:''}</td>
+          ?'주도주'+(h.returns.m3!=null?` 3M ${sgn(h.returns.m3)}`:'') :'관심'}</span>`:''}</td>
       <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
       <td>${h.price==null?'–':(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price))}</td>
       <td>${capF(h.market_cap,D.currency)}</td>

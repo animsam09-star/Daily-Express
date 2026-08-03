@@ -35,9 +35,9 @@ def probe_us():
         print(f"    시총 상위 5 : {core}")
         for p in extras.get(sym, []):
             cap = (p.get("market_cap") or 0) / 1e9
-            print(f"    + {p['pick']:<8} {p['ticker']:<6} {p['name'][:34]:<34} "
-                  f"시총 {cap:>6,.0f}B  1Y {p.get('chg_52w')}  "
-                  f"200일선 {p.get('vs_200d')}")
+            r = p.get("returns") or {}
+            print(f"    + {p['pick']:<8} {p['ticker']:<6} {p['name'][:30]:<30} "
+                  f"시총 {cap:>6,.0f}B  3M {r.get('m3')}  1M {r.get('m1')}")
 
 
 def probe_kr():
@@ -53,9 +53,9 @@ def probe_kr():
         for h in hs:
             if h.get("pick"):
                 cap = (h.get("market_cap") or 0) / 1e12
+                r = h.get("returns") or {}
                 print(f"    + {h['pick']:<8} {h['name'][:16]:<16} "
-                      f"시총 {cap:>5,.1f}조  1Y {h.get('chg_52w')}  "
-                      f"200일선 {h.get('vs_200d')}")
+                      f"시총 {cap:>5,.1f}조  3M {r.get('m3')}  1M {r.get('m1')}")
 
 
 if __name__ == "__main__":
