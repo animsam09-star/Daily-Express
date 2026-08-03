@@ -552,6 +552,107 @@ def pick_extras(holdings, universe):
     return extras
 
 
+# ------------------------------------------------ 기업 개요·분기 실적
+QUOTE_SUMMARY = "https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
+FUNDAMENTALS = ("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/"
+                "finance/timeseries/{sym}")
+# 실측(2026-08-03): quoteSummary 의 분기 손익은 4분기까지만 오고 영업이익이 비지만,
+# fundamentals-timeseries 는 5분기치를 영업이익까지 채워서 준다.
+FUND_TYPES = ",".join("quarterly" + t for t in
+                      ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS"))
+QUARTERS = 5
+SUMMARY_MAX = 400        # 개요는 화면에서 읽을 만큼만 — 야후 원문은 2천 자에 이른다
+
+
+def _fund_series(rows, key):
+    out = {}
+    for row in rows:
+        for v in row.get(key) or []:
+            if v and v.get("asOfDate") is not None:
+                out[v["asOfDate"]] = (v.get("reportedValue") or {}).get("raw")
+    return out
+
+
+def _trim(text, limit=SUMMARY_MAX):
+    """문장 중간에서 자르지 않는다 — 마지막 마침표까지만 남긴다."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    dot = max(cut.rfind(". "), cut.rfind("다. "), cut.rfind("함. "))
+    return (cut[:dot + 1] if dot > limit * 0.5 else cut.rstrip() + "…")
+
+
+def fetch_company_info(tickers):
+    """{티커: {"profile": {...}, "quarters": [...]}} — 기업 개요와 최근 5개 분기 실적.
+
+    개요는 야후 assetProfile(영문), 실적은 fundamentals-timeseries 를 쓴다.
+    종목 하나가 실패해도 그 종목만 비고 나머지는 그대로 나간다.
+    """
+    session, crumb = _crumb_session()
+    if not (session and crumb):
+        print("[info] crumb 실패 — 기업 개요·실적 생략")
+        return {}
+    # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준)
+    p2 = int(dt.datetime.now().timestamp())
+    p1 = p2 - int(60 * 60 * 24 * 365 * 2.2)
+
+    def one(sym):
+        info = {}
+        try:
+            r = session.get(QUOTE_SUMMARY.format(sym=sym),
+                            params={"modules": "assetProfile", "crumb": crumb},
+                            timeout=TIMEOUT)
+            p = ((r.json().get("quoteSummary", {}).get("result") or [{}])[0]
+                 .get("assetProfile") or {})
+            if p:
+                info["profile"] = {
+                    "summary": _trim(p.get("longBusinessSummary")),
+                    "industry": p.get("industry") or "",
+                    "employees": p.get("fullTimeEmployees"),
+                    "website": p.get("website") or "",
+                }
+        except Exception:                          # noqa: BLE001
+            pass
+        try:
+            r = session.get(FUNDAMENTALS.format(sym=sym),
+                            params={"symbol": sym, "type": FUND_TYPES,
+                                    "merge": "false", "period1": p1, "period2": p2,
+                                    "crumb": crumb}, timeout=TIMEOUT)
+            rows = (r.json().get("timeseries") or {}).get("result") or []
+            rev = _fund_series(rows, "quarterlyTotalRevenue")
+            op = _fund_series(rows, "quarterlyOperatingIncome")
+            net = _fund_series(rows, "quarterlyNetIncome")
+            eps = _fund_series(rows, "quarterlyBasicEPS")
+            dates = sorted(rev or net or op)[-QUARTERS:]
+            info["quarters"] = [{"date": d, "revenue": rev.get(d),
+                                 "op": op.get(d), "net": net.get(d),
+                                 "eps": eps.get(d)} for d in dates]
+        except Exception:                          # noqa: BLE001
+            pass
+        return sym, info
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        out = dict(ex.map(one, tickers))
+    got = sum(1 for v in out.values() if v.get("quarters"))
+    print(f"[info] 기업 개요·실적 {got}/{len(tickers)}종목")
+    return out
+
+
+def attach_company_info(holdings):
+    """holdings 각 종목에 profile·quarters 를 붙인다(제자리 수정)."""
+    if not holdings:
+        return holdings
+    tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
+    info = fetch_company_info(tickers)
+    for hs in holdings.values():
+        for h in hs:
+            i = info.get(h["ticker"]) or {}
+            h["profile"] = i.get("profile") or {}
+            h["quarters"] = i.get("quarters") or []
+    return holdings
+
+
 def fetch_kr_proxy():
     """한국증시 야간 프록시 — EWY(iShares MSCI South Korea, 미국장 거래).
 
@@ -752,6 +853,11 @@ def collect_all():
         if data.get("holdings") is not None and sym in data["holdings"]:
             data["holdings"][sym].extend(extra)
     data.pop("universe", None)          # 7천 종목 목록은 이후 단계에서 안 쓴다
+
+    # 웹 대시보드에서 종목을 눌렀을 때 보여줄 기업 개요와 분기 실적.
+    # 실패해도 시세·차트는 그대로 나간다.
+    run("company_info", lambda: attach_company_info(data.get("holdings")))
+    data.pop("company_info", None)
 
     run("fx", fetch_fx)
     run("kr_proxy", fetch_kr_proxy)

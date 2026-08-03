@@ -92,6 +92,10 @@ def _holding(h, notes):
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
+        # 종목을 눌렀을 때 보여줄 기업 개요와 최근 5개 분기 실적
+        "profile": h.get("profile") or {},
+        "quarters": [{k: (round(v, 4) if isinstance(v, float) else v)
+                      for k, v in q.items()} for q in (h.get("quarters") or [])],
     }
 
 
@@ -368,6 +372,16 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
              padding-top:0}
 .note-row a{color:var(--down-t)}
+/* 종목 상세의 기업 개요·분기 실적 */
+.about{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid)}
+.about+.about{margin-top:10px}
+.about .lb{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);
+           margin-bottom:6px}
+.about p{margin:0;font-size:13px;line-height:1.6;color:var(--ink2)}
+.about .sub{margin-top:6px;font-size:11.5px;color:var(--muted)}
+table.fin th{text-align:left}
+table.fin td{font-variant-numeric:tabular-nums}
+table.fin .yoy{margin-left:5px;font-size:11px}
 /* 표 안의 구분선 — 시총 상위 / 주도주는 뽑은 기준이 달라 섞으면 안 읽힌다 */
 .grp td{text-align:left;font-weight:700;font-size:10.5px;letter-spacing:.04em;
         color:var(--muted);background:var(--plane);padding:5px 8px;
@@ -451,6 +465,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="rets" id="dlg-rets"></div>
   <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
   <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
+  <div id="dlg-about"></div>
 </div></dialog>
 
 <script id="data" type="application/json">__DATA__</script>
@@ -480,6 +495,34 @@ oth.textContent=D.other.label; oth.href=D.other.href;
 function ma(vals,w){const o=[];let acc=0;
   for(let i=0;i<vals.length;i++){acc+=vals[i];if(i>=w)acc-=vals[i-w];
     o.push(i>=w-1?acc/w:null);}return o;}
+
+// 마우스를 댄 시점이 어디인지 눈으로 보이게 하는 십자선. 툴팁 숫자만으로는
+// '급등한 날이 여기'가 보이지 않는다 — 세로 점선과 종가 위 점을 직접 그린다.
+// values(i) 는 그 시점의 기준 가격(캔들은 종가, 라인은 값)을 돌려준다.
+function crosshair(values){
+  return {id:'crosshair', afterDatasetsDraw(chart){
+    const act=chart.tooltip&&chart.tooltip.getActiveElements
+      ? chart.tooltip.getActiveElements() : [];
+    if(!act.length) return;
+    const i=act[0].index, x=act[0].element.x;
+    const {ctx, chartArea:{top,bottom}}=chart;
+    ctx.save();
+    ctx.strokeStyle='rgba(11,11,11,.45)'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(x,top); ctx.lineTo(x,bottom); ctx.stroke();
+    const v=values(i);
+    if(v!=null){
+      const y=chart.scales.y.getPixelForValue(v);
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(chartArea_left(chart),y); ctx.lineTo(x,y);
+      ctx.strokeStyle='rgba(11,11,11,.22)'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(x,y,3.2,0,Math.PI*2);
+      ctx.fillStyle='#0b0b0b'; ctx.fill();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.4; ctx.stroke();
+    }
+    ctx.restore();
+  }};
+}
+const chartArea_left=chart=>chart.chartArea.left;
 
 // 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
 // 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
@@ -536,17 +579,24 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   // 잡힌다 — 네이버 차트와 같은 조작감.
   const total=labels.length;                  // 캔들 + 미래 26봉
   const x0=span?Math.max(0,n-span):0;
-  return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},options:{
+  return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},
+    plugins:[crosshair(i=>ohlc[i]?ohlc[i][4]:null)],options:{
     responsive:true,maintainAspectRatio:false,animation:false,
     interaction:{mode:'index',intersect:false},
     plugins:{legend:{display:true,labels:{boxWidth:14,font:{size:10},
         // 캔들(고저·시종)은 봉마다 색이 달라 범례에 단색으로 뜨면 오해를 준다
         filter:it=>!['고저','시종','__spanB'].includes(it.text)}},
-      tooltip:{callbacks:{title:it=>it[0].label,label:c=>{
+      // 주가를 먼저 읽게 한다 — 이동평균이 위에 오면 그날 얼마였는지가 묻힌다
+      tooltip:{itemSort:(a,b)=>(a.dataset.label==='시종'?0:1)-(b.dataset.label==='시종'?0:1),
+        callbacks:{title:it=>it[0].label,label:c=>{
         const lb=c.dataset.label;
         if(lb==='__spanB'||lb==='고저'||lb==='일목 구름대') return null;
         if(lb==='시종'){const r=ohlc[c.dataIndex]; if(!r) return null;
-          return [`시 ${fmt(r[1])}`,`고 ${fmt(r[2])}`,`저 ${fmt(r[3])}`,`종 ${fmt(r[4])}${unit}`];}
+          // 급등·급락한 날을 찾으려고 짚어 보는 것이므로 등락률을 맨 앞에 둔다
+          const prev=ohlc[c.dataIndex-1];
+          const g=prev&&prev[4]?((r[4]/prev[4]-1)*100):null;
+          return [`종가 ${fmt(r[4])}${unit}${g==null?'':`  (${sgn(g)}%)`}`,
+                  `시 ${fmt(r[1])}  고 ${fmt(r[2])}  저 ${fmt(r[3])}`];}
         return c.parsed.y==null?null:lb+': '+fmt(c.parsed.y);}}},
       zoom:{limits:{x:{min:0, max:total-1, minRange:10}},
             pan:{enabled:true, mode:'x', modifierKey:null},
@@ -573,7 +623,8 @@ function lineChart(canvas, series, {label='종가', withMA=true, unit='', color=
   if(withMA) for(const [w,c] of MA) if(vals.length>w)
     ds.push({label:w+'일',data:ma(vals,w),borderColor:c,borderWidth:1,
              pointRadius:0,pointHitRadius:0,tension:0});
-  return new Chart(canvas,{type:'line',data:{labels,datasets:ds},options:{
+  return new Chart(canvas,{type:'line',data:{labels,datasets:ds},
+    plugins:[crosshair(i=>vals[i]!=null?vals[i]:null)],options:{
     responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
     plugins:{legend:{display:withMA,labels:{boxWidth:14,font:{size:10}}},
       tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)+unit}}},
@@ -755,15 +806,47 @@ D.sectors.forEach(s=>{
                 capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`,
       `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, null,
-      '', h.note?`↳ ${h.note}`:'', h.ohlc);
+      '', h.note?`↳ ${h.note}`:'', h.ohlc, h);
   });
 });
 
 // ---- 상세 모달 (지수 차트와 같은 형식: 2년 + 이동평균)
 let dlgChart=null;
-function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
+// 분기 실적 표 — 매출·영업이익·순이익을 조/억 단위로. 전년 동기가 있으면
+// 매출 증감률을 함께 보여준다(직전 분기 대비는 계절성 탓에 오해를 부른다).
+function aboutHtml(h){
+  const cur=D.currency, p=h.profile||{}, qs=h.quarters||[];
+  let out='';
+  if(p.summary){
+    const meta=[p.industry, p.employees?`임직원 ${p.employees.toLocaleString()}명`:''
+      ].filter(Boolean).join(' · ');
+    out+=`<div class="about"><div class="lb">기업 개요</div>
+      <p>${p.summary}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
+  }
+  if(qs.length){
+    const yoy=(i,k)=>{const prev=qs[i-4]; return prev&&prev[k]&&qs[i][k]!=null
+      ? (qs[i][k]/prev[k]-1)*100 : null;};
+    const cells=k=>qs.map((q,i)=>{
+      const v=q[k]; const g=k==='revenue'?yoy(i,k):null;
+      return `<td>${v==null?'–':capF(Math.abs(v),cur).replace(/^/,v<0?'-':'')}${
+        g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
+    out+=`<div class="about"><div class="lb">최근 ${qs.length}개 분기 실적</div>
+      <div class="tablewrap"><table class="fin">
+        <thead><tr><th>항목</th>${qs.map(q=>`<th>${q.date}</th>`).join('')}</tr></thead>
+        <tbody>
+          <tr><th>매출</th>${cells('revenue')}</tr>
+          <tr><th>영업이익</th>${cells('op')}</tr>
+          <tr><th>순이익</th>${cells('net')}</tr>
+        </tbody></table></div>
+      <div class="sub">매출 옆 수치는 전년 동기(4분기 전) 대비 증감률</div></div>`;
+  }
+  return out;
+}
+
+function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=null){
   document.getElementById('dlg-title').textContent=title;
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
+  document.getElementById('dlg-about').innerHTML=about?aboutHtml(about):'';
   document.getElementById('dlg-rets').innerHTML=rets?
     ['m1','m3','m6','m12'].map((k,i)=>rets[k]==null?'':
       `<div><span>${['1M','3M','6M','12M'][i]}</span> <b class="${cls(rets[k])}">${sgn(rets[k])}%</b></div>`)
