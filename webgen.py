@@ -23,6 +23,9 @@ import os
 # 최근 6개월은 일별, 그 이전은 주별로 다운샘플해 페이지 크기를 줄인다.
 # 종목 55개 × 500포인트를 그대로 실으면 페이지가 1MB 를 넘는다.
 DAILY_KEEP_DAYS = 182
+# 종목 캔들은 1년치를 싣는다(모달에서 1M~1Y 로 잘라 본다). 늘어난 만큼은
+# 종목의 종가 시계열을 빼서 상쇄했다 — 캔들이 있으면 쓰이지 않는 데이터다.
+CANDLE_DAYS = 365
 
 
 def _ds(series):
@@ -47,12 +50,13 @@ def _ds(series):
 def _ds_ohlc(ohlc):
     """[(date, open, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
 
-    최근 6개월만 담는다: 2년치 캔들은 화면에서 뭉개지고 페이지만 무거워진다.
+    최근 1년치. 2년을 다 실으면 페이지가 무거워지고, 화면에서도 봉이 뭉개져
+    읽히지 않는다. 가격은 소수 2자리면 충분하다(자릿수도 용량이다).
     """
     if not ohlc:
         return []
-    cut = ohlc[-1][0] - dt.timedelta(days=DAILY_KEEP_DAYS)
-    return [[d.isoformat(), round(o, 4), round(h, 4), round(l, 4), round(c, 4)]
+    cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
+    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
             for d, o, h, l, c in ohlc if d >= cut]
 
 
@@ -76,7 +80,8 @@ def _holding(h, notes):
         "market_cap": _cap_krw(h.get("market_cap")),
         "chg_pct": (round(h["chg_pct"], 2) if h.get("chg_pct") is not None else None),
         "returns": _returns(h.get("returns")),
-        "series": _ds(h.get("series") or []),
+        # 종가 시계열은 싣지 않는다 — 종목 상세는 캔들(ohlc)로 그리므로
+        # 쓰이지 않는데 용량만 차지했다.
         "ohlc": _ds_ohlc(h.get("ohlc") or []),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
@@ -318,9 +323,14 @@ h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
 /* 섹터 카드는 메모 유무·종목 수에 따라 높이가 제각각이었다.
    모든 행을 가장 큰 카드에 맞춰 통일하고, 카드 안에서는 표가 남는 높이를 먹는다. */
 .secgrid{display:grid;grid-template-columns:1fr;gap:12px;grid-auto-rows:1fr}
-.secgrid>.panel{display:flex;flex-direction:column}
-.secgrid>.panel>table{margin-top:auto}
+/* min-width:0 이 없으면 그리드 자식이 내용 폭만큼 벌어져 열을 밀어내고,
+   페이지 전체에 가로 스크롤이 생겨 화면이 오른쪽으로 치우쳐 보인다. */
+.secgrid>.panel{display:flex;flex-direction:column;min-width:0}
+.secgrid>.panel>*{min-width:0}
+.secgrid>.panel>.tablewrap{margin-top:auto}
 .secnote{min-height:36px}
+/* 표가 좁은 화면에서 넘치면 표 안에서만 스크롤한다(본문은 절대 안 밀린다) */
+.tablewrap{overflow-x:auto}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
 .sechead .spans{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -341,7 +351,7 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 /* 캔버스에 !important 로 크기를 강제하면 Chart.js 의 리사이즈 계산과
    충돌해, 마우스를 올릴 때마다 캔버스가 조금씩 눌린다(피드백 루프).
    높이는 래퍼가 갖고 캔버스는 그 안을 절대배치로 채운다. */
-.chartbox{position:relative;width:100%}
+.chartbox{position:relative;width:100%;min-width:0}
 .chartbox>canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 .chartbox.mini{height:200px}
 .chartbox.bar{height:360px}
@@ -609,8 +619,9 @@ D.sectors.forEach(s=>{
       <span class="spans">${spans(s.returns)}</span></div>
     ${s.note?`<div class="secnote">💬 ${s.note}</div>`:''}
     <div class="chartbox mini">${s.series.length?`<canvas id="c-${s.symbol}"></canvas>`:''}</div>
-    <table><thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <div class="tablewrap"><table>
+      <thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
   secWrap.appendChild(div);
   if(s.series.length) lineChart(document.getElementById('c-'+s.symbol), s.series,
     {withMA:false, color:'#0b0b0b', label:s.name});
@@ -620,7 +631,7 @@ D.sectors.forEach(s=>{
     const meta=[h.price!=null?(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price)):null,
                 capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`,
-      `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, h.series,
+      `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, null,
       '', h.note?`↳ ${h.note}`:'', h.ohlc);
   });
 });
@@ -646,7 +657,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
       segs.querySelectorAll('button').forEach(b=>
         b.classList.toggle('on', +b.dataset.d===days));
     };
-    [[21,'1M'],[63,'3M'],[0,'6M']].forEach(([d,label])=>{
+    [[21,'1M'],[63,'3M'],[126,'6M'],[0,'1Y']].forEach(([d,label])=>{
       const b=document.createElement('button');
       b.textContent=label; b.dataset.d=d; b.onclick=()=>draw(d);
       segs.appendChild(b);
