@@ -78,6 +78,30 @@ def yahoo_ohlc(symbol: str, rng: str = "2y"):
     return out
 
 
+def yahoo_candles(symbol: str, rng: str = "2y"):
+    """캔들차트용 진짜 OHLC. [(date, open, high, low, close), ...]
+
+    yahoo_ohlc 는 일목균형표용이라 고·저·종만 뽑는다. 캔들은 시가가 있어야
+    몸통이 생긴다 — 시가를 직전 종가로 대신하면 몸통이 0 이 되어 꼬리만
+    남은 막대 그래프가 된다. 같은 응답에 open 이 들어 있으므로 그냥 쓴다.
+    """
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{requests.utils.quote(symbol, safe='')}?range={rng}&interval=1d"
+    )
+    res = _get(url).json()["chart"]["result"][0]
+    q = res["indicators"]["quote"][0]
+    out = []
+    for ts, o, h, l, c in zip(res["timestamp"], q.get("open") or [],
+                              q.get("high") or [], q.get("low") or [],
+                              q.get("close") or []):
+        if None in (o, h, l, c):
+            continue
+        out.append((dt.datetime.utcfromtimestamp(ts).date(),
+                    float(o), float(h), float(l), float(c)))
+    return out
+
+
 def pct_change(series):
     """직전 거래일 대비 등락률(%)."""
     if len(series) < 2:
@@ -292,19 +316,22 @@ def _return_at(series, days_back: int):
 
 
 def fetch_returns(tickers):
-    """종목별 1개월·6개월·12개월 등락률 + 2개년 시계열.
+    """종목별 1개월·6개월·12개월 등락률 + 2개년 시계열(OHLC 포함).
 
-    시계열은 어차피 수익률 계산에 받아야 해서, 웹 대시보드(종목 상세 차트)용으로
-    버리지 않고 함께 돌려준다. 반환: {sym: {"returns": {...}, "series": [...]}}.
+    같은 차트 API 가 시가·고가·저가·종가를 한 번에 주므로 종가만 쓰고 버리지
+    않는다. 웹 대시보드의 종목 상세는 이 OHLC 로 캔들차트를 그린다(5튜플:
+    date, open, high, low, close).
+    반환: {sym: {"returns": {...}, "series": [...], "ohlc": [...]}}.
     """
     def one(sym):
         try:
             # 1y 로 받으면 365일 전 시점이 구간 밖이라 12M 수익률이 비므로 2y 로 받는다
-            s = yahoo_series(sym, rng="2y")
+            o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {"returns": {}, "series": []}
+            return sym, {"returns": {}, "series": [], "ohlc": []}
+        s = [(d, c) for d, _, _, _, c in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
-                     "series": s}
+                     "series": s, "ohlc": o}
 
     with ThreadPoolExecutor(max_workers=12) as ex:
         return dict(ex.map(one, tickers))
@@ -337,6 +364,7 @@ def fetch_sector_holdings(sector_symbols):
             r = rets.get(h["ticker"]) or {}
             h["returns"] = r.get("returns", {})
             h["series"] = r.get("series", [])
+            h["ohlc"] = r.get("ohlc", [])
     return holdings
 
 
