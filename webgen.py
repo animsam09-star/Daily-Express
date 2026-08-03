@@ -23,6 +23,9 @@ import os
 # 최근 6개월은 일별, 그 이전은 주별로 다운샘플해 페이지 크기를 줄인다.
 # 종목 55개 × 500포인트를 그대로 실으면 페이지가 1MB 를 넘는다.
 DAILY_KEEP_DAYS = 182
+# 종목 캔들은 1년치를 싣는다(모달에서 1M~1Y 로 잘라 본다). 늘어난 만큼은
+# 종목의 종가 시계열을 빼서 상쇄했다 — 캔들이 있으면 쓰이지 않는 데이터다.
+CANDLE_DAYS = 365
 
 
 def _ds(series):
@@ -47,12 +50,13 @@ def _ds(series):
 def _ds_ohlc(ohlc):
     """[(date, open, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
 
-    최근 6개월만 담는다: 2년치 캔들은 화면에서 뭉개지고 페이지만 무거워진다.
+    최근 1년치. 2년을 다 실으면 페이지가 무거워지고, 화면에서도 봉이 뭉개져
+    읽히지 않는다. 가격은 소수 2자리면 충분하다(자릿수도 용량이다).
     """
     if not ohlc:
         return []
-    cut = ohlc[-1][0] - dt.timedelta(days=DAILY_KEEP_DAYS)
-    return [[d.isoformat(), round(o, 4), round(h, 4), round(l, 4), round(c, 4)]
+    cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
+    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
             for d, o, h, l, c in ohlc if d >= cut]
 
 
@@ -76,7 +80,8 @@ def _holding(h, notes):
         "market_cap": _cap_krw(h.get("market_cap")),
         "chg_pct": (round(h["chg_pct"], 2) if h.get("chg_pct") is not None else None),
         "returns": _returns(h.get("returns")),
-        "series": _ds(h.get("series") or []),
+        # 종가 시계열은 싣지 않는다 — 종목 상세는 캔들(ohlc)로 그리므로
+        # 쓰이지 않는데 용량만 차지했다.
         "ohlc": _ds_ohlc(h.get("ohlc") or []),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
@@ -246,18 +251,23 @@ font-size:20px;font-weight:700}a:hover{box-shadow:0 3px 10px rgba(0,0,0,.14)}
 
 
 def _chartjs():
-    """저장소에 동봉한 Chart.js 를 인라인한다.
+    """저장소에 동봉한 Chart.js(+줌 플러그인)를 인라인한다.
 
     CDN 을 쓰면 사내 프록시·차단 환경에서 페이지 전체가 죽는다(Chart is not
     defined). 동봉본이 없을 때만 CDN 태그로 폴백한다.
     """
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "vendor", "chart.umd.min.js")
-    if os.path.exists(p):
-        with open(p, encoding="utf-8") as fh:
-            return "<script>" + fh.read() + "</script>"
-    return ('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/'
-            'dist/chart.umd.min.js"></script>')
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
+    core = os.path.join(base, "chart.umd.min.js")
+    if not os.path.exists(core):
+        return ('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/'
+                'dist/chart.umd.min.js"></script>')
+    out = []
+    for name in ("chart.umd.min.js", "chartjs-plugin-zoom.min.js"):
+        p = os.path.join(base, name)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as fh:
+                out.append("<script>" + fh.read() + "</script>")
+    return "\n".join(out)
 
 
 def _write(path, payload):
@@ -318,9 +328,14 @@ h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
 /* 섹터 카드는 메모 유무·종목 수에 따라 높이가 제각각이었다.
    모든 행을 가장 큰 카드에 맞춰 통일하고, 카드 안에서는 표가 남는 높이를 먹는다. */
 .secgrid{display:grid;grid-template-columns:1fr;gap:12px;grid-auto-rows:1fr}
-.secgrid>.panel{display:flex;flex-direction:column}
-.secgrid>.panel>table{margin-top:auto}
+/* min-width:0 이 없으면 그리드 자식이 내용 폭만큼 벌어져 열을 밀어내고,
+   페이지 전체에 가로 스크롤이 생겨 화면이 오른쪽으로 치우쳐 보인다. */
+.secgrid>.panel{display:flex;flex-direction:column;min-width:0}
+.secgrid>.panel>*{min-width:0}
+.secgrid>.panel>.tablewrap{margin-top:auto}
 .secnote{min-height:36px}
+/* 표가 좁은 화면에서 넘치면 표 안에서만 스크롤한다(본문은 절대 안 밀린다) */
+.tablewrap{overflow-x:auto}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
 .sechead .spans{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
@@ -341,7 +356,7 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 /* 캔버스에 !important 로 크기를 강제하면 Chart.js 의 리사이즈 계산과
    충돌해, 마우스를 올릴 때마다 캔버스가 조금씩 눌린다(피드백 루프).
    높이는 래퍼가 갖고 캔버스는 그 안을 절대배치로 채운다. */
-.chartbox{position:relative;width:100%}
+.chartbox{position:relative;width:100%;min-width:0}
 .chartbox>canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 .chartbox.mini{height:200px}
 .chartbox.bar{height:360px}
@@ -411,6 +426,8 @@ const D = JSON.parse(document.getElementById('data').textContent);
 const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
 const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7']];  // 검증된 categorical 슬롯
 if(typeof Chart!=='undefined'){
+  // 줌 플러그인은 UMD 자동 등록에 의존하지 않고 명시적으로 붙인다
+  if(window.ChartZoom) { try{ Chart.register(window.ChartZoom); }catch(e){} }
   Chart.defaults.font.family=getComputedStyle(document.body).fontFamily;
   Chart.defaults.color='#898781';                 // 축·눈금은 muted 잉크
   Chart.defaults.borderColor='#e1e0d9';           // 격자는 hairline
@@ -434,7 +451,7 @@ function ma(vals,w){const o=[];let acc=0;
 // 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
 // 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
 // grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
-function candleChart(canvas, ohlc, {unit=''}={}){
+function candleChart(canvas, ohlc, {unit='', span=null}={}){
  try{
   const labels=ohlc.map(r=>r[0]);
   const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
@@ -454,6 +471,10 @@ function candleChart(canvas, ohlc, {unit=''}={}){
   for(const [w,c] of MA) if(closes.length>w)
     ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
              borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0});
+  // 1년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
+  // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
+  // 잡힌다 — 네이버 차트와 같은 조작감.
+  const n=ohlc.length, x0=span?Math.max(0,n-span):0;
   return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},options:{
     responsive:true,maintainAspectRatio:false,animation:false,
     interaction:{mode:'index',intersect:false},
@@ -464,9 +485,18 @@ function candleChart(canvas, ohlc, {unit=''}={}){
         if(c.datasetIndex>1) return c.dataset.label+': '+fmt(c.parsed.y);
         if(c.datasetIndex===1){const r=ohlc[c.dataIndex];
           return [`시 ${fmt(r[1])}`,`고 ${fmt(r[2])}`,`저 ${fmt(r[3])}`,`종 ${fmt(r[4])}${unit}`];}
-        return null;}}}},
-    scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false},
-               stacked:false},
+        return null;}}},
+      zoom:{limits:{x:{min:0, max:n-1, minRange:10}},
+            pan:{enabled:true, mode:'x', modifierKey:null},
+            zoom:{wheel:{enabled:true, speed:0.12}, pinch:{enabled:true},
+                  mode:'x',
+                  // 확대·축소할 때마다 프리셋 버튼 선택을 해제한다
+                  onZoomComplete:({chart})=>{
+                    document.querySelectorAll('#dlg-segs button.on')
+                      .forEach(b=>b.classList.remove('on'));
+                    chart.update('none');}}}},
+    scales:{x:{min:x0, max:n-1, ticks:{maxTicksLimit:8,font:{size:10}},
+               grid:{display:false}, stacked:false},
             y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
                beginAtZero:false}}}});
  }catch(e){console.error('candleChart:',e);return null;}
@@ -609,8 +639,9 @@ D.sectors.forEach(s=>{
       <span class="spans">${spans(s.returns)}</span></div>
     ${s.note?`<div class="secnote">💬 ${s.note}</div>`:''}
     <div class="chartbox mini">${s.series.length?`<canvas id="c-${s.symbol}"></canvas>`:''}</div>
-    <table><thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <div class="tablewrap"><table>
+      <thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
   secWrap.appendChild(div);
   if(s.series.length) lineChart(document.getElementById('c-'+s.symbol), s.series,
     {withMA:false, color:'#0b0b0b', label:s.name});
@@ -620,7 +651,7 @@ D.sectors.forEach(s=>{
     const meta=[h.price!=null?(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price)):null,
                 capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`,
-      `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, h.series,
+      `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, null,
       '', h.note?`↳ ${h.note}`:'', h.ohlc);
   });
 });
@@ -638,20 +669,28 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null){
   if(dlgChart){dlgChart.destroy();dlgChart=null;}
   const cv=document.getElementById('dlg-chart'), segs=document.getElementById('dlg-segs');
   segs.innerHTML='';
-  if(ohlc&&ohlc.length){         // 개별 종목: 일봉 캔들 + 기간 토글
-    const draw=days=>{
-      const cut=ohlc.slice(days?-days:0);
-      if(dlgChart)dlgChart.destroy();
-      dlgChart=candleChart(cv, cut, {unit});
+  if(ohlc&&ohlc.length){         // 개별 종목: 일봉 캔들 + 기간 프리셋 + 줌
+    // 차트는 한 번만 만들고(1년 전체), 프리셋은 x 축 범위만 바꾼다.
+    // 다시 그리면 줌 상태가 초기화돼 조작감이 끊긴다.
+    const setSpan=days=>{
+      const n=ohlc.length;
+      dlgChart.options.scales.x.min = days ? Math.max(0, n-days) : 0;
+      dlgChart.options.scales.x.max = n-1;
+      dlgChart.update('none');
       segs.querySelectorAll('button').forEach(b=>
         b.classList.toggle('on', +b.dataset.d===days));
     };
-    [[21,'1M'],[63,'3M'],[0,'6M']].forEach(([d,label])=>{
+    dlgChart=candleChart(cv, ohlc, {unit, span:63});   // 기본 3개월 구간
+    [[21,'1M'],[63,'3M'],[126,'6M'],[0,'1Y']].forEach(([d,label])=>{
       const b=document.createElement('button');
-      b.textContent=label; b.dataset.d=d; b.onclick=()=>draw(d);
+      b.textContent=label; b.dataset.d=d; b.onclick=()=>setSpan(d);
+      if(d===63) b.classList.add('on');
       segs.appendChild(b);
     });
-    draw(63);                    // 기본 3개월 — 6개월은 봉이 촘촘해 뭉갠다
+    const hint=document.createElement('span');
+    hint.style.cssText='margin-left:8px;color:var(--muted);font-size:11.5px';
+    hint.textContent='휠: 확대·축소 · 드래그: 이동';
+    segs.appendChild(hint);
   } else if(series&&series.length){ // 지수·금리·환율: 2년 라인 + 이동평균
     dlgChart=lineChart(cv, series, {unit});
   }
