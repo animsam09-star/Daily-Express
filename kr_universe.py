@@ -35,7 +35,8 @@ ETF_CODE_RE = r"[0-9A-Z]{6}"
 UPJONG_THEME = {
     "반도체와반도체장비": "반도체 소부장",     # 대형주는 아래 SEMI_LARGE 로 빼낸다
     "디스플레이장비및부품": "반도체 소부장",
-    "디스플레이패널": "반도체 소부장",
+    # 패널 제조사(LG디스플레이)는 소부장이 아니다 — 장비·부품을 납품받는 쪽이다
+    "디스플레이패널": "전기전자",
     "제약": "바이오·제약", "생물공학": "바이오·제약",
     "생명과학도구및서비스": "바이오·제약", "건강관리장비및용품": "바이오·제약",
     "건강관리장비와용품": "바이오·제약",
@@ -56,8 +57,10 @@ UPJONG_THEME = {
     "우주항공과국방": "방산·항공",           # 우주는 아래 SPACE 로 빼낸다
     "전자장비와기기": "전기전자", "전자제품": "전기전자",
     "핸드셋": "전기전자", "컴퓨터와주변기기": "전기전자",
-    "통신장비": "전기전자", "가정용기기와용품": "전기전자",
-    "전기제품": "전기전자",
+    "통신장비": "전기전자", "전기제품": "전기전자",
+    # '가정용기기와용품'(코웨이·쿠쿠)은 뺐다. 정수기·비데 렌탈은 소비 경기를
+    # 타지 IT 하드웨어 수요를 타지 않아, 전기전자 지수에 넣으면 흐려진다.
+    "건설": "건설", "건축자재": "건설", "건축제품": "건설",
     # 전력기기(변압기·차단기 — HD현대일렉트릭·LS ELECTRIC 등)는 IT 하드웨어와
     # 등락 동인이 전혀 다르다(전력망 투자 vs IT 수요). 전기전자에서 분리한다.
     "전기장비": "전력기기",
@@ -75,14 +78,42 @@ PINNED_THEME = {
                              # 실질은 SK하이닉스 지분 프록시. 대형 반도체로 묶는다
     "007660": "전기전자",   # 이수페타시스 — AI 가속기용 기판(MLB). 소부장이 아니라 전자부품
     "005935": "반도체",     # 삼성전자우 — 우선주 일괄 제외의 예외. 고정 분류는 필터를 통과한다
+    "010060": "신재생",     # OCI홀딩스 — 태양광 폴리실리콘. 업종이 '화학'이라
+                             # 정유·화학이 먼저 가져갔고 지주사 필터에도 걸렸다
+    "096770": "정유·화학",  # SK이노베이션 — SK온(배터리) 때문에 2차전지 ETF 에
+                             # 담겨 그쪽으로 끌려간다. 본업은 정유다
+    "103140": "철강·비철",  # 풍산 — 탄약 때문에 방산 ETF 에 담기지만 매출 대부분은
+                             # 신동(구리 압연)이다
 }
+
+# 지주회사는 사업회사가 따로 상장돼 있으면 지수를 흐린다 — SK 와 SK이노베이션이
+# 정유·화학에 나란히 서면 지수가 지주 주가에 끌려간다. 이름으로 걸러내되,
+# 금융지주는 지주 자체가 대표주(신한지주·하나금융지주)라 손대지 않는다.
+HOLDING_RE = re.compile(r"홀딩스|지주")
+# 이름에 표시가 없는 순수 지주회사. 업종과 코드는 실측으로 확인했다.
+HOLDING_CODES = {
+    "034730": "SK",             # 석유와가스 — 사업회사 SK이노베이션이 따로 있다
+    "078930": "GS",             # 석유와가스 — GS리테일·GS건설
+    "267250": "HD현대",         # 조선 — HD현대중공업·HD한국조선해양
+    "006260": "LS",             # 전기장비 — LS ELECTRIC
+    "000240": "한국앤컴퍼니",   # 자동차부품 — 한국타이어앤테크놀로지
+}
+# 지주 형태지만 사업회사가 비상장이라 이 종목이 유일한 창구인 경우는 남긴다
+KEEP_HOLDINGS = {"005490"}      # POSCO홀딩스 — 포스코는 비상장
+NO_HOLDING_THEMES = {"금융"}    # 금융지주가 곧 대표주다
+
+# 코드 -> 사명. 업종 상세 페이지에 이미 들어 있어 따로 받지 않는다.
+NAMES: dict[str, str] = {}
+
 
 # '반도체와반도체장비' 안에서 메모리 대형 2사. 나머지(파운드리·장비·소재)는
 # 전부 소부장으로 남는다.
 SEMI_LARGE = {"005930": "삼성전자", "000660": "SK하이닉스"}
 
 # '우주항공과국방' 안에서 위성·발사체. 나머지는 방산·항공에 남는다.
-SPACE = {"047810", "099320", "451760", "462350", "211270", "189300"}
+# 한국항공우주(047810)는 이름 때문에 우주로 넣었었지만 매출은 군용기·기체
+# 구조물이다 — 방산에 둔다.
+SPACE = {"099320", "451760", "462350", "211270", "189300"}
 
 # 업종에 없는 테마는 해당 테마 ETF 의 구성종목으로 만든다(네이버는 상위 10종목 공개).
 ETF_WEIGHTS: dict[str, dict[str, float]] = {}   # 테마 -> {종목: ETF 구성비중}
@@ -97,7 +128,7 @@ THEME_PRIORITY = [
     # 로봇은 조선·기계/전기전자보다 위여야 순수 로봇주가 살아남는다
     # (로보티즈·레인보우로보틱스의 업종은 '기계', 에스피지는 '전기전자')
     "로봇",
-    "전력기기", "전기전자", "조선·기계",
+    "전력기기", "전기전자", "조선·기계", "건설",
     # 방산이 우주보다 위여야 한화에어로·LIG·현대로템이 방산에 남는다
     "방산·항공", "우주",
     "반도체 소부장", "금융", "의류·유통", "정유·화학", "철강·비철",
@@ -129,14 +160,19 @@ def _get(url):
     return _dec(requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT))
 
 
+ITEM_RE = re.compile(r'code=(\d{6})">([^<]+)</a>')
+
+
 def upjong_members() -> dict[str, list[str]]:
-    """{업종명: [종목코드]}. 전 종목을 훑는다."""
+    """{업종명: [종목코드]}. 전 종목을 훑으며 사명(NAMES)도 함께 채운다."""
     ups = re.findall(r'no=(\d+)">([^<]+)</a>', _get(GROUP_URL))
     wanted = [(no, name) for no, name in ups if name in UPJONG_THEME]
 
     def one(no):
         # 같은 종목 링크가 행마다 두 번 나와 중복이 생긴다
-        return list(dict.fromkeys(re.findall(r'code=(\d{6})">', _get(DETAIL_URL.format(no=no)))))
+        pairs = ITEM_RE.findall(_get(DETAIL_URL.format(no=no)))
+        NAMES.update({c: n.strip() for c, n in pairs})
+        return list(dict.fromkeys(c for c, _ in pairs))
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         codes = list(ex.map(one, [no for no, _ in wanted]))
@@ -166,6 +202,7 @@ def etf_members(etf_code: str) -> list[tuple[str, float]]:
     for code, _name, pct in ETF_ROW_RE.findall(seg):
         if code == etf_code:
             continue
+        NAMES.setdefault(code, _name.strip())
         try:
             out.append((code, float(pct)))
         except ValueError:
@@ -209,14 +246,21 @@ def build_pools() -> dict[str, list[str]]:
     pools.setdefault("반도체", []).extend(SEMI_LARGE)
 
     # 고정 분류를 마지막에 적용 — 업종·ETF 어느 경로로 들어왔든 여기로 옮긴다.
-    # ETF 가중치에서도 지워야 한다(남겨두면 weight() 가 옛 테마 기준으로 계산).
+    # 옛 테마의 ETF 가중치는 지운다(남겨두면 weight() 가 옛 기준으로 계산).
     for code, theme in PINNED_THEME.items():
         for t in list(pools):
             pools[t] = [c for c in pools[t] if c != code]
-        for w in ETF_WEIGHTS.values():
-            w.pop(code, None)
+        for t, w in ETF_WEIGHTS.items():
+            if t != theme:
+                w.pop(code, None)
         if theme:
             pools.setdefault(theme, []).append(code)
+            # ETF 로 정의된 테마는 구성비중이 곧 순위다. ETF 가 담지 않은 종목을
+            # 사람이 넣으면 비중이 0 이 되어 맨 뒤로 밀리므로(OCI홀딩스가
+            # 신재생 표에서 사라졌다) 그 테마 비중의 중간값을 준다.
+            w = ETF_WEIGHTS.get(theme)
+            if w and code not in w:
+                w[code] = sorted(w.values())[len(w) // 2]
 
     # 한 종목은 한 테마에만. 우선순위가 높은 테마가 먼저 가져간다.
     claimed: set[str] = set()
@@ -241,5 +285,15 @@ def build_pools() -> dict[str, list[str]]:
     # 단, 고정 분류(PINNED_THEME)로 명시된 우선주는 예외 — 삼성전자우는
     # 반도체 테마에 일부러 넣는다.
     pinned_keep = {c for c, t in PINNED_THEME.items() if t}
-    return {t: [c for c in dict.fromkeys(cs) if c.endswith("0") or c in pinned_keep]
+
+    def keep(theme, code):
+        if code in pinned_keep or code in KEEP_HOLDINGS:
+            return True
+        if not (code.endswith("0")):
+            return False
+        if theme in NO_HOLDING_THEMES:
+            return True
+        return not (code in HOLDING_CODES or HOLDING_RE.search(NAMES.get(code, "")))
+
+    return {t: [c for c in dict.fromkeys(cs) if keep(t, c)]
             for t, cs in pools.items() if cs}
