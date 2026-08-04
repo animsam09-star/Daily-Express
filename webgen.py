@@ -483,9 +483,13 @@ if(typeof Chart!=='undefined'){
 const fmt=(v,d=2)=>v==null?'–':v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const sgn=v=>v==null?'–':(v>=0?'+':'')+fmt(v,Math.abs(v)>=100?0:2);
 const cls=v=>v==null?'':(v>=0?'up':'down');
-const capF=(v,cur)=>{if(!v)return'';const t=cur==='₩'?1e12:1e12;
-  return v>=t?(v/t).toFixed(1)+(cur==='₩'?'조원':'조달러')
-            :(v/(t/1e4)).toFixed(0)+(cur==='₩'?'억원':'억달러');};
+// 자릿수 구분점은 fmt 가 넣는다. toFixed 로 만들면 '1060억달러'처럼 붙어 나온다
+// (조 단위도 삼성전자 시총 1,572조원처럼 네 자리가 된다).
+const capF=(v,cur)=>{if(!v)return'';
+  const jo=cur==='₩'?'조원':'조달러', eok=cur==='₩'?'억원':'억달러';
+  if(v>=1e15) return fmt(v/1e12,0)+jo;   // 1,000조 넘으면 소수점은 군더더기
+  if(v>=1e12) return fmt(v/1e12,1)+jo;
+  return fmt(v/1e8,0)+eok;};
 
 document.getElementById('title').textContent=D.title;
 document.getElementById('updated').textContent='업데이트 '+D.updated;
@@ -709,7 +713,7 @@ try{
     new Chart(document.getElementById('sectrend'),{type:'line',
       data:{labels:allD, datasets:sorted.map((s,i)=>{
         const m=new Map(s.series), base=s.series[0][1];
-        return {label:`${s.name} ${(perf(s)).toFixed(0)}`,
+        return {label:`${s.name} ${fmt(perf(s),0)}`,
           data:allD.map(d=>m.has(d)?m.get(d)/base*100:null),
           borderColor:hue(i), borderWidth:1.35, pointRadius:0, pointHitRadius:6,
           tension:0, spanGaps:true};})},
@@ -727,7 +731,7 @@ try{
 if(D.flows){
   document.getElementById('flows-sec').style.display='block';
   const fl=document.getElementById('flowlines');
-  const toJo=v=>v==null?'–':(v>=0?'+':'')+(Math.abs(v)>=1e4?(v/1e4).toFixed(2)+'조':Math.round(v).toLocaleString()+'억');
+  const toJo=v=>v==null?'–':(v>=0?'+':'')+(Math.abs(v)>=1e4?fmt(v/1e4,2)+'조':fmt(v,0)+'억');
   for(const [mkt,f] of Object.entries(D.flows)){
     const w=f.windows||{};
     const line=document.createElement('div');line.className='flowline';
@@ -753,7 +757,7 @@ if(D.flows){
       interaction:{mode:'index',intersect:false},
       plugins:{legend:{labels:{boxWidth:14,font:{size:11}}},
         tooltip:{callbacks:{label:c=>c.parsed.y==null?null:
-          c.dataset.label+': '+(c.parsed.y>=0?'+':'')+c.parsed.y.toFixed(2)+'조'}},
+          c.dataset.label+': '+(c.parsed.y>=0?'+':'')+fmt(c.parsed.y,2)+'조'}},
         title:{display:true,text:'외국인 누적 순매수 2년 (조원)',align:'start',
                font:{size:13,weight:'bold'},color:'#1a1a1a'}},
       scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
