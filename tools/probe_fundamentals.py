@@ -4,6 +4,9 @@
 파서를 돌려볼 수 없다. 여기서 구현체(sources.fetch_company_info,
 kr_sources.fetch_company_info)를 그대로 호출해 결과를 눈으로 확인한다.
 
+2차 확인 대상: 네이버 표의 추정치 열 제외와 FnGuide 개요 재시도가 실제로
+먹히는지(1차에서 4종목 중 3종목의 개요가 비었다).
+
 앞선 프로브에서 확인한 소스:
   [미국] quoteSummary?modules=assetProfile 로 기업 개요(영문),
          fundamentals-timeseries 로 매출·영업이익·순이익·EPS 5분기.
