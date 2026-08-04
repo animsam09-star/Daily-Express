@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -81,9 +82,9 @@ def _resolve_suffixes(codes):
     return merged
 
 
-def _page(url):
+def _page(url, timeout=TIMEOUT):
     """네이버 페이지 본문. 인코딩이 페이지마다 달라 둘 다 시도한다."""
-    r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT)
+    r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=timeout)
     for enc in ("utf-8", "euc-kr"):
         try:
             return r.content.decode(enc)
@@ -174,11 +175,21 @@ FNGUIDE_URL = ("https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
 CMP_RE = re.compile(r'cmp_comment[^>]*>(.*?)</(?:div|td|p|dd)\b', re.S)
 
 
-def _overview(code):
-    """FnGuide 기업개요(한글). 동시 요청이 많으면 빈 응답이 와서 한 번 재시도한다."""
+# FnGuide 는 느리고 잘 죽는다. 기다려 주면 실행 시간이 통째로 늘어나므로
+# (실측: 한국 수집이 23분을 넘겨 타임아웃 직전까지 갔다) 짧은 타임아웃에
+# 전체 예산까지 둔다. 개요는 웹에만 쓰이므로 못 받으면 그 종목만 비운다.
+FNGUIDE_TIMEOUT = 8
+FNGUIDE_BUDGET = 120                           # 개요 수집 전체에 쓸 시간(초)
+
+
+def _overview(code, deadline=None):
+    """FnGuide 기업개요(한글). 실패하면 한 번만 더 시도하고 포기한다."""
     for _ in range(2):
+        if deadline is not None and time.monotonic() > deadline:
+            return ""
         try:
-            m = CMP_RE.search(_page(FNGUIDE_URL.format(code=code)))
+            m = CMP_RE.search(_page(FNGUIDE_URL.format(code=code),
+                                    timeout=FNGUIDE_TIMEOUT))
         except Exception:                      # noqa: BLE001
             m = None
         if m:
@@ -199,7 +210,7 @@ def fetch_company_info(codes):
     사명·분기 실적은 종목 페이지 한 번으로 함께 얻고(사명만 받던 요청을 재활용),
     기업 개요는 FnGuide 에서 따로 받는다.
     """
-    def one(code):
+    def naver(code):
         info = {"name": code, "profile": {}, "quarters": []}
         try:
             html = _page(NAME_URL.format(code=code))
@@ -209,15 +220,19 @@ def fetch_company_info(codes):
             info["quarters"] = _quarters(html)
         except Exception:                      # noqa: BLE001
             pass
-        summary = _overview(code)
-        if summary:
-            info["profile"] = {"summary": summary}
         return code, info
 
+    # 사명·실적(네이버)과 개요(FnGuide)를 따로 돈다. 한 함수에 묶어 돌리면
+    # 느린 FnGuide 에 맞춘 동시성이 네이버 요청에도 걸려 전체가 느려진다.
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        out = dict(ex.map(naver, codes))
+
     # FnGuide 는 동시 요청이 몰리면 빈 응답을 준다(실측: 4종목 중 3종목 개요 누락).
-    # 네이버보다 낮은 동시성으로 훑는다.
+    deadline = time.monotonic() + FNGUIDE_BUDGET
     with ThreadPoolExecutor(max_workers=4) as ex:
-        out = dict(ex.map(one, codes))
+        for code, summary in zip(codes, ex.map(lambda c: _overview(c, deadline), codes)):
+            if summary:
+                out[code]["profile"] = {"summary": summary}
     got = sum(1 for v in out.values() if v.get("quarters"))
     desc = sum(1 for v in out.values() if (v.get("profile") or {}).get("summary"))
     print(f"[kr] 분기 실적 {got}/{len(codes)}종목, 기업 개요 {desc}/{len(codes)}종목")

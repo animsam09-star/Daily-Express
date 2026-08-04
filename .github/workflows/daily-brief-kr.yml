@@ -24,7 +24,8 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 종목·지표가 늘면서 수집이 길어졌다(실측 23분+). 여유를 둔다.
+    timeout-minutes: 45
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
