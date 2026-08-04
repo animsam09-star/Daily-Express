@@ -17,7 +17,8 @@ import kr_universe as ku  # noqa: E402
 
 WATCH = ["코웨이", "LG디스플레이", "SK", "SK이노베이션", "풍산", "풍산홀딩스",
          "한국항공우주", "POSCO홀딩스", "신한지주", "아모레퍼시픽",
-         "아모레퍼시픽홀딩스", "삼성물산", "현대건설", "GS", "HD현대"]
+         "아모레퍼시픽홀딩스", "삼성물산", "현대건설", "GS", "HD현대",
+         "OCI홀딩스", "OCI", "한화솔루션", "두산에너빌리티"]
 
 
 def main():
@@ -28,10 +29,11 @@ def main():
         for c in codes:
             where[name(c)] = theme
 
+    code_of = {n: c for c, n in ku.NAMES.items()}
     print("=" * 64)
-    print("[1] 지목된 종목이 어느 테마로 갔나")
+    print("[1] 지목된 종목이 어느 테마로 갔나 (코드도 함께 — 고정 분류에 쓴다)")
     for w in WATCH:
-        print(f"  {w:16} -> {where.get(w, '(제외됨)')}")
+        print(f"  {w:16} {code_of.get(w, '??????'):>7} -> {where.get(w, '(제외됨)')}")
 
     print("=" * 64)
     print("[2] 테마별 종목 수")
@@ -39,11 +41,17 @@ def main():
         print(f"  {t:14} {len(cs):4}종목")
 
     print("=" * 64)
-    print("[3] 건설 테마 구성(일부)")
+    print("[3] 신재생 구성 순서(ETF 비중순) — OCI홀딩스가 뒤로 밀리면 안 된다")
+    w = ku.ETF_WEIGHTS.get("신재생") or {}
+    for c in pools.get("신재생", [])[:12]:
+        print(f"  {name(c):18} 비중 {w.get(c, 0):.2f}")
+
+    print("=" * 64)
+    print("[4] 건설 테마 구성(일부)")
     print("  " + ", ".join(name(c) for c in pools.get("건설", [])[:30]))
 
     print("=" * 64)
-    print("[4] 남아 있는 '홀딩스/지주' 종목 — 금융과 예외만 있어야 한다")
+    print("[5] 남아 있는 '홀딩스/지주' 종목 — 금융과 예외만 있어야 한다")
     for t, cs in sorted(pools.items()):
         hits = [name(c) for c in cs if ku.HOLDING_RE.search(name(c))]
         if hits:

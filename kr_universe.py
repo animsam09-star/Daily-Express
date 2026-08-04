@@ -78,6 +78,8 @@ PINNED_THEME = {
                              # 실질은 SK하이닉스 지분 프록시. 대형 반도체로 묶는다
     "007660": "전기전자",   # 이수페타시스 — AI 가속기용 기판(MLB). 소부장이 아니라 전자부품
     "005935": "반도체",     # 삼성전자우 — 우선주 일괄 제외의 예외. 고정 분류는 필터를 통과한다
+    "010060": "신재생",     # OCI홀딩스 — 태양광 폴리실리콘. 업종이 '화학'이라
+                             # 정유·화학이 먼저 가져갔고 지주사 필터에도 걸렸다
 }
 
 # 지주회사는 사업회사가 따로 상장돼 있으면 지수를 흐린다 — SK 와 SK이노베이션이
@@ -240,14 +242,21 @@ def build_pools() -> dict[str, list[str]]:
     pools.setdefault("반도체", []).extend(SEMI_LARGE)
 
     # 고정 분류를 마지막에 적용 — 업종·ETF 어느 경로로 들어왔든 여기로 옮긴다.
-    # ETF 가중치에서도 지워야 한다(남겨두면 weight() 가 옛 테마 기준으로 계산).
+    # 옛 테마의 ETF 가중치는 지운다(남겨두면 weight() 가 옛 기준으로 계산).
     for code, theme in PINNED_THEME.items():
         for t in list(pools):
             pools[t] = [c for c in pools[t] if c != code]
-        for w in ETF_WEIGHTS.values():
-            w.pop(code, None)
+        for t, w in ETF_WEIGHTS.items():
+            if t != theme:
+                w.pop(code, None)
         if theme:
             pools.setdefault(theme, []).append(code)
+            # ETF 로 정의된 테마는 구성비중이 곧 순위다. ETF 가 담지 않은 종목을
+            # 사람이 넣으면 비중이 0 이 되어 맨 뒤로 밀리므로(OCI홀딩스가
+            # 신재생 표에서 사라졌다) 그 테마 비중의 중간값을 준다.
+            w = ETF_WEIGHTS.get(theme)
+            if w and code not in w:
+                w[code] = sorted(w.values())[len(w) // 2]
 
     # 한 종목은 한 테마에만. 우선순위가 높은 테마가 먼저 가져간다.
     claimed: set[str] = set()
