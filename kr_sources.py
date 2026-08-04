@@ -19,7 +19,7 @@ import urllib3
 
 import kr_universe
 
-from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at,
+from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at, _trim,
                      fetch_quotes, mom_score, pct_change, yahoo_candles,
                      yahoo_ohlc, yahoo_series)
 
@@ -81,27 +81,147 @@ def _resolve_suffixes(codes):
     return merged
 
 
+def _page(url):
+    """네이버 페이지 본문. 인코딩이 페이지마다 달라 둘 다 시도한다."""
+    r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT)
+    for enc in ("utf-8", "euc-kr"):
+        try:
+            return r.content.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
 def stock_name(code: str) -> str:
     """네이버 종목 페이지 제목에서 한글 사명."""
     try:
-        r = requests.get(NAME_URL.format(code=code), headers=NAVER_HDR,
-                         verify=VERIFY, timeout=TIMEOUT)
-        # 네이버는 페이지마다 인코딩이 다르다(이 페이지는 UTF-8 로 바뀌었다)
-        for enc in ("utf-8", "euc-kr"):
-            try:
-                m = NAME_RE.search(r.content.decode(enc))
-            except UnicodeDecodeError:
-                continue
-            if m:
-                return m.group(1).strip()
+        m = NAME_RE.search(_page(NAME_URL.format(code=code)))
+        if m:
+            return m.group(1).strip()
     except Exception:                          # noqa: BLE001
         pass
     return code
 
 
+# 종목 페이지의 '기업실적분석' 표. 연간 4개 열 뒤에 분기 열이 이어진다.
+FIN_MARK = "기업실적분석"
+# 열 머리글은 '2026.06' 또는 '2026.09(E)' 형태다. (E)는 컨센서스 추정치라
+# 실적으로 보여주면 안 된다 — 머리글 전체를 읽어 표시를 확인한다.
+FIN_HEAD_RE = re.compile(r"<th[^>]*>(.*?)</th>", re.S)
+FIN_DATE_RE = re.compile(r"(\d{4}\.\d{2})")
+# 항목 이름이 <span> 안에 있을 거라 보고 짰다가 한 행도 못 잡았다(실측).
+# 네이버는 <strong>·<span>·평문을 섞어 쓰므로 태그를 걷어내고 글자만 본다.
+FIN_ROW_RE = re.compile(r"""<th[^>]*scope=['"]?row['"]?[^>]*>(.*?)</th>(.*?)</tr>""",
+                        re.S)
+FIN_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+FIN_WANT = {"매출액": "revenue", "영업이익": "op", "당기순이익": "net"}
+KR_QUARTERS = 5
+TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _quarters(html):
+    """'기업실적분석' 표에서 최근 5개 분기. [{date, revenue, op, net}, ...]
+
+    표는 '최근 연간 실적' 4열 + '최근 분기 실적' 6열이 한 줄에 이어 붙어 있고,
+    뒤쪽 열에는 추정치도 섞여 있다(값이 비면 그 분기는 버린다).
+    단위는 억원이다 — 화면에서 조·억으로 다시 표기한다.
+    """
+    i = html.find(FIN_MARK)
+    if i < 0:
+        return []
+    seg = html[i:i + 12000]
+    cols = []                                  # [(열번호, 'YYYY.MM', 추정치인가)]
+    for th in FIN_HEAD_RE.findall(seg):
+        t = _text(th)
+        m = FIN_DATE_RE.search(t)
+        if m:
+            cols.append((len(cols), m.group(1), "(E)" in t))
+    if len(cols) < 5:
+        return []
+    annual = 4                                 # 앞 4열은 연간
+    vals = {}
+    for label, body in FIN_ROW_RE.findall(seg):
+        key = FIN_WANT.get(_text(label))
+        if key:
+            vals[key] = [_text(c) for c in FIN_CELL_RE.findall(body)]
+
+    out = []
+    for j, date, est in cols[annual:]:
+        if est:                                # 컨센서스 추정치는 싣지 않는다
+            continue
+        row = {"date": date}
+        for key, cells in vals.items():
+            v = cells[j].replace(",", "") if j < len(cells) else ""
+            try:
+                row[key] = float(v) * 1e8      # 억원 -> 원
+            except ValueError:
+                row[key] = None
+        if row.get("revenue") is not None:     # 값이 아직 없는 분기는 버린다
+            out.append(row)
+    return out[-KR_QUARTERS:]
+
+
+def _text(html):
+    """태그·공백을 걷어낸 알맹이 글자."""
+    return " ".join(TAG_RE.sub(" ", html).replace("\xa0", " ").split())
+
+
+# 기업 개요는 종목 페이지에 없고 FnGuide(네이버 제휴) 쪽에 한글로 있다.
+FNGUIDE_URL = ("https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
+               "?cmp_cd={code}&finGubun=MAIN&frq=1")
+# 개요는 여러 문단이라 사이에 <br>·<span> 이 섞인다. 첫 '</' 까지만 잡으면
+# 한 문장에서 끊긴다(실측: SK하이닉스가 76자에서 잘렸다). 블록 끝까지 잡는다.
+CMP_RE = re.compile(r'cmp_comment[^>]*>(.*?)</(?:div|td|p|dd)\b', re.S)
+
+
+def _overview(code):
+    """FnGuide 기업개요(한글). 동시 요청이 많으면 빈 응답이 와서 한 번 재시도한다."""
+    for _ in range(2):
+        try:
+            m = CMP_RE.search(_page(FNGUIDE_URL.format(code=code)))
+        except Exception:                      # noqa: BLE001
+            m = None
+        if m:
+            text = _text(m.group(1))
+            if text:
+                return _trim(text)
+    return ""
+
+
 def fetch_names(codes):
     with ThreadPoolExecutor(max_workers=8) as ex:
         return dict(zip(codes, ex.map(stock_name, codes)))
+
+
+def fetch_company_info(codes):
+    """{종목코드: {"profile": {...}, "quarters": [...]}}.
+
+    사명·분기 실적은 종목 페이지 한 번으로 함께 얻고(사명만 받던 요청을 재활용),
+    기업 개요는 FnGuide 에서 따로 받는다.
+    """
+    def one(code):
+        info = {"name": code, "profile": {}, "quarters": []}
+        try:
+            html = _page(NAME_URL.format(code=code))
+            m = NAME_RE.search(html)
+            if m:
+                info["name"] = m.group(1).strip()
+            info["quarters"] = _quarters(html)
+        except Exception:                      # noqa: BLE001
+            pass
+        summary = _overview(code)
+        if summary:
+            info["profile"] = {"summary": summary}
+        return code, info
+
+    # FnGuide 는 동시 요청이 몰리면 빈 응답을 준다(실측: 4종목 중 3종목 개요 누락).
+    # 네이버보다 낮은 동시성으로 훑는다.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        out = dict(ex.map(one, codes))
+    got = sum(1 for v in out.values() if v.get("quarters"))
+    desc = sum(1 for v in out.values() if (v.get("profile") or {}).get("summary"))
+    print(f"[kr] 분기 실적 {got}/{len(codes)}종목, 기업 개요 {desc}/{len(codes)}종목")
+    return out
 
 
 def fetch_indices():
@@ -126,18 +246,20 @@ MOM_N = 2               # 테마당 주도주 자리 수
 MOM_PRESELECT = 12      # 50일선 이격으로 좁힐 테마당 후보 수(미국판과 같은 구조)
 
 
-def _row(code, quotes, names, rets, pick=None):
+def _row(code, quotes, info, rets, pick=None):
     """종목 한 줄. 시세가 없으면 None(표에서 뺀다)."""
     q = quotes.get(_ys(code)) or {}
     if q.get("price") is None:
         return None
     r = rets.get(_ys(code)) or {}
-    row = {"ticker": code, "name": names.get(code, code),
+    i = info.get(code) or {}
+    row = {"ticker": code, "name": i.get("name") or code,
            "price": q.get("price"), "market_cap": q.get("market_cap"),
            "chg_pct": q.get("chg_pct"),
            "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),
            "returns": r.get("returns", {}), "series": r.get("series", []),
-           "ohlc": r.get("ohlc", [])}
+           "ohlc": r.get("ohlc", []),
+           "profile": i.get("profile") or {}, "quarters": i.get("quarters") or []}
     if pick:
         row["pick"] = pick
     return row
@@ -219,16 +341,17 @@ def fetch_sectors_and_holdings():
 
     with ThreadPoolExecutor(max_workers=2) as ex:
         f_rets = ex.submit(_fetch_returns, [_ys(c) for c in sorted(hist_codes)])
-        f_names = ex.submit(fetch_names, sorted(name_codes))
-    names, rets = f_names.result(), f_rets.result()
+        f_info = ex.submit(fetch_company_info, sorted(name_codes))
+    info, rets = f_info.result(), f_rets.result()
 
     extras = _rank_extras(cands, rets)
-    # 최종 선정된 주도주의 사명은 여기서 마저 받는다(후보 전체를 받으면 낭비다)
-    names.update(fetch_names(sorted({c for cs in extras.values() for c in cs})))
+    # 최종 선정된 주도주의 사명·개요·실적은 여기서 마저 받는다
+    # (후보 전체를 받으면 낭비다)
+    info.update(fetch_company_info(sorted({c for cs in extras.values() for c in cs})))
 
     sectors, holdings = [], {}
     for theme, pool in pools.items():
-        rows = [r for r in (_row(c, quotes, names, rets) for c in pool) if r]
+        rows = [r for r in (_row(c, quotes, info, rets) for c in pool) if r]
         if not rows:
             continue
         for r in rows:
@@ -237,7 +360,7 @@ def fetch_sectors_and_holdings():
         rows.sort(key=lambda r: r["weight"], reverse=True)
         # 메시지에는 상위 5종목 + 주도주. 상위 5의 자리는 그대로 두고 뒤에 붙인다.
         holdings[theme] = rows[:WEB_TOP_N] + [
-            r for r in (_row(c, quotes, names, rets, pick="momentum")
+            r for r in (_row(c, quotes, info, rets, pick="momentum")
                         for c in extras.get(theme, [])) if r]
 
         # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.

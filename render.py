@@ -526,17 +526,21 @@ def _build_caption(sector, holdings, notes, note_cap=NOTE_MAX, cur="달러", px=
     # 티커만 봐서는 무슨 회사인지 모른다. 사명 옆에 사업을 한두 단어로 붙인다.
     biz_map = biz.describe([h["ticker"] for h in holdings])
 
+    opened = False
     for h in holdings:
         c = h.get("chg_pct")
+        # 시총 상위와 주도주는 뽑은 기준이 아예 다르다. 이어서 쓰면 주도주가
+        # 시총 순위 뒤에 붙은 것처럼 읽히므로 소제목으로 갈라 놓는다.
+        if h.get("pick") and not opened:
+            opened = True
+            blocks.append("<b>· 주도주 (최근 3개월 상승률 상위) ·</b>")
         # 1행: 방향 표시 + 티커 + 사업 + 당일 등락 (굵게 — 가장 먼저 읽히는 줄)
         label = f"{_short_name(h['name'])} ({h['ticker']})"
         what = biz_map.get(h["ticker"])
         if what:
             label += f" / {what}"
-        # 시총 상위 5가 아니라 최근 흐름으로 뽑힌 종목은 그렇다고 밝힌다.
-        # 표시가 없으면 시총 순위가 뒤바뀐 것처럼 읽힌다.
-        if h.get("pick"):
-            label = ("🔥 " if h["pick"] == "momentum" else "☆ ") + label
+        if h.get("pick") == "watch":
+            label = "☆ " + label
         head = (f"{_arrow(c)} <b>{escape(label)}  {c:+.1f}%</b>" if c is not None
                 else f"• <b>{escape(label)}</b>")
         # 2행: 주가·시총 (고정폭이라 종목 간 자리가 맞는다)
