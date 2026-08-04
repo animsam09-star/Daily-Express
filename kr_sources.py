@@ -105,10 +105,14 @@ def stock_name(code: str) -> str:
 
 # 종목 페이지의 '기업실적분석' 표. 연간 4개 열 뒤에 분기 열이 이어진다.
 FIN_MARK = "기업실적분석"
-FIN_HEAD_RE = re.compile(r"<th[^>]*>(?:<[^>]+>)*\s*(\d{4}\.\d{2})\s*<")
+# 열 머리글은 '2026.06' 또는 '2026.09(E)' 형태다. (E)는 컨센서스 추정치라
+# 실적으로 보여주면 안 된다 — 머리글 전체를 읽어 표시를 확인한다.
+FIN_HEAD_RE = re.compile(r"<th[^>]*>(.*?)</th>", re.S)
+FIN_DATE_RE = re.compile(r"(\d{4}\.\d{2})")
 # 항목 이름이 <span> 안에 있을 거라 보고 짰다가 한 행도 못 잡았다(실측).
 # 네이버는 <strong>·<span>·평문을 섞어 쓰므로 태그를 걷어내고 글자만 본다.
-FIN_ROW_RE = re.compile(r'<th[^>]*scope="row"[^>]*>(.*?)</th>(.*?)</tr>', re.S)
+FIN_ROW_RE = re.compile(r"""<th[^>]*scope=['"]?row['"]?[^>]*>(.*?)</th>(.*?)</tr>""",
+                        re.S)
 FIN_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
 FIN_WANT = {"매출액": "revenue", "영업이익": "op", "당기순이익": "net"}
 KR_QUARTERS = 5
@@ -126,7 +130,12 @@ def _quarters(html):
     if i < 0:
         return []
     seg = html[i:i + 12000]
-    cols = FIN_HEAD_RE.findall(seg)
+    cols = []                                  # [(열번호, 'YYYY.MM', 추정치인가)]
+    for th in FIN_HEAD_RE.findall(seg):
+        t = _text(th)
+        m = FIN_DATE_RE.search(t)
+        if m:
+            cols.append((len(cols), m.group(1), "(E)" in t))
     if len(cols) < 5:
         return []
     annual = 4                                 # 앞 4열은 연간
@@ -137,15 +146,17 @@ def _quarters(html):
             vals[key] = [_text(c) for c in FIN_CELL_RE.findall(body)]
 
     out = []
-    for j in range(annual, len(cols)):
-        row = {"date": cols[j]}
+    for j, date, est in cols[annual:]:
+        if est:                                # 컨센서스 추정치는 싣지 않는다
+            continue
+        row = {"date": date}
         for key, cells in vals.items():
             v = cells[j].replace(",", "") if j < len(cells) else ""
             try:
                 row[key] = float(v) * 1e8      # 억원 -> 원
             except ValueError:
                 row[key] = None
-        if row.get("revenue") is not None:     # 추정치 열은 비어 있다
+        if row.get("revenue") is not None:     # 값이 아직 없는 분기는 버린다
             out.append(row)
     return out[-KR_QUARTERS:]
 
@@ -158,17 +169,23 @@ def _text(html):
 # 기업 개요는 종목 페이지에 없고 FnGuide(네이버 제휴) 쪽에 한글로 있다.
 FNGUIDE_URL = ("https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx"
                "?cmp_cd={code}&finGubun=MAIN&frq=1")
-CMP_RE = re.compile(r'cmp_comment"?>(.*?)</', re.S)
+# 개요는 여러 문단이라 사이에 <br>·<span> 이 섞인다. 첫 '</' 까지만 잡으면
+# 한 문장에서 끊긴다(실측: SK하이닉스가 76자에서 잘렸다). 블록 끝까지 잡는다.
+CMP_RE = re.compile(r'cmp_comment[^>]*>(.*?)</(?:div|td|p|dd)\b', re.S)
 
 
 def _overview(code):
-    try:
-        m = CMP_RE.search(_page(FNGUIDE_URL.format(code=code)))
-    except Exception:                          # noqa: BLE001
-        return ""
-    if not m:
-        return ""
-    return _trim(" ".join(TAG_RE.sub(" ", m.group(1)).split()))
+    """FnGuide 기업개요(한글). 동시 요청이 많으면 빈 응답이 와서 한 번 재시도한다."""
+    for _ in range(2):
+        try:
+            m = CMP_RE.search(_page(FNGUIDE_URL.format(code=code)))
+        except Exception:                      # noqa: BLE001
+            m = None
+        if m:
+            text = _text(m.group(1))
+            if text:
+                return _trim(text)
+    return ""
 
 
 def fetch_names(codes):
@@ -197,10 +214,13 @@ def fetch_company_info(codes):
             info["profile"] = {"summary": summary}
         return code, info
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    # FnGuide 는 동시 요청이 몰리면 빈 응답을 준다(실측: 4종목 중 3종목 개요 누락).
+    # 네이버보다 낮은 동시성으로 훑는다.
+    with ThreadPoolExecutor(max_workers=4) as ex:
         out = dict(ex.map(one, codes))
     got = sum(1 for v in out.values() if v.get("quarters"))
-    print(f"[kr] 기업 개요·실적 {got}/{len(codes)}종목")
+    desc = sum(1 for v in out.values() if (v.get("profile") or {}).get("summary"))
+    print(f"[kr] 분기 실적 {got}/{len(codes)}종목, 기업 개요 {desc}/{len(codes)}종목")
     return out
 
 
