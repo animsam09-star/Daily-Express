@@ -388,6 +388,9 @@ def _cap_fmt(v, cur="달러"):
     if not v:
         return ""
     # 소수점 한 자리까지. 1조 미만은 억 단위로 내려 자릿수를 지킨다.
+    # 1,000조를 넘으면 소수점은 군더더기라 뗀다(삼성전자 1,572조원).
+    if v >= 1e15:
+        return f"{v / 1e12:,.0f}조{cur}"
     if v >= 1e12:
         return f"{v / 1e12:,.1f}조{cur}"
     return f"{v / 1e8:,.0f}억{cur}"
