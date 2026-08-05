@@ -344,27 +344,46 @@ def fetch_returns(tickers):
         return dict(ex.map(one, tickers))
 
 
-def fetch_sector_holdings(sector_symbols):
+def fetch_sector_holdings(sector_symbols, caps=None):
     """섹터별 시총 상위 종목 + 각 종목의 주가·시가총액·당일 등락률·2개년 시계열.
 
     WEB_TOP_N 개까지 담는다. 텔레그램 캡션은 그중 앞 TOP_N 개만 쓰고,
     웹 대시보드는 전부 보여준다(화면은 길이 제약이 없다).
+
+    caps 는 나스닥 스크리너에서 받은 {티커: 시가총액}. 시총 순위를 여기서
+    매기는 이유는 두 가지 실측 때문이다.
+      - 야후 시세는 시총이 통째로 비는 종목이 있다. AMD 는 XLK 시총 6위인데
+        시세에 시총이 없어 0 으로 밀려 표에서 사라졌다(CRM 도 같았다).
+      - 후보를 ETF 비중 상위 25 로 자르면 비중은 낮고 시총은 큰 종목이
+        후보에조차 못 든다(MU 가 그랬다). 그래서 보유목록 전량을 후보로 본다.
     """
     with ThreadPoolExecutor(max_workers=6) as ex:
         holdings = dict(zip(sector_symbols,
-                            ex.map(lambda e: _top_holdings(e), sector_symbols)))
+                            ex.map(lambda e: _top_holdings(e, n=999), sector_symbols)))
 
+    caps = dict(caps or {})
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
-    quotes = fetch_quotes(tickers)
+    # 스크리너에 없는 종목만 시세로 시총을 확인한다(전량에 시세를 돌리면 비싸다)
+    unknown = [t for t in tickers if not caps.get(t)]
+    if unknown:
+        for t, q in fetch_quotes(unknown).items():
+            if q.get("market_cap"):
+                caps[t] = q["market_cap"]
 
-    # 시가총액 순으로 다시 세워 상위 WEB_TOP_N 만 남긴다
     for sym, hs in list(holdings.items()):
-        for h in hs:
-            h.update(quotes.get(h["ticker"], {}))
-        hs.sort(key=lambda h: h.get("market_cap") or 0, reverse=True)
+        hs.sort(key=lambda h: caps.get(h["ticker"]) or 0, reverse=True)
         holdings[sym] = hs[:WEB_TOP_N]
 
+    # 살아남은 종목만 시세를 받는다(주가·당일 등락률)
     kept = sorted({h["ticker"] for hs in holdings.values() for h in hs})
+    quotes = fetch_quotes(kept)
+    for hs in holdings.values():
+        for h in hs:
+            h.update({k: v for k, v in (quotes.get(h["ticker"]) or {}).items()
+                      if v is not None})
+            if not h.get("market_cap"):
+                h["market_cap"] = caps.get(h["ticker"])
+
     rets = fetch_returns(kept)
     for hs in holdings.values():
         for h in hs:
@@ -843,11 +862,16 @@ def collect_all():
 
     run("indices", fetch_indices)
     run("sectors", fetch_sectors)
-    run("holdings", lambda: fetch_sector_holdings([s for s, _ in SECTORS]))
+
+    # 전 종목 시가총액·섹터(히트맵과 같은 재료). 섹터 상위 종목을 고르는
+    # 기준이므로 보유목록보다 먼저 받는다.
+    run("universe", fetch_market_universe)
+    caps = {r["ticker"]: r["market_cap"]
+            for rows in (data.get("universe") or {}).values() for r in rows}
+    run("holdings", lambda: fetch_sector_holdings([s for s, _ in SECTORS], caps))
     sort_sectors_by_cap(data.get("sectors"), data.get("holdings"))
 
-    # 시총 상위 5 뒤에 주도주·워치리스트를 붙인다. 실패해도 상위 5는 그대로 나간다.
-    run("universe", fetch_market_universe)
+    # 시총 상위 뒤에 주도주·워치리스트를 붙인다. 실패해도 상위 종목은 그대로 나간다.
     run("extras", lambda: pick_extras(data.get("holdings"), data.get("universe")))
     for sym, extra in (data.get("extras") or {}).items():
         if data.get("holdings") is not None and sym in data["holdings"]:
