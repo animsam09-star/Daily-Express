@@ -140,8 +140,9 @@ def line_chart(path, title, series, *, value_fmt="{:,.2f}", unit="",
             ax.plot(dates, _ma(vals, win), color=color, lw=1.1,
                     alpha=0.9, zorder=4, label=f"{win}일 이동평균")
 
+    # 마지막 점에 마커를 찍지 않는다. 점이 이동평균선을 덮어 종가가 선에
+    # 닿았는지 안 닿았는지가 안 보였다. 마지막 값은 제목에 숫자로 있다.
     last = vals[-1]
-    ax.scatter([dates[-1]], [last], s=26, color=UP if (change or 0) >= 0 else DOWN, zorder=6)
 
     head = f"{title}   {value_fmt.format(last)}{unit}"
     if change is not None:
