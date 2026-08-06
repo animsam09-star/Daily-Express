@@ -28,7 +28,7 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     # step 의 if 조건에서는 secrets 를 직접 못 쓴다(env 만 참조 가능).
     # 그래서 job 단위 env 로 한 번 받아둔다.
     env:
