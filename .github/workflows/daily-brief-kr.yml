@@ -85,11 +85,12 @@ jobs:
         if: steps.guard.outputs.skip != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         run: npm install -g @anthropic-ai/claude-code
 
-      # web_only 면 --dry-run: 수집·차트·웹 대시보드는 그대로 만들고
-      # 텔레그램 발송만 생략한다. schedule 실행에서는 inputs 가 비어 false.
-      - name: 브리핑 발송
+      # 발송은 여기서 하지 않는다 — 웹이 먼저 갱신되도록 --defer-send 로
+      # 본문·차트만 저장해 두고, Cloudflare 배포가 끝난 뒤 아래 단계에서 보낸다.
+      # web_only 면 --dry-run 이라 저장도 하지 않아 발송 단계가 조용히 넘어간다.
+      - name: 브리핑 생성
         if: steps.guard.outputs.skip != 'true'
-        run: python main_kr.py ${{ inputs.web_only == true && '--dry-run' || '' }}
+        run: python main_kr.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
 
       # ---- 웹 대시보드 (Cloudflare Pages) ---- daily-brief.yml 과 같은 구조
       - name: 웹 대시보드 아티팩트 보관
@@ -155,6 +156,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy site --project-name=${{ env.PAGES_PROJECT }} --branch=main
+
+      # 웹이 갱신된 뒤에 알림이 가야 링크를 눌렀을 때 새 내용이 보인다.
+      # 수집을 다시 하지 않고 저장해 둔 본문·차트만 읽어 보낸다.
+      - name: 텔레그램 발송
+        if: steps.guard.outputs.skip != 'true' && inputs.web_only != true
+        run: python main_kr.py --send-pending
 
       - name: 실패 시 차트 보관(원인 확인용)
         if: failure()

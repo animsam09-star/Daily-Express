@@ -26,6 +26,17 @@ def main() -> int:
     ap.add_argument("--outdir", default="out", help="차트 저장 폴더")
     args = ap.parse_args()
 
+    if args.send_pending:
+        token, chat_id = (os.environ.get("TELEGRAM_BOT_TOKEN"),
+                          os.environ.get("TELEGRAM_CHAT_ID"))
+        if not (token and chat_id):
+            print("[발송] 텔레그램 시크릿이 비어 있습니다", file=sys.stderr)
+            return 2
+        print("[발송] 저장해 둔 브리핑 전송...")
+        rc = notify.send_pending(args.outdir, token, chat_id)
+        print("    완료.")
+        return rc
+
     t0 = time.time()
     print("[1/3] 데이터 수집...")
     data = sources.collect_all()
@@ -56,6 +67,12 @@ def main() -> int:
 
     if args.dry_run:
         print(f"[3/3] --dry-run 이므로 발송 생략. ({time.time() - t0:.1f}s)")
+        return 0
+
+    if args.defer_send:
+        p = notify.save_pending(args.outdir, text, charts)
+        print(f"[3/3] 발송을 미룸 — 웹 배포 뒤에 보낸다({p}). "
+              f"({time.time() - t0:.1f}s)")
         return 0
 
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
