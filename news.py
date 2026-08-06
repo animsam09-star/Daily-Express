@@ -757,49 +757,65 @@ def _translated(text: str) -> dict[str, str]:
     return out
 
 
+# 11섹터 × 10종목이면 110개다. 한 번에 보내면 응답이 max_tokens 를 넘겨
+# 잘린 JSON 이 오고, 헤드리스 CLI 로는 5분 상한도 넘긴다(실제로 발송이
+# 타임아웃됐다). 작게 쪼개 동시에 보내면 벽시계 시간은 한 덩어리치다.
+TRANSLATE_CHUNK = 20
+TRANSLATE_WORKERS = 6
+TRANSLATE_CLI_TIMEOUT = 120     # 덩어리 하나의 상한. 넘으면 그 덩어리만 영문
+
+
+def _translate_chunk(items: list[tuple[str, str]]) -> dict[str, str]:
+    """한 덩어리를 번역한다. API 를 먼저 쓴다 — 도구가 필요 없는 순수 변환이라
+    에이전트 루프를 도는 CLI 보다 빠르고 응답 형식도 스키마로 고정된다."""
+    prompt = _translate_prompt(items)
+
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            import anthropic
+            resp = anthropic.Anthropic().beta.messages.create(
+                model=MODEL, max_tokens=8000,
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                system=TRANSLATE_SYSTEM,
+                output_config={"effort": "low",
+                               "format": {"type": "json_schema",
+                                          "schema": TRANSLATE_SCHEMA}},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            got = _translated(next(b.text for b in resp.content if b.type == "text"))
+            if got:
+                return got
+        except Exception as e:                     # noqa: BLE001
+            print(f"[news] 개요 번역 실패({items[0][0]}~): {type(e).__name__}: {e}")
+
+    if not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and shutil.which("claude")):
+        return {}
+    instruction = (TRANSLATE_SYSTEM
+                   + "\n\nJSON 만 출력한다. 설명·코드펜스 없이 JSON 객체 하나만.\n"
+                     '형식: {"items": [{"ticker": "AAPL", "ko": "..."}]}\n\n'
+                   + prompt)
+    try:
+        r = subprocess.run([shutil.which("claude"), "-p", instruction,
+                            "--model", MODEL],
+                           capture_output=True, text=True, encoding="utf-8",
+                           timeout=TRANSLATE_CLI_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"[news] 개요 번역 호출 실패({items[0][0]}~): {type(e).__name__}: {e}")
+        return {}
+    return _translated(r.stdout) if r.returncode == 0 else {}
+
+
 def translate_profiles(profiles: dict[str, str]) -> dict[str, str]:
     """{티커: 영문 개요} -> {티커: 한국어 개요}. 실패한 종목은 빠진다."""
     items = [(t, s) for t, s in sorted(profiles.items()) if s]
     if not items:
         return {}
-    prompt = _translate_prompt(items)
-
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and shutil.which("claude"):
-        instruction = (TRANSLATE_SYSTEM
-                       + "\n\nJSON 만 출력한다. 설명·코드펜스 없이 JSON 객체 하나만.\n"
-                         '형식: {"items": [{"ticker": "AAPL", "ko": "..."}]}\n\n'
-                       + prompt)
-        try:
-            r = subprocess.run([shutil.which("claude"), "-p", instruction,
-                                "--model", MODEL],
-                               capture_output=True, text=True, encoding="utf-8",
-                               timeout=CLI_TIMEOUT)
-            if r.returncode == 0:
-                got = _translated(r.stdout)
-                if got:
-                    print(f"[news] 기업 개요 번역 {len(got)}/{len(items)}종목")
-                    return got
-            else:
-                print(f"[news] 개요 번역 오류(exit {r.returncode})")
-        except (subprocess.TimeoutExpired, OSError) as e:
-            print(f"[news] 개요 번역 호출 실패: {type(e).__name__}: {e}")
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return {}
-    try:
-        import anthropic
-        resp = anthropic.Anthropic().beta.messages.create(
-            model=MODEL, max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-            system=TRANSLATE_SYSTEM,
-            output_config={"effort": "low",
-                           "format": {"type": "json_schema",
-                                      "schema": TRANSLATE_SCHEMA}},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        got = _translated(next(b.text for b in resp.content if b.type == "text"))
-    except Exception as e:                         # noqa: BLE001
-        print(f"[news] 개요 번역 실패: {type(e).__name__}: {e}")
-        return {}
-    print(f"[news] 기업 개요 번역 {len(got)}/{len(items)}종목")
-    return got
+    chunks = [items[i:i + TRANSLATE_CHUNK]
+              for i in range(0, len(items), TRANSLATE_CHUNK)]
+    out = {}
+    with ThreadPoolExecutor(max_workers=TRANSLATE_WORKERS) as ex:
+        for got in ex.map(_translate_chunk, chunks):
+            out.update(got)
+    print(f"[news] 기업 개요 번역 {len(out)}/{len(items)}종목 "
+          f"({len(chunks)}덩어리)")
+    return out
