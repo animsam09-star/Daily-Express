@@ -23,6 +23,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true",
                     help="발송하지 않고 메시지·차트만 만들어 확인")
+    # 웹을 먼저 갱신하고 텔레그램을 뒤에 보내기 위한 두 단계 실행.
+    # --defer-send 가 본문·차트를 저장해 두면, Cloudflare 배포가 끝난 뒤
+    # --send-pending 이 그것만 읽어 보낸다(수집을 두 번 하지 않는다).
+    ap.add_argument("--defer-send", action="store_true",
+                    help="발송하지 않고 본문·차트를 저장(배포 뒤 --send-pending)")
+    ap.add_argument("--send-pending", action="store_true",
+                    help="저장해 둔 브리핑을 발송")
     ap.add_argument("--outdir", default="out", help="차트 저장 폴더")
     args = ap.parse_args()
 
