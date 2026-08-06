@@ -461,6 +461,11 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
     return _build_caption(sector, core, {}, NOTE_MAX, cur, px, bench)
 
 
+# 'Class A' 나 'Common Stock' 은 회사 이름이 아니라 주식 종류다. 통째로 지운다.
+# 낱말 단위로 지우면 'Capital One' 이 'One' 이 되므로 구(句)로만 매칭한다.
+CLASS_PHRASE = re.compile(r"\b(cl|class|ser|series)\s+[a-z]\b", re.I)
+SHARE_PHRASE = re.compile(r"\b(common|capital|ordinary)\s+(stock|shares?)\b", re.I)
+
 NAME_DROP = re.compile(
     r"\b(INC|CORP|CORPORATION|CO|THE|PLC|LTD|LLC|COMPANY|HOLDINGS?|GROUP"
     r"|CL|CLASS|SER|SERIES|SHARES|SHS|COMMON|STOCK|ORD|SA|NV|AG)\b|\s+[A-C]$",
@@ -478,13 +483,22 @@ def _short_name(name: str, limit: int = 18) -> str:
     if re.search(r"[가-힣]", name):
         return name.strip()
     s = name.replace("+", "&")
+    s = SHARE_PHRASE.sub(" ", CLASS_PHRASE.sub(" ", s))
     s = NAME_DROP.sub(" ", s)
-    s = " ".join(s.split()).strip(" ,/-")
+    s = s.replace(".", " ")                     # 'Inc.' 의 마침표가 남는다
+    s = " ".join(s.split()).strip(" ,/-.")
     if not s:
         return name.title()
-    # 짧은 약어(IBM, AT&T)는 대문자를 유지하고, 일반 단어는 첫 글자만 대문자로
-    words = [w if (len(w) <= 4 and not w.isalpha()) or (w.isupper() and len(w) <= 3)
-             else w.capitalize() for w in s.split()]
+    def cap(w):
+        # 짧은 약어(IBM, AT&T)는 대문자 유지
+        if (len(w) <= 4 and not w.isalpha()) or (w.isupper() and len(w) <= 3):
+            return w
+        # 혼합 표기는 회사가 정한 것이다 — 건드리면 SharkNinja 가 Sharkninja 된다
+        if w.isupper() or w.islower():
+            return w.capitalize()
+        return w
+
+    words = [cap(w) for w in s.split()]
     # 길면 글자를 자르지 말고 뒤 단어를 떨어뜨린다("Verizon Communicat" 방지)
     out = ""
     for w in words:
@@ -492,7 +506,7 @@ def _short_name(name: str, limit: int = 18) -> str:
         if len(cand) > limit and out:
             break
         out = cand
-    return out.strip(" &+-,·") or " ".join(words)[:limit]
+    return out.strip(" &+-,·.") or " ".join(words)[:limit]
 
 
 def _arrow(v):

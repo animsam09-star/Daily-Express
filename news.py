@@ -476,17 +476,20 @@ def macro_context(data: dict) -> str:
     return "\n".join(lines)
 
 
-def _parse(text: str) -> tuple[dict[str, dict], dict[str, str]]:
-    """모델 출력에서 ({티커: {note, source}}, {섹터심볼: 코멘트}).
+def _json_block(text: str) -> str:
+    """앞뒤 잡텍스트·코드펜스가 붙어 와도 JSON 객체만 건져낸다."""
+    text = (text or "").strip()
+    if text.startswith("{"):
+        return text
+    i, j = text.find("{"), text.rfind("}")
+    return text[i:j + 1] if i != -1 and j != -1 else ""
 
-    앞뒤 잡텍스트가 있어도 JSON 만 건진다.
-    """
-    text = text.strip()
-    if not text.startswith("{"):
-        i, j = text.find("{"), text.rfind("}")
-        if i == -1 or j == -1:
-            return {}, {}
-        text = text[i:j + 1]
+
+def _parse(text: str) -> tuple[dict[str, dict], dict[str, str]]:
+    """모델 출력에서 ({티커: {note, source}}, {섹터심볼: 코멘트})."""
+    text = _json_block(text)
+    if not text:
+        return {}, {}
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
@@ -700,3 +703,103 @@ def build_kr(holdings: dict) -> dict[str, dict]:
     return {tk: {"note": v["note"], "url": short.get(tk, ""),
                  "importance": v.get("importance", 0)}
             for tk, v in kept.items()}
+
+
+# ------------------------------------------------------- 기업 개요 번역
+# 야후가 주는 미국 기업 개요는 영문이다. 한 종목씩 부르면 호출이 백 번 넘게
+# 나가므로, 전 종목을 한 번에 보내 JSON 으로 돌려받는다. 실패하면 원문을
+# 그대로 쓴다(개요가 사라지는 것보다 영문이 낫다).
+TRANSLATE_SYSTEM = (
+    "너는 증권사 리서치 어시스턴트다. 영문 기업 개요를 한국어로 옮긴다.\n"
+    "- 무엇을 만들어 어디서 돈을 버는 회사인지가 먼저 오게 쓴다.\n"
+    "- 두 문장 이내, 각 문장은 명사형이나 '~한다'로 끝낸다.\n"
+    "- 제품·브랜드 고유명사는 원문 표기를 유지한다(iPhone, Azure).\n"
+    "- 설립연도·본사 위치처럼 주가와 무관한 정보는 버린다.\n"
+    "- 의역하지 말고 원문에 없는 사실을 지어내지 않는다."
+)
+TRANSLATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"ticker": {"type": "string"},
+                               "ko": {"type": "string"}},
+                "required": ["ticker", "ko"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+
+def _translate_prompt(items: list[tuple[str, str]]) -> str:
+    lines = ["다음 기업 개요를 한국어로 옮겨라. 티커는 그대로 돌려준다.", ""]
+    for ticker, text in items:
+        lines.append(f"[{ticker}] {text}")
+    return "\n".join(lines)
+
+
+def _translated(text: str) -> dict[str, str]:
+    """모델 응답에서 {티커: 한국어} 만 뽑는다."""
+    try:
+        data = json.loads(_json_block(text))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    out = {}
+    for it in (data.get("items") or []):
+        t, ko = (it.get("ticker") or "").strip(), (it.get("ko") or "").strip()
+        if t and ko:
+            out[t] = ko
+    return out
+
+
+def translate_profiles(profiles: dict[str, str]) -> dict[str, str]:
+    """{티커: 영문 개요} -> {티커: 한국어 개요}. 실패한 종목은 빠진다."""
+    items = [(t, s) for t, s in sorted(profiles.items()) if s]
+    if not items:
+        return {}
+    prompt = _translate_prompt(items)
+
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and shutil.which("claude"):
+        instruction = (TRANSLATE_SYSTEM
+                       + "\n\nJSON 만 출력한다. 설명·코드펜스 없이 JSON 객체 하나만.\n"
+                         '형식: {"items": [{"ticker": "AAPL", "ko": "..."}]}\n\n'
+                       + prompt)
+        try:
+            r = subprocess.run([shutil.which("claude"), "-p", instruction,
+                                "--model", MODEL],
+                               capture_output=True, text=True, encoding="utf-8",
+                               timeout=CLI_TIMEOUT)
+            if r.returncode == 0:
+                got = _translated(r.stdout)
+                if got:
+                    print(f"[news] 기업 개요 번역 {len(got)}/{len(items)}종목")
+                    return got
+            else:
+                print(f"[news] 개요 번역 오류(exit {r.returncode})")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            print(f"[news] 개요 번역 호출 실패: {type(e).__name__}: {e}")
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    try:
+        import anthropic
+        resp = anthropic.Anthropic().beta.messages.create(
+            model=MODEL, max_tokens=16000,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            system=TRANSLATE_SYSTEM,
+            output_config={"effort": "low",
+                           "format": {"type": "json_schema",
+                                      "schema": TRANSLATE_SCHEMA}},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        got = _translated(next(b.text for b in resp.content if b.type == "text"))
+    except Exception as e:                         # noqa: BLE001
+        print(f"[news] 개요 번역 실패: {type(e).__name__}: {e}")
+        return {}
+    print(f"[news] 기업 개요 번역 {len(got)}/{len(items)}종목")
+    return got

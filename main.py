@@ -50,6 +50,16 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
 
+    # 야후가 주는 기업 개요는 영문이다. 전 종목을 한 번에 보내 한국어로 옮긴다.
+    # 실패하면 원문(영문)이 그대로 남는다.
+    profiles = {h["ticker"]: (h.get("profile") or {}).get("summary")
+                for hs in (data.get("holdings") or {}).values() for h in hs}
+    for t, ko in news.translate_profiles({k: v for k, v in profiles.items() if v}).items():
+        for hs in (data.get("holdings") or {}).values():
+            for h in hs:
+                if h["ticker"] == t and h.get("profile"):
+                    h["profile"]["summary"] = ko
+
     # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
     # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)
     data["notes"], data["sector_notes"] = news.build(
