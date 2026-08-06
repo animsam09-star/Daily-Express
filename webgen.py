@@ -20,6 +20,10 @@ import datetime as dt
 import json
 import os
 
+# 종목명 축약은 텔레그램 캡션과 같은 규칙을 쓴다 — 'Palantir Technologies Inc.
+# Class A Common Stock' 같은 원문을 그대로 두면 표에서 이름이 수치를 밀어낸다.
+from render import _short_name
+
 # 최근 6개월은 일별, 그 이전은 주별로 다운샘플해 페이지 크기를 줄인다.
 # 종목 55개 × 500포인트를 그대로 실으면 페이지가 1MB 를 넘는다.
 DAILY_KEEP_DAYS = 182
@@ -97,7 +101,7 @@ def _holding(h, notes):
     n = (notes or {}).get(h["ticker"]) or {}
     return {
         "ticker": h["ticker"],
-        "name": h.get("name") or h["ticker"],
+        "name": _short_name(h.get("name") or h["ticker"]),
         "price": h.get("price"),
         "market_cap": _cap_krw(h.get("market_cap")),
         "chg_pct": (round(h["chg_pct"], 2) if h.get("chg_pct") is not None else None),
