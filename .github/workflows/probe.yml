@@ -1,0 +1,60 @@
+name: probe
+on: workflow_dispatch
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - name: 섹터 시계열 진단
+        run: |
+          python - <<'PY'
+          import datetime as dt
+          import sources
+
+          def stats(sym, name):
+              o = sources.yahoo_ohlc(sym)
+              s = [(d, c) for d, _, _, c in o]
+              if not o:
+                  print(f"{name}({sym}): 비어 있음"); return
+              ds = [d for d, *_ in o]
+              dup = len(ds) - len(set(ds))
+              gaps = [(a, b) for a, b in zip(ds, ds[1:]) if (b - a).days > 5]
+              hs = [h for _, h, _, _ in o]
+              ls = [l for _, _, l, _ in o]
+              cs = [c for *_, c in o]
+              bad = [(d, h, l, c) for d, h, l, c in o
+                     if not (l <= c <= h) or h <= 0 or l <= 0]
+              # 브라우저가 그리는 것과 같은 일목 계산
+              def mid(a, b):
+                  return (max(hs[a:b + 1]) + min(ls[a:b + 1])) / 2
+              n = len(o)
+              spanA = [(mid(i - 8, i) + mid(i - 25, i)) / 2 for i in range(25, n)]
+              spanB = [mid(i - 51, i) for i in range(51, n)]
+              print(f"\n=== {name}({sym}) ===")
+              print(f"  봉 {n}개  {ds[0]} ~ {ds[-1]}  중복날짜 {dup}  5일초과공백 {len(gaps)}")
+              if gaps:
+                  print(f"  공백: {gaps[:5]}")
+              print(f"  종가 {min(cs):.2f} ~ {max(cs):.2f}   고가max {max(hs):.2f} 저가min {min(ls):.2f}")
+              print(f"  구름대 spanA {min(spanA):.2f}~{max(spanA):.2f}  spanB {min(spanB):.2f}~{max(spanB):.2f}")
+              if bad:
+                  print(f"  !! 이상봉 {len(bad)}개: {bad[:5]}")
+              # series 와 ohlc 길이가 어긋나면 웹에서 구름대가 밀린다
+              print(f"  series {len(s)} vs ohlc {len(o)}  일치={len(s) == len(o)}")
+
+          for sym, nm in sources.SECTORS:
+              try:
+                  stats(sym, nm)
+              except Exception as e:
+                  print(f"{nm}({sym}) 실패: {type(e).__name__}: {e}")
+
+          print("\n=== 벤치마크 ===")
+          try:
+              b = sources.yahoo_series("^GSPC")
+              print(f"  S&P500 {len(b)}개 {b[0][0]} ~ {b[-1][0]}")
+          except Exception as e:
+              print(f"  실패: {e}")
+          PY
