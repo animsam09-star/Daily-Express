@@ -64,6 +64,24 @@ def _ds_ohlc(ohlc):
             for d, o, h, l, c in ohlc if d >= cut]
 
 
+def _ds_full(series):
+    """다운샘플 없이 [[iso, value]]. 지표(이동평균·일목)는 봉 단위로 계산하므로
+    간격이 일정해야 한다 — 섹터 차트는 텔레그램과 같은 일간 데이터를 쓴다."""
+    return [[d.isoformat(), round(float(v), 4)] for d, v in (series or [])
+            if v is not None]
+
+
+def _ds_hlc(ohlc):
+    """일목 구름대용 [[iso, high, low, close]]. 4튜플·5튜플 모두 받는다."""
+    out = []
+    for row in ohlc or []:
+        d = row[0]
+        h, l, c = (row[2], row[3], row[4]) if len(row) == 5 else (row[1], row[2], row[3])
+        out.append([d.isoformat(), round(float(h), 4), round(float(l), 4),
+                    round(float(c), 4)])
+    return out
+
+
 def _returns(r):
     r = r or {}
     return {k: (round(r[k], 2) if r.get(k) is not None else None)
@@ -158,13 +176,17 @@ def build_us(data, path):
             "symbol": s["symbol"], "name": s["name"],
             "chg_pct": round(s["chg_pct"], 2),
             "returns": _returns(s.get("returns")),
-            "series": _ds(s.get("series") or []),
+            # 텔레그램 섹터 차트와 같은 재료 — 일간 종가 + 고저종(구름대용)
+            "series": _ds_full(s.get("series")),
+            "hlc": _ds_hlc(s.get("ohlc")),
             "note": sector_notes.get(s["symbol"]) or "",
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
 
+    bench = idx.get("S&P500") or {}
     payload = {
         "market": "us",
+        "bench": {"label": "S&P500", "series": _ds_full(bench.get("series"))},
         "title": "미국 마켓 브리핑",
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                      .strftime("%Y.%m.%d %H:%M KST"),
@@ -212,8 +234,12 @@ def build_kr(data, path):
             "symbol": s["symbol"], "name": s["name"],
             "chg_pct": round(s["chg_pct"], 2),
             "returns": _returns(s.get("returns")),
-            # 한국 섹터 시계열은 main_kr 이 sector_series 로 만들어 넣는다
-            "series": _ds(s.get("web_series") or []),
+            # 한국 섹터 시계열은 main_kr 이 sector_series 로 만들어 넣는다.
+            # 텔레그램 차트와 같게 일간 그대로 싣는다(이동평균이 봉 단위라
+            # 주별로 줄이면 20일선이 20주선이 된다). 한국 섹터 지수는 계산값이라
+            # 고저종이 없어 구름대는 못 그린다 — 텔레그램도 마찬가지다.
+            "series": _ds_full(s.get("web_series")),
+            "hlc": [],
             "note": "",
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
@@ -229,8 +255,10 @@ def build_kr(data, path):
                 "foreign_cum": _ds(f.get("foreign_cum") or []),
             }
 
+    bench = idx.get("코스피") or {}
     payload = {
         "market": "kr",
+        "bench": {"label": "코스피", "series": _ds_full(bench.get("series"))},
         "title": "한국증시 마감 브리핑",
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                      .strftime("%Y.%m.%d %H:%M KST"),
@@ -619,21 +647,74 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
 }
 
 // 차트 하나가 실패해도(라이브러리 미로드 등) 표·카드는 계속 보여야 한다
-function lineChart(canvas, series, {label='종가', withMA=true, unit='', color='#1a1a1a'}={}){
+function lineChart(canvas, series, {label='종가', withMA=true, unit='', color='#1a1a1a',
+                                    hlc=null, bench=null, benchLabel='지수'}={}){
  try{
   const labels=series.map(p=>p[0]), vals=series.map(p=>p[1]);
   const ds=[{label, data:vals, borderColor:color, borderWidth:1.7,
-             pointRadius:0, pointHitRadius:8, tension:0}];
+             pointRadius:0, pointHitRadius:8, tension:0, order:1}];
   if(withMA) for(const [w,c] of MA) if(vals.length>w)
     ds.push({label:w+'일',data:ma(vals,w),borderColor:c,borderWidth:1,
-             pointRadius:0,pointHitRadius:0,tension:0});
+             pointRadius:0,pointHitRadius:0,tension:0,order:2});
+
+  // 일목균형표 구름대 — 텔레그램 차트와 같은 표준 설정(9/26/52, 26봉 선행).
+  // 고저종이 있어야 그린다(한국 섹터 지수는 계산값이라 없다).
+  if(hlc && hlc.length>78){
+    const n=hlc.length, mid=(from,to)=>{let h=-Infinity,l=Infinity;
+      for(let i=from;i<=to;i++){h=Math.max(h,hlc[i][1]);l=Math.min(l,hlc[i][2]);}
+      return (h+l)/2;};
+    const spanA=[], spanB=[];
+    for(let i=0;i<n;i++){
+      spanA.push(i>=25?(mid(i-8,i)+mid(i-25,i))/2:null);
+      spanB.push(i>=51?mid(i-51,i):null);
+    }
+    const AHEAD=26, pad=Array(AHEAD).fill(null);
+    let d=new Date(labels[labels.length-1]);
+    for(let k=0;k<AHEAD;k++){
+      do{ d=new Date(d.getTime()+86400000); }while(d.getUTCDay()===0||d.getUTCDay()===6);
+      labels.push(d.toISOString().slice(0,10));
+    }
+    ds.push({label:'일목 구름대', data:pad.concat(spanA), borderColor:'transparent',
+             pointRadius:0, pointHitRadius:0, tension:0, order:9,
+             fill:{target:'+1', above:'rgba(227,73,72,.16)', below:'rgba(42,120,214,.16)'}});
+    ds.push({label:'__spanB', data:pad.concat(spanB), borderColor:'transparent',
+             pointRadius:0, pointHitRadius:0, tension:0, order:9, fill:false});
+  }
+
+  // 지수 대비 상대강도(우측 축) — 구간 시작을 100 으로 잡은 (종목/지수) 비율.
+  // 절대 주가만 보면 시장이 밀어올린 것인지 섹터가 잘한 것인지 알 수 없다.
+  let hasRS=false;
+  if(bench && bench.length>30){
+    const bm=new Map(bench);
+    const rs=[]; let base=null;
+    for(const [d0,v] of series){
+      const b=bm.get(d0);
+      if(b==null||!b){ rs.push(null); continue; }
+      const r=v/b; if(base==null) base=r;
+      rs.push(r/base*100);
+    }
+    if(base!=null && rs.filter(x=>x!=null).length>30){
+      hasRS=true;
+      ds.push({label:benchLabel+' 대비(우)', data:rs, borderColor:'#8e44ad',
+               borderWidth:1.2, borderDash:[4,3], pointRadius:0, pointHitRadius:0,
+               tension:0, yAxisID:'y2', order:3});
+    }
+  }
+
+  const scales={x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
+                y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'}}};
+  if(hasRS) scales.y2={position:'right', grid:{display:false},
+                       ticks:{font:{size:9}, color:'#8e44ad', callback:v=>fmt(v,0)}};
   return new Chart(canvas,{type:'line',data:{labels,datasets:ds},
     plugins:[crosshair(i=>vals[i]!=null?vals[i]:null)],options:{
     responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
-    plugins:{legend:{display:withMA,labels:{boxWidth:14,font:{size:10}}},
-      tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)+unit}}},
-    scales:{x:{ticks:{maxTicksLimit:8,font:{size:10}},grid:{display:false}},
-            y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'}}}}});
+    plugins:{legend:{display:withMA,labels:{boxWidth:14,font:{size:10},
+        filter:i=>i.text!=='__spanB'}},
+      tooltip:{callbacks:{label:c=>{
+        if(c.dataset.label==='__spanB'||c.dataset.label==='일목 구름대') return null;
+        return c.parsed.y==null?null:c.dataset.label+': '+fmt(c.parsed.y)+
+          (c.dataset.yAxisID==='y2'?'':unit);}}}},
+    scales}});
  }catch(e){console.error('lineChart:',e);return null;}
 }
 
@@ -644,11 +725,11 @@ function spark(series, chg){
   const vs=pts.map(p=>p[1]), mn=Math.min(...vs), mx=Math.max(...vs), rg=(mx-mn)||1;
   const W=100, H=30, X=i=>(i/(vs.length-1)*W), Y=v=>(H-2-(v-mn)/rg*(H-4));
   const d=vs.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
-  const dot=`<circle cx="${X(vs.length-1).toFixed(1)}" cy="${Y(vs[vs.length-1]).toFixed(1)}"
-    r="2.4" fill="${(chg??0)>=0?UP:DOWN}"/>`;
+  // 끝점 마커는 찍지 않는다 — 좁은 스파크라인에서 점이 선을 덮어 마지막 구간의
+  // 방향이 안 보였다. 현재값과 등락은 바로 위에 숫자로 있다.
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
-    <path d="${d}" fill="none" stroke="#898781" stroke-width="1.3"
-      vector-effect="non-scaling-stroke"/>${dot}</svg>`;
+    <path d="${d}" fill="none" stroke="${(chg??0)>=0?UP:DOWN}" stroke-width="1.3"
+      vector-effect="non-scaling-stroke"/></svg>`;
 }
 const cards=document.getElementById('cards');
 D.summary.forEach((s,i)=>{
@@ -801,8 +882,10 @@ D.sectors.forEach(s=>{
       <thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   secWrap.appendChild(div);
+  // 텔레그램 섹터 차트와 같은 구성: 종가 + 이동평균 + 구름대 + 지수 대비 상대강도
   if(s.series.length) lineChart(document.getElementById('c-'+s.symbol), s.series,
-    {withMA:false, color:'#0b0b0b', label:s.name});
+    {withMA:true, color:'#0b0b0b', label:s.name, hlc:s.hlc,
+     bench:(D.bench||{}).series, benchLabel:(D.bench||{}).label||'지수'});
   div.querySelectorAll('tr.stk').forEach(tr=>tr.onclick=()=>{
     const h=s.holdings.find(x=>x.ticker===tr.dataset.t);
     if(!h)return;

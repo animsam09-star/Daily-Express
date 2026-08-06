@@ -187,3 +187,31 @@ def send(token: str, chat_id: str, text: str, charts: list) -> None:
 
     if failed:
         raise RuntimeError(f"{len(failed)}건 전송 실패: {', '.join(failed)}")
+
+
+# ---------------------------------------------------------------- 지연 발송
+# 웹이 먼저 갱신되고 텔레그램이 뒤따르게 하려면, 발송을 배포 뒤로 미뤄야 한다.
+# 수집을 두 번 하지 않도록 만들어 둔 본문과 차트 목록을 파일로 넘긴다.
+PENDING = "pending.json"
+
+
+def save_pending(outdir: str, text: str, charts: list) -> str:
+    """발송할 본문·차트 목록을 저장한다(배포 뒤 send_pending 이 읽는다)."""
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, PENDING)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"text": text, "charts": charts}, f, ensure_ascii=False)
+    return path
+
+
+def send_pending(outdir: str, token: str, chat_id: str) -> int:
+    """저장해 둔 브리핑을 발송한다. 파일이 없으면 보낼 것이 없다는 뜻."""
+    path = os.path.join(outdir, PENDING)
+    if not os.path.exists(path):
+        print(f"[발송] {path} 없음 — 보낼 브리핑이 없습니다", flush=True)
+        return 1
+    with open(path, encoding="utf-8") as f:
+        pending = json.load(f)
+    charts = [c for c in pending.get("charts") or [] if os.path.exists(c["path"])]
+    send(token, chat_id, pending["text"], charts)
+    return 0
