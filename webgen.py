@@ -122,12 +122,14 @@ def _holding(h, notes):
 
 
 def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num",
-                  ohlc=None):
+                  ohlc=None, sym=""):
     # ohlc 를 주면 카드를 눌렀을 때 라인 대신 일봉 캔들 + 일목균형표 구름대가
     # 뜬다. 지수·환율에는 있고 금리(재무부 CMT·네이버)에는 없다.
+    # sym 은 한 시간마다 도는 시세 갱신이 이 카드를 찾는 열쇠다. 금리처럼
+    # 야후에 없는 값은 비워 둔다 — 갱신에서 그냥 빠진다.
     return {"label": label, "value": value, "chg": chg, "unit": unit,
             "chg_unit": chg_unit, "series": _ds(series or []), "fmt": fmt,
-            "ohlc": _ds_ohlc(ohlc or [])}
+            "ohlc": _ds_ohlc(ohlc or []), "sym": sym}
 
 
 def build_us(data, path):
@@ -141,18 +143,20 @@ def build_us(data, path):
     holdings = data.get("holdings") or {}
 
     summary = []
-    for name in ("Dow", "S&P500", "Nasdaq"):
+    for sym, name in (("^DJI", "Dow"), ("^GSPC", "S&P500"), ("^IXIC", "Nasdaq")):
         d = idx.get(name)
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series"), ohlc=d.get("ohlc")))
+                                         d.get("series"), ohlc=d.get("ohlc"),
+                                         sym=sym))
     px = data.get("kr_proxy") or {}
     if px.get("last") is not None:
         # 코스피 야간선물 무료 시세 부재 — EWY(미국장 한국 ETF)가 야간 프록시
         summary.append(_summary_item("코스피 야간 프록시 EWY", round(px["last"], 2),
                                      round(px["chg_pct"], 2), "달러", "%",
-                                     px.get("series"), ohlc=px.get("ohlc")))
+                                     px.get("series"), ohlc=px.get("ohlc"),
+                                     sym="EWY"))
     for sym, label in (("US2Y", "미국채 2년"), ("US10Y", "미국채 10년"),
                        ("US30Y", "미국채 30년")):
         q = now.get(sym)
@@ -163,7 +167,8 @@ def build_us(data, path):
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series"), ohlc=fx.get("ohlc")))
+                                     fx.get("series"), ohlc=fx.get("ohlc"),
+                                     sym="KRW=X"))
     corp, spread = dom.get("corp_aa3y") or {}, dom.get("spread") or {}
     if corp.get("last") is not None:
         summary.append(_summary_item("회사채 AA- 3년", round(corp["last"], 2),
@@ -213,16 +218,18 @@ def build_kr(data, path):
     flows = data.get("flows") or {}
 
     summary = []
-    for name in ("코스피", "코스닥"):
+    for sym, name in (("^KS11", "코스피"), ("^KQ11", "코스닥")):
         d = idx.get(name)
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series"), ohlc=d.get("ohlc")))
+                                         d.get("series"), ohlc=d.get("ohlc"),
+                                         sym=sym))
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series"), ohlc=fx.get("ohlc")))
+                                     fx.get("series"), ohlc=fx.get("ohlc"),
+                                     sym="KRW=X"))
     for key, label in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "AA- 3년 Spread")):
         d = dom.get(key) or {}
@@ -244,6 +251,11 @@ def build_kr(data, path):
             # 고저종이 없어 구름대는 못 그린다 — 텔레그램도 마찬가지다.
             "series": _ds_full(s.get("web_series")),
             "hlc": [],
+            # 섹터 등락률은 테마 전체(20종목) 시총가중이라 화면에 보이는 10종목
+            # 으로는 못 되살린다. 한 시간마다 도는 시세 갱신이 다시 계산할 수
+            # 있도록 [종목코드, 가중치] 만 따로 싣는다(화면에는 쓰지 않는다).
+            "index": [[m["ticker"], round(m.get("weight") or 0, 6)]
+                      for m in (s.get("members") or []) if m.get("ticker")],
             "note": "",
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
@@ -501,8 +513,61 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
 </div></dialog>
 
 <script id="data" type="application/json">__DATA__</script>
-<script>
+<script type="module">
 const D = JSON.parse(document.getElementById('data').textContent);
+
+// ---- 시세 갱신 --------------------------------------------------------
+// 브리핑 본문(뉴스·개요·실적·차트)은 하루 한 번 만들지만, 현재가·등락률·
+// 시가총액은 한 시간마다 따로 갱신된다. 페이지를 열 때 그 파일을 먼저 읽어
+// 숫자만 덮어쓰고 그린다 — 못 받아오면 아침에 만든 값 그대로 그린다.
+// 차트는 일봉이라 손대지 않는다.
+const QUOTES_URL='https://raw.githubusercontent.com/animsam09-star/'
+                +'Daily-Express/data/quotes.json';
+let QUOTED='';
+async function applyQuotes(D){
+  let q;
+  try{
+    const ctl=new AbortController();
+    const t=setTimeout(()=>ctl.abort(), 4000);   // 느리면 그냥 포기한다
+    const r=await fetch(QUOTES_URL, {signal:ctl.signal, cache:'no-cache'});
+    clearTimeout(t);
+    if(!r.ok) return;
+    q=(await r.json())[D.market];
+  }catch(e){ return; }
+  if(!q || !q.quotes) return;
+  const px=q.quotes;
+
+  for(const s of (D.summary||[])){
+    const v=s.sym?px[s.sym]:null;
+    if(!v || v.price==null) continue;
+    s.value=v.price;
+    // 지수·프록시는 %, 환율은 원 차이로 표기한다 — 카드가 쓰는 단위에 맞춘다
+    if(s.chg_unit==='%'){ if(v.chg_pct!=null) s.chg=v.chg_pct; }
+    else if(v.chg!=null){ s.chg=v.chg; }
+  }
+
+  for(const sec of (D.sectors||[])){
+    for(const h of (sec.holdings||[])){
+      const v=px[h.ticker];
+      if(!v) continue;
+      if(v.price!=null) h.price=v.price;
+      if(v.chg_pct!=null) h.chg_pct=v.chg_pct;
+      if(v.market_cap) h.market_cap=v.market_cap;
+    }
+    // 미국 섹터는 SPDR ETF 자체의 등락률, 한국 섹터는 테마 20종목 시총가중.
+    const etf=px[sec.symbol];
+    if(etf && etf.chg_pct!=null){ sec.chg_pct=etf.chg_pct; continue; }
+    let num=0, den=0;
+    for(const [code, w] of (sec.index||[])){
+      const v=px[code];
+      if(!v || v.chg_pct==null || !w) continue;
+      num+=v.chg_pct*w; den+=w;
+    }
+    if(den) sec.chg_pct=Math.round(num/den*100)/100;
+  }
+  QUOTED=q.at||'';
+}
+await applyQuotes(D);
 const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
 const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7']];  // 검증된 categorical 슬롯
 if(typeof Chart!=='undefined'){
@@ -524,7 +589,8 @@ const capF=(v,cur)=>{if(!v)return'';
   return fmt(v/1e8,0)+eok;};
 
 document.getElementById('title').textContent=D.title;
-document.getElementById('updated').textContent='업데이트 '+D.updated;
+document.getElementById('updated').textContent='업데이트 '+D.updated
+  +(QUOTED?' · 시세 '+QUOTED:'');
 const oth=document.getElementById('other');
 oth.textContent=D.other.label; oth.href=D.other.href;
 
