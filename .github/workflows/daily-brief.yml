@@ -131,24 +131,29 @@ jobs:
           URL="https://${{ env.PAGES_PROJECT }}.pages.dev/kr.html"
           MIN=20000                      # 정상 페이지는 200KB 이상이다
           ok=""
-          for i in 1 2 3; do
-            if curl -fsS --max-time 60 -o site/kr.html "$URL" \
+          # 아티팩트를 먼저 본다. 라이브 회수는 실측으로 계속 빈 응답(200 인데
+          # 0바이트)이 와서 세 번 다 실패했고, 그때마다 아티팩트가 받아냈다.
+          # 아티팩트는 그 워크플로가 만든 바로 그 파일이라 더 정확하기도 하다.
+          for RUN in $(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
+                         -s success -L 5 --json databaseId -q '.[].databaseId'); do
+            if gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-kr -D site/ 2>/dev/null \
                && [ "$(wc -c < site/kr.html)" -ge "$MIN" ]; then
-              echo "회수 성공: $URL ($(wc -c < site/kr.html) bytes)"
-              ok=1; break
+              echo "아티팩트 회수 성공(run $RUN, $(wc -c < site/kr.html) bytes)"; ok=1; break
             fi
-            echo "회수 시도 $i 실패($(wc -c < site/kr.html 2>/dev/null || echo 0) bytes) — 8초 후 재시도"
-            rm -f site/kr.html; sleep 8
+            rm -f site/kr.html
           done
           if [ -z "$ok" ]; then
-            echo "라이브 회수 실패 — 아티팩트에서 회수 시도"
-            for RUN in $(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
-                           -s success -L 5 --json databaseId -q '.[].databaseId'); do
-              if gh run download "$RUN" -R "$GITHUB_REPOSITORY" -n site-kr -D site/ 2>/dev/null \
-                 && [ "$(wc -c < site/kr.html)" -ge "$MIN" ]; then
-                echo "아티팩트 회수 성공(run $RUN, $(wc -c < site/kr.html) bytes)"; ok=1; break
+            echo "아티팩트 회수 실패 — 라이브 페이지에서 회수 시도"
+            for i in 1 2 3; do
+              CODE=$(curl -sS --max-time 60 -w '%{http_code}' \
+                       -o site/kr.html "$URL" || true)
+              CODE=${CODE:-000}
+              SIZE=$(wc -c < site/kr.html 2>/dev/null || echo 0)
+              if [ "$CODE" = "200" ] && [ "$SIZE" -ge "$MIN" ]; then
+                echo "회수 성공: $URL ($SIZE bytes)"; ok=1; break
               fi
-              rm -f site/kr.html
+              echo "회수 시도 $i 실패(HTTP $CODE, $SIZE bytes) — 8초 후 재시도"
+              rm -f site/kr.html; sleep 8
             done
           fi
           [ -z "$ok" ] && echo "::warning::kr.html 회수 실패 — 이번 배포에서 빠진다"
