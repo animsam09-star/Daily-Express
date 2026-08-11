@@ -264,6 +264,14 @@ SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식�
     {symbol, comment} 를 만든다.
     - comment 는 그 섹터가 그날 왜 올랐/내렸는지 1~2문장(90자 내외)으로 종합한다.
     - 근거는 그 섹터 구성 종목의 등락·헤드라인과 맨 위 [시장 지표] 뿐이다.
+    - 종목을 언급할 때는 반드시 티커(한국은 6자리 종목코드)를 괄호로 붙인다.
+      예: "엑손모빌(XOM)", "삼성전자(005930)".
+    - 그 '## 섹터' 블록 안에 있는 종목만 댈 수 있다. 다른 섹터의 종목은
+      언급하지 않는다 — 엑손모빌(XOM)은 에너지 블록에만 있으므로 산업재
+      코멘트에 등장할 수 없다.
+    - 등락률은 입력에 적힌 값을 그대로 쓴다. 입력에 없는 숫자는 쓰지 않는다 —
+      어림하거나 부풀려서 만들어 내지 않는다.
+    위 세 가지를 어긴 코멘트는 기계적으로 폐기되어 화면에 아무것도 안 나온다.
     - 여러 섹터에 걸친 공통 동인(금리·유가·환율·실적 시즌)이 보이면 그걸 앞세우고,
       한두 종목이 섹터를 끌었다면 그 종목과 이유를 지목한다.
     - 개별 종목 note 와 같은 문장을 반복하지 말고 섹터 관점에서 다시 쓴다.
@@ -457,6 +465,73 @@ def _prompt(stocks: list[dict], sectors: list[dict] | None = None,
     return "\n".join(lines)
 
 
+# 코멘트는 한국어라 종목이 '엑손'처럼 음차로 나온다. 영문 사명으로 대조하면
+# 걸리지 않으므로, 언어를 타지 않는 두 가지로 본다 — 괄호 안 티커와 수치.
+TICKER_RE = re.compile(r"\(([A-Z][A-Z0-9.\-]{0,5}|\d{6})\)")
+PCT_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*%")
+
+
+def _sector_facts(sectors, holdings, macro):
+    """{섹터심볼: (허용 티커, 허용 수치)}. 수치는 절댓값으로 둔다.
+
+    허용 수치는 그 섹터와 구성 종목의 등락률 + 시장 지표 블록에 적힌 값이다.
+    거기에 없는 숫자가 코멘트에 나오면 지어낸 것이다.
+    """
+    macro_nums = {abs(float(x)) for x in PCT_RE.findall(macro or "")}
+    macro_nums |= {abs(float(x)) for x in
+                   re.findall(r"([+-]?\d+(?:\.\d+)?)\s*(?:bp|원|억)", macro or "")}
+    out = {}
+    for sec in sectors or []:
+        ticks, nums = set(), set(macro_nums)
+        if sec.get("chg_pct") is not None:
+            nums.add(abs(float(sec["chg_pct"])))
+        for h in (holdings or {}).get(sec["symbol"]) or []:
+            t = (h.get("ticker") or "").strip().upper()
+            if t:
+                ticks.add(t)
+            for k in ("chg_pct", "chg_52w", "vs_200d", "vs_50d"):
+                if h.get(k) is not None:
+                    nums.add(abs(float(h[k])))
+            for v in (h.get("returns") or {}).values():
+                if v is not None:
+                    nums.add(abs(float(v)))
+        out[sec["symbol"]] = (ticks, nums)
+    return out
+
+
+def verify_sector_notes(secs, sectors, holdings, macro=None):
+    """다른 섹터의 종목을 끌어오거나 없는 수치를 지어낸 코멘트를 버린다.
+
+    실측: 산업재(XLI) 코멘트에 '엑손이 6% 급등'이 나왔다. 엑손은 에너지(XLE)
+    구성종목이고 그날 6% 오르지도 않았다(+2.12%). 모델이 옆 블록의 종목을
+    가져다 수치까지 지어낸 것이다. 코멘트는 카드 제목 밑에 그대로 실리므로
+    틀린 설명이 붙느니 없는 편이 낫다.
+    """
+    if not (secs and sectors):
+        return secs
+    facts = _sector_facts(sectors, holdings, macro)
+    out = {}
+    for sym, comment in secs.items():
+        if sym not in facts:
+            print(f"[news] 섹터 코멘트 버림 — 모르는 섹터 '{sym}'")
+            continue
+        ticks, nums = facts[sym]
+        alien = {t for t in TICKER_RE.findall(comment) if t.upper() not in ticks}
+        if alien:
+            print(f"[news] 섹터 코멘트 버림 — {sym} 에 없는 종목: "
+                  f"{', '.join(sorted(alien))}")
+            continue
+        # 0.2%p 는 반올림해 적은 경우를 받아주기 위한 여유다(2.12 -> 2.1).
+        made_up = [v for v in (abs(float(x)) for x in PCT_RE.findall(comment))
+                   if not any(abs(v - a) <= 0.2 for a in nums)]
+        if made_up:
+            print(f"[news] 섹터 코멘트 버림 — {sym} 입력에 없는 수치: "
+                  f"{', '.join(f'{v}%' for v in made_up)}")
+            continue
+        out[sym] = comment
+    return out
+
+
 def macro_context(data: dict) -> str:
     """섹터 코멘트의 근거가 될 시장 지표 요약. 수집 실패 항목은 조용히 빠진다."""
     lines = []
@@ -473,6 +548,37 @@ def macro_context(data: dict) -> str:
     fx = data.get("fx")
     if fx and fx.get("last") is not None:
         lines.append(f"원/달러 {fx['last']:,.1f}원({fx.get('chg', 0):+.1f}원)")
+    return "\n".join(lines)
+
+
+def macro_context_kr(data: dict) -> str:
+    """한국판 시장 지표 요약. 테마 코멘트가 기댈 근거를 만든다.
+
+    외국인 수급을 넣는 이유는, 국내 테마 등락이 개별 뉴스보다 수급으로
+    설명되는 날이 많기 때문이다.
+    """
+    lines = []
+    idx = data.get("indices") or {}
+    parts = [f"{n} {idx[n]['chg_pct']:+.2f}%"
+             for n in ("코스피", "코스닥") if idx.get(n)]
+    if parts:
+        lines.append("국내증시: " + ", ".join(parts))
+    fx = data.get("fx")
+    if fx and fx.get("last") is not None:
+        lines.append(f"원/달러 {fx['last']:,.1f}원({fx.get('chg', 0):+.1f}원)")
+    dom = data.get("domestic") or {}
+    parts = [f"{label} {dom[k]['last']:.2f}%({dom[k].get('chg', 0):+.0f}bp)"
+             for k, label in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA-"))
+             if (dom.get(k) or {}).get("last") is not None]
+    if parts:
+        lines.append("금리: " + ", ".join(parts))
+    for mkt, f in (data.get("flows") or {}).items():
+        today = (f or {}).get("today") or {}
+        got = [f"{who} {v / 1e8:+,.0f}억" for who, v in
+               (("외국인", today.get("외국인")), ("기관", today.get("기관")))
+               if v is not None]
+        if got:
+            lines.append(f"{mkt} 수급: " + ", ".join(got))
     return "\n".join(lines)
 
 
@@ -600,6 +706,7 @@ def build(holdings: dict, sectors: list[dict] | None = None,
     summaries, sector_notes = result
     if not summaries and not sector_notes:
         return {}, {}
+    sector_notes = verify_sector_notes(sector_notes, sectors, holdings, macro)
 
     # 요약이 나온 종목만 근거 기사 링크를 축약한다
     by_ticker = {s["ticker"]: s for s in stocks}
@@ -658,8 +765,13 @@ def _gnews_kr(name: str) -> list[dict]:
     return out[:HEADLINES_PER_TICKER]
 
 
-def build_kr(holdings: dict) -> dict[str, dict]:
-    """{종목코드: {note, url}}. 미국판과 같은 요약 규칙을 쓴다."""
+def build_kr(holdings: dict, sectors: list[dict] | None = None,
+             macro: str | None = None) -> tuple[dict[str, dict], dict[str, str]]:
+    """({종목코드: {note, url}}, {테마: 코멘트}). 미국판과 같은 요약 규칙을 쓴다.
+
+    sectors(각 {symbol, name, chg_pct})를 주면 테마별 종합 코멘트도 만든다 —
+    프롬프트와 검증은 미국판과 같은 것을 쓴다(_prompt 는 시장에 무관하다).
+    """
     stocks, seen = [], set()
     for hs in holdings.values():
         for h in hs:
@@ -669,23 +781,24 @@ def build_kr(holdings: dict) -> dict[str, dict]:
             stocks.append({"ticker": h["ticker"], "name": h["name"],
                            "chg_pct": h.get("chg_pct")})
     if not stocks:
-        return {}
+        return {}, {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         heads = ex.map(lambda s: _gnews_kr(s["name"]), stocks)
     for s, hl in zip(stocks, heads):
         s["headlines"] = hl
     stocks = [s for s in stocks if s["headlines"]]
     if not stocks:
-        return {}
+        return {}, {}
     print(f"[news] 한국 {len(stocks)}종목 헤드라인 수집 — 요약 요청")
 
-    prompt = _prompt(stocks)
+    prompt = _prompt(stocks, sectors, holdings, macro)
     result = _via_claude_code(prompt)
     if result is None:
         result = _via_api(prompt)
-    summaries, _ = result
-    if not summaries:
-        return {}
+    summaries, sector_notes = result
+    if not summaries and not sector_notes:
+        return {}, {}
+    sector_notes = verify_sector_notes(sector_notes, sectors, holdings, macro)
 
     by = {s["ticker"]: s for s in stocks}
     targets = []
@@ -699,10 +812,10 @@ def build_kr(holdings: dict) -> dict[str, dict]:
     kept = {tk: v for tk, v in summaries.items()
             if v.get("importance", 0) >= MIN_IMPORTANCE}
     print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
-          f"/ 링크 {len(short)}건")
-    return {tk: {"note": v["note"], "url": short.get(tk, ""),
-                 "importance": v.get("importance", 0)}
-            for tk, v in kept.items()}
+          f"/ 링크 {len(short)}건 / 테마 코멘트 {len(sector_notes)}건")
+    return ({tk: {"note": v["note"], "url": short.get(tk, ""),
+                  "importance": v.get("importance", 0)}
+             for tk, v in kept.items()}, sector_notes)
 
 
 # ------------------------------------------------------- 기업 개요 번역

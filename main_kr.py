@@ -157,6 +157,7 @@ def build_charts(data, outdir):
     secs = data.get("sectors") or []
     holdings = data.get("holdings") or {}
     notes = data.get("notes") or {}
+    sector_notes = data.get("sector_notes") or {}
     if secs:
         add(render.sector_chart(os.path.join(outdir, "sectors_daily.png"), secs,
                                 title="한국증시 섹터별 등락"))
@@ -168,7 +169,8 @@ def build_charts(data, outdir):
         s["web_series"] = series               # 웹 대시보드가 재사용한다
         cap = render.holdings_caption(s, holdings.get(s["symbol"]), notes,
                                       cur=CUR, px=PX,
-                                      bench=(idx.get("코스피") or {}).get("returns"))
+                                      bench=(idx.get("코스피") or {}).get("returns"),
+                                      sector_note=sector_notes.get(s["symbol"]))
         add(render.line_chart(
             os.path.join(outdir, f"sector_{s['symbol']}.png"),
             f"{s['name']} 2년 추이 — {s.get('member_count', 0)}종목 시총가중 (2년 전 = 100)", series,
@@ -206,7 +208,11 @@ def main() -> int:
     data = collect()
     for e in data.get("errors") or []:
         print(f"    ! {e}")
-    data["notes"] = news.build_kr(data.get("holdings") or {})
+    # 종목 메모 + 테마별 등락 종합 코멘트. 미국판과 같은 프롬프트·검증을 쓴다.
+    data["notes"], data["sector_notes"] = news.build_kr(
+        data.get("holdings") or {},
+        sectors=data.get("sectors"),
+        macro=news.macro_context_kr(data))
 
     print("[2/3] 차트 생성...")
     charts = build_charts(data, args.outdir)

@@ -214,6 +214,7 @@ def build_kr(data, path):
     fx = data.get("fx") or {}
     dom = data.get("domestic") or {}
     notes = data.get("notes") or {}
+    sector_notes = data.get("sector_notes") or {}
     holdings = data.get("holdings") or {}
     flows = data.get("flows") or {}
 
@@ -256,7 +257,7 @@ def build_kr(data, path):
             # 있도록 [종목코드, 가중치] 만 따로 싣는다(화면에는 쓰지 않는다).
             "index": [[m["ticker"], round(m.get("weight") or 0, 6)]
                       for m in (s.get("members") or []) if m.get("ticker")],
-            "note": "",
+            "note": sector_notes.get(s["symbol"]) or "",
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
 
