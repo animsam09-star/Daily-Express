@@ -32,8 +32,32 @@ SECTORS = [
     ("XLK", "기술"), ("XLC", "커뮤니케이션"), ("XLY", "경기소비재"),
     ("XLP", "필수소비재"), ("XLE", "에너지"), ("XLF", "금융"),
     ("XLV", "헬스케어"), ("XLI", "산업재"), ("XLB", "소재"),
-    ("XLRE", "부동산"), ("XLU", "유틸리티"),
+    ("XLRE", "부동산"), ("XLU", "유틸리티"), ("NLR", "원자력"),
 ]
+
+# 원자력은 GICS 섹터가 아니라 세 곳에 흩어져 있다 — 원전 발전사(CEG·VST)는
+# 유틸리티, 원자로·SMR(BWXT·OKLO·SMR)은 산업재/유틸리티, 우라늄(CCJ·LEU)만
+# 에너지다. 그래서 에너지 카드를 아무리 봐도 원자력이 안 보인다.
+# 별도 섹터로 세우되, SPDR 이 아니라서 SSGA 구성종목 파일이 없다. 지수·차트는
+# NLR(VanEck 원자력 ETF)로 그리고 구성종목은 아래 목록으로 직접 관리한다.
+# 순위는 다른 섹터와 똑같이 스크리너 시가총액으로 매긴다.
+CURATED = {
+    "NLR": {
+        "CEG": "Constellation Energy",   # 미국 최대 원전 운영사
+        "VST": "Vistra",                 # 원전·가스 발전
+        "TLN": "Talen Energy",           # 서스쿼해나 원전
+        "CCJ": "Cameco",                 # 우라늄 채굴·정련
+        "BWXT": "BWX Technologies",      # 원자로(해군·SMR)
+        "OKLO": "Oklo",                  # 소형모듈원자로
+        "SMR": "NuScale Power",          # 소형모듈원자로
+        "LEU": "Centrus Energy",         # 농축우라늄(HALEU)
+        "NNE": "Nano Nuclear Energy",    # 마이크로 원자로
+        "UEC": "Uranium Energy",         # 우라늄 채굴
+        "NXE": "NexGen Energy",          # 우라늄 개발
+        "DNN": "Denison Mines",          # 우라늄 개발
+    },
+}
+CURATED_SECTOR = {t: sym for sym, ts in CURATED.items() for t in ts}
 
 
 def _get(url: str, **kw) -> requests.Response:
@@ -357,9 +381,14 @@ def fetch_sector_holdings(sector_symbols, caps=None):
       - 후보를 ETF 비중 상위 25 로 자르면 비중은 낮고 시총은 큰 종목이
         후보에조차 못 든다(MU 가 그랬다). 그래서 보유목록 전량을 후보로 본다.
     """
+    etfs = [s for s in sector_symbols if s not in CURATED]
     with ThreadPoolExecutor(max_workers=6) as ex:
-        holdings = dict(zip(sector_symbols,
-                            ex.map(lambda e: _top_holdings(e, n=999), sector_symbols)))
+        holdings = dict(zip(etfs, ex.map(lambda e: _top_holdings(e, n=999), etfs)))
+    # 큐레이션 섹터(원자력)는 보유목록 공시가 없어 목록을 직접 넣는다
+    for sym in sector_symbols:
+        if sym in CURATED:
+            holdings[sym] = [{"ticker": t, "name": n}
+                             for t, n in CURATED[sym].items()]
 
     caps = dict(caps or {})
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
@@ -476,7 +505,8 @@ def fetch_market_universe():
         if not sym or not re.fullmatch(r"[A-Z][A-Z.]*", sym) or NOT_COMMON.search(name):
             continue
         sector = NASDAQ_SECTOR.get((row.get("sector") or "").strip())
-        sector = WATCHLIST.get(sym) or sector
+        # 원자력은 스크리너 분류(유틸리티·산업재·에너지)를 덮어써 한곳에 모은다
+        sector = CURATED_SECTOR.get(sym) or WATCHLIST.get(sym) or sector
         if not sector:
             continue
         out.setdefault(sector, []).append({
