@@ -426,8 +426,17 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
     if not holdings:
         return None
     notes = notes or {}
-    if sector_note:
-        sector_note = sector_note[:SECTOR_NOTE_MAX]
+    if sector_note and len(sector_note) > SECTOR_NOTE_MAX:
+        # 글자수로 뚝 자르면 문장 한가운데가 잘린다. 문장 끝에서 끊고, 그게
+        # 너무 앞이면 마지막 띄어쓰기에서 끊는다.
+        # 마침표 뒤가 숫자면 문장 끝이 아니라 소수점이다("4.9원" 을 "4." 로
+        # 자르던 버그).
+        head = sector_note[:SECTOR_NOTE_MAX]
+        ends = list(re.finditer(r"[.!?](?![0-9])", head))
+        cut = ends[-1].end() if ends else -1
+        if cut < SECTOR_NOTE_MAX * 0.6:
+            cut = head.rfind(" ")
+        sector_note = (head[:cut].rstrip() + "…") if cut > 0 else head
 
     # 뉴스는 섹터당 MAX_NOTES 개까지만. 중요도가 높은 것부터,
     # 같은 중요도면 그날 크게 움직인 종목을 앞세운다.
