@@ -1,0 +1,94 @@
+name: probe
+on: workflow_dispatch
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+
+      - name: 시세 갱신이 쓰는 코드 목록 받기
+        run: |
+          git fetch origin data --depth=1
+          git show FETCH_HEAD:quotes.json > /tmp/quotes.json
+          python -c "import json;print(len(json.load(open('/tmp/quotes.json'))['kr']['quotes']),'종목')"
+
+      - name: 코스피/코스닥 접미사 전수 검사
+        run: |
+          python - <<'PY'
+          import json
+          import sources
+
+          codes = sorted(json.load(open("/tmp/quotes.json"))["kr"]["quotes"])
+          print(f"검사 대상 {len(codes)}종목\n")
+
+          ks = sources.fetch_quotes([f"{c}.KS" for c in codes])
+          kq = sources.fetch_quotes([f"{c}.KQ" for c in codes])
+
+          def g(d, sym, k):
+              return (d.get(sym) or {}).get(k)
+
+          rows = []
+          for c in codes:
+              a, b = f"{c}.KS", f"{c}.KQ"
+              rows.append({
+                  "code": c,
+                  "ks_px": g(ks, a, "price"), "ks_cap": g(ks, a, "market_cap"),
+                  "kq_px": g(kq, b, "price"), "kq_cap": g(kq, b, "market_cap"),
+              })
+
+          # 지금 코드(주가 기준)와 원래 코드(시총 기준)가 서로 다른 답을 내는 종목
+          bad = []
+          for r in rows:
+              by_price = ".KS" if r["ks_px"] is not None else (
+                  ".KQ" if r["kq_px"] is not None else None)
+              by_cap = ".KS" if r["ks_cap"] else (".KQ" if r["kq_cap"] else None)
+              if by_price != by_cap:
+                  bad.append((r, by_price, by_cap))
+
+          print(f"■ 주가 기준과 시총 기준이 엇갈리는 종목: {len(bad)}\n")
+          for r, bp, bc in bad[:60]:
+              d = ""
+              if r["ks_px"] and r["kq_px"]:
+                  d = f"  주가차이 {abs(r['ks_px'] - r['kq_px']) / r['kq_px'] * 100:.1f}%"
+              print(f"  {r['code']}  주가기준={bp} 시총기준={bc}  "
+                    f".KS {r['ks_px']} (cap {r['ks_cap']})  "
+                    f".KQ {r['kq_px']} (cap {r['kq_cap']}){d}")
+
+          # 양쪽 다 값이 있는 종목 — 어느 쪽이 진짜인지 가려야 한다
+          both = [r for r in rows if r["ks_px"] is not None and r["kq_px"] is not None]
+          print(f"\n■ .KS/.KQ 양쪽 다 주가가 오는 종목: {len(both)}")
+          for r in both[:40]:
+              print(f"  {r['code']}  .KS {r['ks_px']} cap={r['ks_cap']}  "
+                    f".KQ {r['kq_px']} cap={r['kq_cap']}")
+
+          none_cap = [r for r in rows if not r["ks_cap"] and not r["kq_cap"]]
+          print(f"\n■ 양쪽 다 시총이 안 오는 종목(시총 기준으로도 못 가림): {len(none_cap)}")
+          for r in none_cap[:30]:
+              print(f"  {r['code']}  .KS {r['ks_px']}  .KQ {r['kq_px']}")
+
+          # 진짜 값 대조 — 네이버 현재가와 맞춰 본다
+          import kr_sources as kr
+          import re
+          print("\n■ 네이버 현재가와 대조(엇갈린 종목 위주, 최대 25개)")
+          PRICE_RE = re.compile(r'"stockEndType".*?"closePrice":"([\d,]+)"', re.S)
+          for r, bp, bc in bad[:25]:
+              try:
+                  html = kr._page(f"https://finance.naver.com/item/main.naver?code={r['code']}")
+                  m = re.search(r'<dd>현재가\s*([\d,]+)', html) or \
+                      re.search(r'class="no_today".*?blind">([\d,]+)<', html, re.S)
+                  real = int(m.group(1).replace(",", "")) if m else None
+              except Exception as e:                     # noqa: BLE001
+                  real = None
+              name = ""
+              try:
+                  name = kr.stock_name(r["code"])
+              except Exception:                          # noqa: BLE001
+                  pass
+              print(f"  {r['code']} {name[:12]:12} 네이버 {real}  "
+                    f".KS {r['ks_px']}  .KQ {r['kq_px']}")
+          PY
