@@ -1,0 +1,39 @@
+name: probe
+on: workflow_dispatch
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt
+      - name: 지수 캔들 대 전일종가 대조
+        run: |
+          python - <<'PY'
+          import sources
+
+          for sym, name in sources.INDICES:
+              o = sources.yahoo_candles(sym)
+              print(f"\n=== {name} ({sym}) — 최근 4봉 ===")
+              print(f"{'날짜':11} {'시가':>11} {'고가':>11} {'저가':>11} "
+                    f"{'종가':>11} {'전일대비':>9} {'시가대비':>9}  봉")
+              for i in range(-4, 0):
+                  d, op, hi, lo, cl = o[i]
+                  prev = o[i - 1][4]
+                  vs_prev = (cl / prev - 1) * 100
+                  vs_open = (cl / op - 1) * 100
+                  bong = "양봉(상승)" if cl >= op else "음봉(하락)"
+                  print(f"{d.isoformat()} {op:11,.2f} {hi:11,.2f} {lo:11,.2f} "
+                        f"{cl:11,.2f} {vs_prev:+8.2f}% {vs_open:+8.2f}%  {bong}")
+              # 브리핑이 카드에 쓰는 값
+              s = [(d, c) for d, _, _, _, c in o]
+              print(f"  → 카드 등락률(pct_change, 전일 종가 대비): "
+                    f"{sources.pct_change(s):+.2f}%")
+              d, op, hi, lo, cl = o[-1]
+              if (cl >= op) != (cl >= o[-2][4]):
+                  print("  !! 전일 대비 방향과 봉 색이 반대다 — "
+                        f"{'갭 상승 후 밀림' if cl >= o[-2][4] else '갭 하락 후 반등'}")
+          PY
