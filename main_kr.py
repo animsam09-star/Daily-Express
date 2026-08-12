@@ -236,6 +236,8 @@ def main() -> int:
     print(f"[진단] 종목 메모 {len(data.get('notes') or {})}건 / "
           f"섹터 코멘트 {len(sn)}건"
           + (" — " + ", ".join(sorted(sn)) if sn else " — 없음"))
+    if news.STATUS:
+        print(f"[진단] {news.STATUS}")
 
     if args.dry_run:
         print(f"[3/3] --dry-run 이므로 발송 생략. ({time.time() - t0:.1f}s)")

@@ -33,8 +33,20 @@ if not VERIFY:
 
 HEADLINES_PER_TICKER = 6   # 두 소스를 합치므로 후보를 넉넉히 넘긴다
 MODEL = "claude-opus-5"
-CLI_TIMEOUT = 300           # Claude Code 헤드리스 호출 상한(초)
+# 한국판 프롬프트는 20개 테마 × 최대 12종목이라 미국(11섹터)보다 훨씬 크다.
+# 300초로는 모자라 호출이 통째로 죽고 메모·코멘트가 0건이 됐다(실측).
+CLI_TIMEOUT = 600           # Claude Code 헤드리스 호출 상한(초)
 MIN_IMPORTANCE = 3          # 이 미만은 보내지 않는다(단일 매체 소식·인사 등)
+
+# 어느 단계에서 멎었는지 남긴다. 로그 앞쪽 출력은 꼬리만 봐서는 못 꺼내므로
+# 실행 끝 진단 한 줄에 실어 보낸다.
+STATUS = ""
+
+
+def _status(msg: str) -> None:
+    global STATUS
+    STATUS = msg
+    print(f"[news] {msg}")
 
 # 지정 소스에서만 기사를 찾는다. 구글 뉴스 RSS 의 site: 필터를 쓰면
 # 세 곳을 한 번의 요청으로 훑을 수 있다(로이터는 직접 접근 시 401 이라 이 경로가 필요).
@@ -781,15 +793,18 @@ def build_kr(holdings: dict, sectors: list[dict] | None = None,
             stocks.append({"ticker": h["ticker"], "name": h["name"],
                            "chg_pct": h.get("chg_pct")})
     if not stocks:
+        _status("한국 구성종목이 비어 있음")
         return {}, {}
+    total = len(stocks)
     with ThreadPoolExecutor(max_workers=8) as ex:
         heads = ex.map(lambda s: _gnews_kr(s["name"]), stocks)
     for s, hl in zip(stocks, heads):
         s["headlines"] = hl
     stocks = [s for s in stocks if s["headlines"]]
     if not stocks:
+        _status(f"한국 {total}종목 중 헤드라인 0건 — 요약 생략")
         return {}, {}
-    print(f"[news] 한국 {len(stocks)}종목 헤드라인 수집 — 요약 요청")
+    print(f"[news] 한국 {len(stocks)}/{total}종목 헤드라인 수집 — 요약 요청")
 
     prompt = _prompt(stocks, sectors, holdings, macro)
     result = _via_claude_code(prompt)
@@ -797,8 +812,12 @@ def build_kr(holdings: dict, sectors: list[dict] | None = None,
         result = _via_api(prompt)
     summaries, sector_notes = result
     if not summaries and not sector_notes:
+        _status(f"한국 {len(stocks)}종목 요약 요청했으나 모델 응답이 비었음")
         return {}, {}
+    raw_secs = len(sector_notes)
     sector_notes = verify_sector_notes(sector_notes, sectors, holdings, macro)
+    _status(f"한국 {len(stocks)}종목 → 요약 {len(summaries)}건 / "
+            f"섹터 코멘트 {raw_secs}건 중 검증 통과 {len(sector_notes)}건")
 
     by = {s["ticker"]: s for s in stocks}
     targets = []
