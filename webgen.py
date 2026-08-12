@@ -394,11 +394,13 @@ h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
 .secgrid>.panel>*{min-width:0}
 /* 표가 좁은 화면에서 넘치면 표 안에서만 스크롤한다(본문은 절대 안 밀린다) */
 .tablewrap{overflow-x:auto}
-/* 섹터 코멘트는 길이가 제각각이라, 그대로 두면 아래 표가 카드마다 다른
-   높이에서 시작해 옆 카드와 줄이 어긋난다. 두 줄로 고정하고 넘치면 자른다
-   (전문은 title 툴팁). 코멘트가 없는 카드도 같은 자리를 비워 둔다. */
-.secnote{height:56px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;
-         -webkit-box-orient:vertical}
+/* 섹터 코멘트는 길이가 제각각이다. 예전에는 두 줄로 잘라 아래 표의 시작
+   높이를 맞췄는데, 그러면 코멘트 뒷부분이 통째로 안 보였다(툴팁을 띄워야
+   읽을 수 있었다). 읽히는 쪽이 중요하므로 자르지 않고 늘린다.
+   카드 높이는 .secgrid 의 grid-auto-rows:1fr 이 행 단위로 맞춰 주므로
+   통일은 그대로 유지된다. min-height 는 코멘트가 없는 카드도 같은 자리를
+   비워 두게 한다. */
+.secnote{min-height:56px}
 .secnote.empty{background:transparent}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
