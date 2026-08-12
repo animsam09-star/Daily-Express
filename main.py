@@ -82,6 +82,13 @@ def main() -> int:
     text = notify.build_message(data)
     print("\n" + "-" * 60 + "\n" + text + "\n" + "-" * 60 + "\n")
 
+    # 진단 한 줄. 로그 맨 끝에 둔다 — 앞쪽에 두면 뉴스·차트 출력에 묻혀
+    # 나중에 로그 꼬리만 봐서는 확인할 수 없다(실측으로 계속 못 꺼냈다).
+    sn = data.get("sector_notes") or {}
+    print(f"[진단] 종목 메모 {len(data.get('notes') or {})}건 / "
+          f"섹터 코멘트 {len(sn)}건"
+          + (" — " + ", ".join(sorted(sn)) if sn else " — 없음"))
+
     if args.dry_run:
         print(f"[3/3] --dry-run 이므로 발송 생략. ({time.time() - t0:.1f}s)")
         return 0

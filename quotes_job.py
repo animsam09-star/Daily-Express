@@ -20,6 +20,7 @@ import sys
 
 import requests
 
+import kr_sources
 import sources
 from sources import TIMEOUT, UA, VERIFY
 
@@ -78,15 +79,27 @@ def targets(payload: dict) -> tuple[list[str], dict[str, str]]:
 
 
 def resolve_kr(codes: list[str]) -> dict[str, str]:
-    """{6자리 코드: 야후 심볼}. 코스피(.KS)로 안 잡히면 코스닥(.KQ)으로 본다."""
-    out = {c: f"{c}.KS" for c in codes}
-    first = sources.fetch_quotes([f"{c}.KS" for c in codes])
-    unknown = [c for c in codes if (first.get(f"{c}.KS") or {}).get("price") is None]
-    if unknown:
-        second = sources.fetch_quotes([f"{c}.KQ" for c in unknown])
-        for c in unknown:
-            if (second.get(f"{c}.KQ") or {}).get("price") is not None:
-                out[c] = f"{c}.KQ"
+    """{6자리 코드: 야후 심볼}. 가리지 못한 종목은 아예 빠진다.
+
+    주가로 가리면 안 된다 — 야후는 아무 6자리 코드에나 .KS 와 .KQ 둘 다
+    가격을 돌려주는데, 상장 시장이 아닌 쪽은 남의 회사 값이다(실측:
+    주성엔지니어링 036930 은 .KS 31,550 / .KQ 174,000 이고 네이버 현재가는
+    174,000). 진짜 상장 시장을 가리는 단서는 시가총액뿐이라, 그것으로
+    판별하는 kr_sources 의 검증된 함수를 그대로 쓴다.
+
+    시가총액이 양쪽 다 안 오면 확신할 수 없으므로 그 종목은 갱신하지
+    않는다 — 틀린 값으로 덮느니 아침 값을 그대로 두는 편이 낫다.
+    """
+    quotes = kr_sources._resolve_suffixes(codes)
+    out = {}
+    for c in codes:
+        sym = kr_sources._ys(c)
+        if (quotes.get(sym) or {}).get("market_cap"):
+            out[c] = sym
+    skipped = len(codes) - len(out)
+    if skipped:
+        print(f"[kr] 상장 시장을 못 가린 {skipped}종목은 갱신에서 뺀다",
+              file=sys.stderr)
     return out
 
 

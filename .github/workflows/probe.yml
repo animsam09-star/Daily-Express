@@ -15,80 +15,62 @@ jobs:
         run: |
           git fetch origin data --depth=1
           git show FETCH_HEAD:quotes.json > /tmp/quotes.json
-          python -c "import json;print(len(json.load(open('/tmp/quotes.json'))['kr']['quotes']),'종목')"
 
-      - name: 코스피/코스닥 접미사 전수 검사
+      - name: 고친 접미사 판별을 전 종목 네이버 현재가와 대조
         run: |
           python - <<'PY'
           import json
+          import re
+          from concurrent.futures import ThreadPoolExecutor
+
+          import kr_sources as kr
+          import quotes_job as qj
           import sources
 
-          codes = sorted(json.load(open("/tmp/quotes.json"))["kr"]["quotes"])
-          print(f"검사 대상 {len(codes)}종목\n")
+          codes = sorted(c for c in json.load(open("/tmp/quotes.json"))["kr"]["quotes"]
+                         if re.fullmatch(r"\d{6}", c))
+          print(f"검사 대상 {len(codes)}종목")
 
-          ks = sources.fetch_quotes([f"{c}.KS" for c in codes])
-          kq = sources.fetch_quotes([f"{c}.KQ" for c in codes])
+          resolved = qj.resolve_kr(codes)
+          print(f"판별 성공 {len(resolved)} / 제외 {len(codes) - len(resolved)}\n")
 
-          def g(d, sym, k):
-              return (d.get(sym) or {}).get(k)
+          quotes = sources.fetch_quotes(sorted(resolved.values()))
 
-          rows = []
+          NOW_RE = re.compile(r"<dd>현재가\s*([\d,]+)")
+
+          def naver(code):
+              try:
+                  m = NOW_RE.search(kr._page(
+                      f"https://finance.naver.com/item/main.naver?code={code}"))
+                  return int(m.group(1).replace(",", "")) if m else None
+              except Exception:                         # noqa: BLE001
+                  return None
+
+          with ThreadPoolExecutor(max_workers=8) as ex:
+              reals = dict(zip(codes, ex.map(naver, codes)))
+
+          bad, unchecked, ok = [], [], 0
           for c in codes:
-              a, b = f"{c}.KS", f"{c}.KQ"
-              rows.append({
-                  "code": c,
-                  "ks_px": g(ks, a, "price"), "ks_cap": g(ks, a, "market_cap"),
-                  "kq_px": g(kq, b, "price"), "kq_cap": g(kq, b, "market_cap"),
-              })
+              sym = resolved.get(c)
+              if not sym:
+                  unchecked.append((c, "판별 실패로 제외됨"))
+                  continue
+              px, real = (quotes.get(sym) or {}).get("price"), reals.get(c)
+              if px is None or real is None:
+                  unchecked.append((c, f"대조 불가(야후 {px} / 네이버 {real})"))
+                  continue
+              gap = abs(px - real) / real * 100
+              if gap > 2.0:            # 장중 시차를 감안해도 2% 넘게 벌어지면 다른 종목이다
+                  bad.append((c, sym, px, real, gap))
+              else:
+                  ok += 1
 
-          # 지금 코드(주가 기준)와 원래 코드(시총 기준)가 서로 다른 답을 내는 종목
-          bad = []
-          for r in rows:
-              by_price = ".KS" if r["ks_px"] is not None else (
-                  ".KQ" if r["kq_px"] is not None else None)
-              by_cap = ".KS" if r["ks_cap"] else (".KQ" if r["kq_cap"] else None)
-              if by_price != by_cap:
-                  bad.append((r, by_price, by_cap))
-
-          print(f"■ 주가 기준과 시총 기준이 엇갈리는 종목: {len(bad)}\n")
-          for r, bp, bc in bad[:60]:
-              d = ""
-              if r["ks_px"] and r["kq_px"]:
-                  d = f"  주가차이 {abs(r['ks_px'] - r['kq_px']) / r['kq_px'] * 100:.1f}%"
-              print(f"  {r['code']}  주가기준={bp} 시총기준={bc}  "
-                    f".KS {r['ks_px']} (cap {r['ks_cap']})  "
-                    f".KQ {r['kq_px']} (cap {r['kq_cap']}){d}")
-
-          # 양쪽 다 값이 있는 종목 — 어느 쪽이 진짜인지 가려야 한다
-          both = [r for r in rows if r["ks_px"] is not None and r["kq_px"] is not None]
-          print(f"\n■ .KS/.KQ 양쪽 다 주가가 오는 종목: {len(both)}")
-          for r in both[:40]:
-              print(f"  {r['code']}  .KS {r['ks_px']} cap={r['ks_cap']}  "
-                    f".KQ {r['kq_px']} cap={r['kq_cap']}")
-
-          none_cap = [r for r in rows if not r["ks_cap"] and not r["kq_cap"]]
-          print(f"\n■ 양쪽 다 시총이 안 오는 종목(시총 기준으로도 못 가림): {len(none_cap)}")
-          for r in none_cap[:30]:
-              print(f"  {r['code']}  .KS {r['ks_px']}  .KQ {r['kq_px']}")
-
-          # 진짜 값 대조 — 네이버 현재가와 맞춰 본다
-          import kr_sources as kr
-          import re
-          print("\n■ 네이버 현재가와 대조(엇갈린 종목 위주, 최대 25개)")
-          PRICE_RE = re.compile(r'"stockEndType".*?"closePrice":"([\d,]+)"', re.S)
-          for r, bp, bc in bad[:25]:
-              try:
-                  html = kr._page(f"https://finance.naver.com/item/main.naver?code={r['code']}")
-                  m = re.search(r'<dd>현재가\s*([\d,]+)', html) or \
-                      re.search(r'class="no_today".*?blind">([\d,]+)<', html, re.S)
-                  real = int(m.group(1).replace(",", "")) if m else None
-              except Exception as e:                     # noqa: BLE001
-                  real = None
-              name = ""
-              try:
-                  name = kr.stock_name(r["code"])
-              except Exception:                          # noqa: BLE001
-                  pass
-              print(f"  {r['code']} {name[:12]:12} 네이버 {real}  "
-                    f".KS {r['ks_px']}  .KQ {r['kq_px']}")
+          print(f"■ 일치 {ok}종목 (네이버 현재가와 2% 이내)")
+          print(f"■ 불일치 {len(bad)}종목")
+          for c, sym, px, real, gap in bad:
+              print(f"   {c} {kr.stock_name(c)[:14]:14} {sym}  "
+                    f"야후 {px:,.0f}  네이버 {real:,.0f}  차이 {gap:.1f}%")
+          print(f"■ 대조 못 한 {len(unchecked)}종목")
+          for c, why in unchecked[:25]:
+              print(f"   {c} {why}")
           PY
