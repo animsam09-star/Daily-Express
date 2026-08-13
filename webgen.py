@@ -192,9 +192,21 @@ def build_us(data, path):
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
 
+    # 관심종목 카드용. 종목 데이터를 복사하지 않고 어느 섹터에 있는지만
+    # 적어 둔다 — 브라우저가 D.sectors 에서 찾아 쓴다(페이지 용량 유지).
+    watch = []
+    for sec in sectors:
+        for h in sec["holdings"]:
+            if h.get("pick") == "watch":
+                watch.append({"ticker": h["ticker"], "symbol": sec["symbol"],
+                              "sector": sec["name"],
+                              "cap": h.get("market_cap") or 0})
+    watch.sort(key=lambda w: w["cap"], reverse=True)
+
     bench = idx.get("S&P500") or {}
     payload = {
         "market": "us",
+        "watch": watch,
         "bench": {"label": "S&P500", "series": _ds_full(bench.get("series"))},
         "title": "미국 마켓 브리핑",
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
@@ -498,6 +510,9 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
       <div class="chartbox mini" style="height:260px"><canvas id="flowchart"></canvas></div>
     </div>
   </div>
+
+  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 섹터 시총 상위에 안 들어오지만 늘 보고 싶은 종목</span></h2>
+  <div id="watchwrap"></div>
 
   <h2>섹터 상세 <span class="hint">— 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
   <div class="secgrid" id="sectors"></div>
@@ -969,6 +984,51 @@ D.sectors.forEach(s=>{
       '', h.note?`↳ ${h.note}`:'', h.ohlc, h);
   });
 });
+
+// ---- 관심종목 — 섹터 시총 상위 규칙에 안 걸리는 종목을 한곳에 모은다.
+// 종목 데이터는 D.sectors 안에 이미 있으므로 티커로 찾아 쓴다(중복 저장 X).
+(function(){
+  const W = D.watch || [];
+  if(!W.length) return;
+  const find = t => {
+    for(const s of D.sectors){
+      const h = (s.holdings||[]).find(x => x.ticker === t);
+      if(h) return {h, s};
+    }
+    return null;
+  };
+  const found = W.map(w => ({...find(w.ticker), sector: w.sector})).filter(x => x.h);
+  if(!found.length) return;
+  document.getElementById('watch-h').hidden = false;
+  const div = document.createElement('div');
+  div.className = 'panel';
+  const px = h => h.price == null ? '–'
+      : (D.currency === '₩' ? Math.round(h.price).toLocaleString() + '원'
+                            : '$' + fmt(h.price));
+  div.innerHTML = `<div class="tablewrap"><table>
+      <thead><tr><th>종목</th><th>섹터</th><th>등락</th><th>주가</th><th>시총</th>
+      <th>기간수익률</th></tr></thead><tbody>${
+      found.map(({h, sector}) => `<tr class="stk" data-t="${h.ticker}">
+        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span></td>
+        <td style="color:var(--sub);font-size:12px">${sector}</td>
+        <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
+        <td>${px(h)}</td>
+        <td>${capF(h.market_cap, D.currency)}</td>
+        <td style="color:var(--sub);font-size:12px">${spans(h.returns)}</td></tr>`
+        + (h.note ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
+            h.note_url ? ` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>` : ''
+          }</td></tr>` : '')).join('')}</tbody></table></div>`;
+  document.getElementById('watchwrap').appendChild(div);
+  div.querySelectorAll('tr.stk').forEach(tr => tr.onclick = () => {
+    const f = found.find(x => x.h.ticker === tr.dataset.t);
+    if(!f) return;
+    const h = f.h;
+    const meta = [h.price != null ? px(h) : null,
+                  capF(h.market_cap, D.currency)].filter(Boolean).join(' · ');
+    openDlg(`${h.name} (${h.ticker})`, `${sgn(h.chg_pct)}%  ·  ${meta}`,
+            h.returns, null, '', h.note ? `↳ ${h.note}` : '', h.ohlc, h);
+  });
+})();
 
 // ---- 상세 모달 (지수 차트와 같은 형식: 2년 + 이동평균)
 let dlgChart=null;
