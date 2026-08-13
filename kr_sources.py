@@ -249,7 +249,7 @@ def fetch_indices():
             except Exception as e:             # noqa: BLE001
                 print(f"[kr] 지수 {name} 실패: {type(e).__name__}")
                 continue
-            s = [(d, c) for d, _, _, _, c in o]
+            s = [(r[0], r[4]) for r in o]
             out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
                          "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
@@ -440,7 +440,7 @@ def _fetch_returns(symbols):
             o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
             return sym, {"returns": {}, "series": [], "ohlc": []}
-        s = [(d, c) for d, _, _, _, c in o]
+        s = [(r[0], r[4]) for r in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
                      "series": s, "ohlc": o}
 

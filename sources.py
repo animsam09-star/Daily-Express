@@ -103,11 +103,13 @@ def yahoo_ohlc(symbol: str, rng: str = "2y"):
 
 
 def yahoo_candles(symbol: str, rng: str = "2y"):
-    """캔들차트용 진짜 OHLC. [(date, open, high, low, close), ...]
+    """캔들차트용 OHLC + 거래량. [(date, open, high, low, close, volume), ...]
 
     yahoo_ohlc 는 일목균형표용이라 고·저·종만 뽑는다. 캔들은 시가가 있어야
     몸통이 생긴다 — 시가를 직전 종가로 대신하면 몸통이 0 이 되어 꼬리만
     남은 막대 그래프가 된다. 같은 응답에 open 이 들어 있으므로 그냥 쓴다.
+    거래량도 같은 응답에 들어 있어 추가 호출 없이 딸려온다. 지수처럼
+    거래량이 안 오는 종목은 0 으로 채운다.
     """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/"
@@ -116,13 +118,15 @@ def yahoo_candles(symbol: str, rng: str = "2y"):
     res = _get(url).json()["chart"]["result"][0]
     q = res["indicators"]["quote"][0]
     out = []
-    for ts, o, h, l, c in zip(res["timestamp"], q.get("open") or [],
-                              q.get("high") or [], q.get("low") or [],
-                              q.get("close") or []):
+    vols = q.get("volume") or []
+    for i, (ts, o, h, l, c) in enumerate(zip(
+            res["timestamp"], q.get("open") or [], q.get("high") or [],
+            q.get("low") or [], q.get("close") or [])):
         if None in (o, h, l, c):
             continue
+        v = vols[i] if i < len(vols) else None
         out.append((dt.datetime.utcfromtimestamp(ts).date(),
-                    float(o), float(h), float(l), float(c)))
+                    float(o), float(h), float(l), float(c), float(v or 0)))
     return out
 
 
@@ -139,7 +143,7 @@ def fetch_indices():
         futs = {ex.submit(yahoo_candles, sym): (sym, name) for sym, name in INDICES}
         for f, (sym, name) in futs.items():
             o = f.result()
-            s = [(d, c) for d, _, _, _, c in o]
+            s = [(r[0], r[4]) for r in o]
             out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
                          "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
@@ -360,7 +364,7 @@ def fetch_returns(tickers):
             o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
             return sym, {"returns": {}, "series": [], "ohlc": []}
-        s = [(d, c) for d, _, _, _, c in o]
+        s = [(r[0], r[4]) for r in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
                      "series": s, "ohlc": o}
 
@@ -744,7 +748,7 @@ def fetch_kr_proxy():
     거래되는 한국 ETF 의 등락을 야간 대용치로 쓴다. 프록시임을 표기한다.
     """
     o = yahoo_candles("EWY")
-    s = [(d, c) for d, _, _, _, c in o]
+    s = [(r[0], r[4]) for r in o]
     return {"series": s, "ohlc": o, "last": s[-1][1], "chg_pct": pct_change(s),
             "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
 
@@ -772,7 +776,7 @@ def sort_sectors_by_cap(sectors, holdings):
 
 def fetch_fx():
     o = yahoo_candles("KRW=X")
-    s = [(d, c) for d, _, _, _, c in o]
+    s = [(r[0], r[4]) for r in o]
     diff = s[-1][1] - s[-2][1] if len(s) > 1 else 0.0
     return {"series": s, "ohlc": o, "last": s[-1][1], "chg": diff}
 

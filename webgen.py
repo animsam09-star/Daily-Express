@@ -64,8 +64,11 @@ def _ds_ohlc(ohlc):
     if not ohlc:
         return []
     cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
-    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
-            for d, o, h, l, c in ohlc if d >= cut]
+    # 6번째 칸은 거래량. 주식은 야후가 주고, 지수·환율은 안 줘서 0 이 된다.
+    # 정수로 반올림한다 — 소수점은 의미도 없고 용량만 먹는다.
+    return [[r[0].isoformat(), round(r[1], 2), round(r[2], 2), round(r[3], 2),
+             round(r[4], 2), int(r[5]) if len(r) > 5 else 0]
+            for r in ohlc if r[0] >= cut]
 
 
 def _ds_full(series):
@@ -413,6 +416,9 @@ h2 .hint{font-weight:400;color:var(--muted);letter-spacing:0}
    통일은 그대로 유지된다. min-height 는 코멘트가 없는 카드도 같은 자리를
    비워 두게 한다. */
 .secnote{min-height:56px}
+/* 거래량은 캔들 위에 겹치지 않고 아래에 붙는 별도 차트다 — 겹쳐 그리면
+   가격 축과 뒤섞여 캔들이 안 보인다. 높이는 가격 차트의 1/3 이면 충분하다. */
+.chartbox.vol{height:120px;margin-top:-4px}
 .secnote.empty{background:transparent}
 .sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 .sechead b{font-size:14.5px}
@@ -527,6 +533,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="rets" id="dlg-rets"></div>
   <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
   <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
+  <div class="chartbox vol" id="dlg-volbox" hidden><canvas id="dlg-vol"></canvas></div>
   <div id="dlg-about"></div>
 </div></dialog>
 
@@ -690,6 +697,28 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
     {label:'시종', data:ohlc.map(body), backgroundColor:ohlc.map(col),
      barPercentage:0.72, categoryPercentage:0.95, grouped:false, order:1},
   ];
+  // 지수 대비 상대강도 — 구간 시작을 100 으로 잡은 (종목/지수) 비율.
+  // 절대 주가만 보면 시장이 밀어올린 것인지 이 종목이 잘한 것인지 모른다.
+  // 섹터 카드 차트와 같은 방식·같은 색(보라 파선, 우측 축)을 쓴다.
+  let hasRS = false;
+  const bench = (D.bench || {}).series || [];
+  if(bench.length > 30){
+    const bm = new Map(bench);
+    const rs = []; let base = null;
+    for(const r of ohlc){
+      const bv = bm.get(r[0]);
+      if(bv == null || !bv){ rs.push(null); continue; }
+      const q = r[4] / bv;
+      if(base == null) base = q;
+      rs.push(q / base * 100);
+    }
+    if(base != null && rs.filter(x => x != null).length > 30){
+      hasRS = true;
+      ds.push({type:'line', label:((D.bench||{}).label || '지수') + ' 대비(우)',
+        data:rs, yAxisID:'y2', borderColor:'#8e44ad', borderWidth:1.2,
+        borderDash:[4,3], pointRadius:0, pointHitRadius:0, tension:0, order:3});
+    }
+  }
   const closes=ohlc.map(r=>r[4]);
   for(const [w,c] of MA) if(closes.length>w)
     ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
@@ -699,6 +728,13 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   // 잡힌다 — 네이버 차트와 같은 조작감.
   const total=labels.length;                  // 캔들 + 미래 26봉
   const x0=span?Math.max(0,n-span):0;
+  // 미래 칸(구름 선행분)은 보이는 구간의 1/4 까지만. 26칸을 통째로 붙이면
+  // 짧은 구간에서 오른쪽이 텅 비고 봉이 왼쪽에 몰린다.
+  const x1=Math.min(total-1, n-1+Math.min(AHEAD, Math.max(4, Math.round((span||n)*0.25))));
+  // 축을 안 적은 데이터셋은 Chart.js 가 scales 에서 먼저 나오는 y축에 붙인다.
+  // yv 를 먼저 두면 가격까지 거래량 축으로 끌려가 캔들이 화면 밖으로 밀린다
+  // (실측: y 가 0~1 로 비고 캔들이 통째로 사라졌다). 명시해서 못 박는다.
+  ds.forEach(d => { if(!d.yAxisID) d.yAxisID = 'y'; });
   return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},
     plugins:[crosshair(i=>ohlc[i]?ohlc[i][4]:null)],options:{
     responsive:true,maintainAspectRatio:false,animation:false,
@@ -726,12 +762,43 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
                   onZoomComplete:({chart})=>{
                     document.querySelectorAll('#dlg-segs button.on')
                       .forEach(b=>b.classList.remove('on'));
-                    chart.update('none');}}}},
-    scales:{x:{min:x0, max:total-1, ticks:{maxTicksLimit:8,font:{size:10}},
+                    chart.update('none');
+                    if(typeof syncVol==='function') syncVol();}}}},
+    scales:{x:{min:x0, max:x1, ticks:{maxTicksLimit:8,font:{size:10}},
                grid:{display:false}, stacked:false},
             y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
-               beginAtZero:false}}}});
+               beginAtZero:false},
+            ...(hasRS ? {y2:{position:'right', grid:{display:false},
+                             ticks:{font:{size:9}, color:'#8e44ad',
+                                    callback:v=>fmt(v,0)}}} : {})}}});
  }catch(e){console.error('candleChart:',e);return null;}
+}
+
+// ---- 거래량 (캔들 아래 별도 차트)
+// 가격 차트에 겹쳐 그렸더니 축이 뒤섞여 캔들이 화면 밖으로 밀렸다.
+// 라벨과 x 범위를 캔들과 똑같이 맞춰 두 차트가 같은 날짜에 세로로 정렬된다.
+function volChart(canvas, ohlc, labels, x0, x1){
+ try{
+  const vols = ohlc.map(r => r.length > 5 ? r[5] : 0);
+  if(!vols.some(v => v > 0)) return null;      // 지수·환율은 거래량이 안 온다
+  const col = r => r[4] >= r[1] ? UP : DOWN;
+  const unitVol = v => v >= 1e8 ? (v/1e8).toFixed(1)+'억주'
+                     : v >= 1e4 ? Math.round(v/1e4).toLocaleString()+'만주'
+                     : Math.round(v).toLocaleString()+'주';
+  return new Chart(canvas,{type:'bar',
+    data:{labels, datasets:[{label:'거래량', data:vols,
+      backgroundColor: ohlc.map(r => col(r) + '88'),
+      barPercentage:0.72, categoryPercentage:0.95, grouped:false}]},
+    options:{responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{title:i=>i[0].label,
+                            label:c=>'거래량 ' + unitVol(c.parsed.y)}}},
+      scales:{x:{min:x0, max:x1, ticks:{display:false}, grid:{display:false}},
+              y:{beginAtZero:true, ticks:{font:{size:9}, maxTicksLimit:3,
+                                          callback:v=>unitVol(v)},
+                 grid:{color:'#e1e0d9'}}}}});
+ }catch(e){console.error('volChart:',e);return null;}
 }
 
 // 차트 하나가 실패해도(라이브러리 미로드 등) 표·카드는 계속 보여야 한다
@@ -1031,7 +1098,14 @@ D.sectors.forEach(s=>{
 })();
 
 // ---- 상세 모달 (지수 차트와 같은 형식: 2년 + 이동평균)
-let dlgChart=null;
+let dlgChart=null, dlgVol=null;
+// 캔들의 x 범위(프리셋·휠 줌)를 거래량 차트에 그대로 옮긴다.
+function syncVol(){
+  if(!dlgVol || !dlgChart) return;
+  dlgVol.options.scales.x.min = dlgChart.options.scales.x.min;
+  dlgVol.options.scales.x.max = dlgChart.options.scales.x.max;
+  dlgVol.update('none');
+}
 // 분기 실적 표 — 매출·영업이익·순이익을 조/억 단위로. 전년 동기가 있으면
 // 매출 증감률을 함께 보여준다(직전 분기 대비는 계절성 탓에 오해를 부른다).
 function aboutHtml(h){
@@ -1074,19 +1148,33 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
   const dlg=document.getElementById('dlg');dlg.showModal();
   if(dlgChart){dlgChart.destroy();dlgChart=null;}
   const cv=document.getElementById('dlg-chart'), segs=document.getElementById('dlg-segs');
+  const volCv=document.getElementById('dlg-vol'), volBox=document.getElementById('dlg-volbox');
+  if(dlgVol){dlgVol.destroy();dlgVol=null;}
+  volBox.hidden = true;
   segs.innerHTML='';
   if(ohlc&&ohlc.length){         // 개별 종목: 일봉 캔들 + 기간 프리셋 + 줌
     // 차트는 한 번만 만들고(1년 전체), 프리셋은 x 축 범위만 바꾼다.
     // 다시 그리면 줌 상태가 초기화돼 조작감이 끊긴다.
     const setSpan=days=>{
       const n=ohlc.length, total=dlgChart.data.labels.length;
+      const span = days || n;
+      // 구름대는 26봉 앞으로 밀려 있어 미래 칸이 필요하다. 그렇다고 26칸을
+      // 통째로 붙이면 1M(21봉)에서 오른쪽 절반이 텅 비어 봉이 왼쪽에
+      // 몰린다. 보이는 구간의 1/4 까지만 앞을 보여준다.
+      const ahead = Math.min(total - n, Math.max(4, Math.round(span * 0.25)));
       dlgChart.options.scales.x.min = days ? Math.max(0, n-days) : 0;
-      dlgChart.options.scales.x.max = total-1;   // 구름 앞부분(미래)까지
+      dlgChart.options.scales.x.max = Math.min(total-1, n-1+ahead);
       dlgChart.update('none');
+      syncVol();
       segs.querySelectorAll('button').forEach(b=>
         b.classList.toggle('on', +b.dataset.d===days));
     };
     dlgChart=candleChart(cv, ohlc, {unit, span:63});   // 기본 3개월 구간
+    // 거래량은 아래에 별도 차트로. 라벨·x범위를 캔들과 공유해 세로로 맞춘다.
+    dlgVol = dlgChart ? volChart(volCv, ohlc, dlgChart.data.labels,
+                                 dlgChart.options.scales.x.min,
+                                 dlgChart.options.scales.x.max) : null;
+    volBox.hidden = !dlgVol;
     // 봉 수 기준(전부 일봉이라 21≈1개월, 252≈1년). 0 은 전체(2년).
     [[21,'1M'],[63,'3M'],[126,'6M'],[252,'1Y'],[0,'2Y']].forEach(([d,label])=>{
       const b=document.createElement('button');
