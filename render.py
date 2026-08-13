@@ -447,27 +447,33 @@ def holdings_caption(sector, holdings, notes=None, cur="달러", px="${:,.2f}", 
         reverse=True)
     picked = {h["ticker"]: notes[h["ticker"]] for h in ranked[:MAX_NOTES]}
 
-    # 그래도 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
+    # 상한을 넘기면 잘라내지 않고 단계적으로 줄인다.
     # 태그 중간에서 잘리면 텔레그램이 메시지 전체를 거부하기 때문이다.
-    # 줄이는 순서: 주도주 자리 → 뉴스 길이 → 뉴스 개수.
-    # 뉴스를 먼저 줄이면 '왜 움직였나'가 사라져 브리핑의 핵심이 빠진다.
+    #
+    # 줄이는 순서: 관심종목 → 시총 상위 자릿수 → 뉴스 길이 → 뉴스 개수.
+    # 주도주는 어느 단계에서도 빼지 않는다 — '지금 시장을 이끄는 종목'이
+    # 빠지면 이 브리핑을 보는 이유가 사라진다. 예전 사다리는 pick 을
+    # 뭉뚱그려 먼저 버려서 긴 날엔 주도주가 통째로 사라졌다.
+    # 관심종목(watch)을 먼저 놓는 이유는 웹에 전용 카드가 따로 있어서다.
     # 데이터에는 섹터당 10종목이 들어 있다(웹 대시보드용). 텔레그램 캡션은
     # 1,024자 제한이 빡빡해 앞 TELEGRAM_TOP 개만 싣는다.
     core = [h for h in holdings if not h.get("pick")][:TELEGRAM_TOP]
-    holdings = core + [h for h in holdings if h.get("pick")]
-    for hs in (holdings, core + [h for h in holdings if h.get("pick")][:1], core):
+    mom = [h for h in holdings if h.get("pick") == "momentum"]
+    watch = [h for h in holdings if h.get("pick") == "watch"]
+    for hs in (core + mom + watch, core + mom, core[:3] + mom):
         for note_cap in (NOTE_MAX, 45, 30):
             cap = _build_caption(sector, hs, picked, note_cap, cur, px, bench,
                                  sector_note)
             if _visible_len(cap) <= CAPTION_LIMIT:
                 return cap
+    last = core[:3] + mom
     for keep in (2, 1):
         subset = dict(list(picked.items())[:keep])
-        cap = _build_caption(sector, core, subset, 30, cur, px, bench, sector_note)
+        cap = _build_caption(sector, last, subset, 30, cur, px, bench, sector_note)
         if _visible_len(cap) <= CAPTION_LIMIT:
             return cap
-    # 최후 수단: 섹터 코멘트까지 내려놓고 종목 표만 남긴다
-    return _build_caption(sector, core, {}, NOTE_MAX, cur, px, bench)
+    # 최후 수단: 섹터 코멘트까지 내려놓고 종목 표만 남긴다(주도주는 남는다)
+    return _build_caption(sector, last, {}, NOTE_MAX, cur, px, bench)
 
 
 # 'Class A' 나 'Common Stock' 은 회사 이름이 아니라 주식 종류다. 통째로 지운다.
