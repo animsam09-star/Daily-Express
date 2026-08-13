@@ -64,8 +64,11 @@ def _ds_ohlc(ohlc):
     if not ohlc:
         return []
     cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
-    return [[d.isoformat(), round(o, 2), round(h, 2), round(l, 2), round(c, 2)]
-            for d, o, h, l, c in ohlc if d >= cut]
+    # 6번째 칸은 거래량. 주식은 야후가 주고, 지수·환율은 안 줘서 0 이 된다.
+    # 정수로 반올림한다 — 소수점은 의미도 없고 용량만 먹는다.
+    return [[r[0].isoformat(), round(r[1], 2), round(r[2], 2), round(r[3], 2),
+             round(r[4], 2), int(r[5]) if len(r) > 5 else 0]
+            for r in ohlc if r[0] >= cut]
 
 
 def _ds_full(series):
@@ -690,6 +693,14 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
     {label:'시종', data:ohlc.map(body), backgroundColor:ohlc.map(col),
      barPercentage:0.72, categoryPercentage:0.95, grouped:false, order:1},
   ];
+  // 거래량 — 값 축(yv)을 따로 두고 최대치를 실제의 4배로 잡아 아래 1/4 에만
+  // 깔린다. 봉과 같은 색을 옅게 써서 어느 날 거래가 터졌는지 바로 읽힌다.
+  // 지수·환율은 야후가 거래량을 안 줘서 전부 0 이고, 그때는 아예 안 그린다.
+  const vols = ohlc.map(r => r.length > 5 ? r[5] : 0);
+  const hasVol = vols.some(v => v > 0);
+  if(hasVol) ds.push({label:'거래량', data:vols, yAxisID:'yv', order:3,
+    backgroundColor: ohlc.map(r => (r[4] >= r[1] ? UP : DOWN) + '40'),
+    barPercentage:0.72, categoryPercentage:0.95, grouped:false});
   const closes=ohlc.map(r=>r[4]);
   for(const [w,c] of MA) if(closes.length>w)
     ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
@@ -699,6 +710,10 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   // 잡힌다 — 네이버 차트와 같은 조작감.
   const total=labels.length;                  // 캔들 + 미래 26봉
   const x0=span?Math.max(0,n-span):0;
+  // 축을 안 적은 데이터셋은 Chart.js 가 scales 에서 먼저 나오는 y축에 붙인다.
+  // yv 를 먼저 두면 가격까지 거래량 축으로 끌려가 캔들이 화면 밖으로 밀린다
+  // (실측: y 가 0~1 로 비고 캔들이 통째로 사라졌다). 명시해서 못 박는다.
+  ds.forEach(d => { if(d.yAxisID !== 'yv') d.yAxisID = 'y'; });
   return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},
     plugins:[crosshair(i=>ohlc[i]?ohlc[i][4]:null)],options:{
     responsive:true,maintainAspectRatio:false,animation:false,
@@ -711,6 +726,10 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
         callbacks:{title:it=>it[0].label,label:c=>{
         const lb=c.dataset.label;
         if(lb==='__spanB'||lb==='고저'||lb==='일목 구름대') return null;
+        if(lb==='거래량'){const v=c.parsed.y;
+          return '거래량: ' + (v>=1e8 ? (v/1e8).toFixed(1)+'억주'
+                             : v>=1e4 ? Math.round(v/1e4).toLocaleString()+'만주'
+                             : Math.round(v).toLocaleString()+'주');}
         if(lb==='시종'){const r=ohlc[c.dataIndex]; if(!r) return null;
           // 급등·급락한 날을 찾으려고 짚어 보는 것이므로 등락률을 맨 앞에 둔다
           const prev=ohlc[c.dataIndex-1];
@@ -730,7 +749,12 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
     scales:{x:{min:x0, max:total-1, ticks:{maxTicksLimit:8,font:{size:10}},
                grid:{display:false}, stacked:false},
             y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
-               beginAtZero:false}}}});
+               beginAtZero:false},
+            // 거래량 축은 눈금을 감춘다 — 절대치를 읽을 일은 없고 어느 날
+            // 터졌는지만 보면 된다. 축을 보이면 가격 눈금과 헷갈린다.
+            // 최대치를 실제의 4배로 잡아 아래 1/4 에만 깔리게 한다.
+            ...(hasVol ? {yv:{display:false, beginAtZero:true,
+                              max: Math.max(...vols) * 4}} : {})}}});
  }catch(e){console.error('candleChart:',e);return null;}
 }
 

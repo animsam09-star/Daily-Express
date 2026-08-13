@@ -52,15 +52,20 @@ CLOUD_UP, CLOUD_DOWN = "#e8a0a0", "#a0b8e8"     # 양운(붉은) / 음운(푸른
 def _ichimoku(ohlc):
     """일목균형표 선행스팬 1·2.
 
-    입력은 [(date, high, low, close)] 또는 [(date, open, high, low, close)] 둘 다
-    받는다 — 시가는 캔들차트에만 필요해서 소스마다 형태가 다르다.
+    입력은 (date, high, low, close) / (date, open, high, low, close) /
+    (date, open, high, low, close, volume) 을 모두 받는다 — 시가는 캔들차트,
+    거래량은 종목 상세에만 필요해서 소스마다 형태가 다르다.
     전환선 9, 기준선 26, 선행스팬2 52, 선행 이동 26 — 표준 설정.
     구름대는 26일 앞으로 밀어 그리므로 미래 구간이 생긴다.
     """
     if len(ohlc) < 78:                          # 52 + 26. 모자라면 그리지 않는다
         return None
-    if len(ohlc[0]) == 5:                       # (date, open, high, low, close)
-        ohlc = [(d, h, l, c) for d, _o, h, l, c in ohlc]
+    # 뒤에 칸이 더 붙어도 깨지지 않게 자리로 꺼낸다. 5칸 이상이면 시가가
+    # 끼어 있으므로 고·저·종은 2·3·4 번, 4칸이면 1·2·3 번이다.
+    if len(ohlc[0]) >= 5:
+        ohlc = [(r[0], r[2], r[3], r[4]) for r in ohlc]
+    else:
+        ohlc = [(r[0], r[1], r[2], r[3]) for r in ohlc]
     dates = [d for d, _, _, _ in ohlc]
     highs = [h for _, h, _, _ in ohlc]
     lows = [l for _, _, l, _ in ohlc]
