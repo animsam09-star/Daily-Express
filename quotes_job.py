@@ -141,7 +141,11 @@ def collect(market: str) -> dict | None:
         # 숫자가 뒤죽박죽 섞이므로 이번 시간은 통째로 건너뛴다.
         print(f"[{market}] 절반 미만 — 이번 갱신 생략", file=sys.stderr)
         return None
-    return {"at": dt.datetime.now(KST).strftime("%m.%d %H:%M"), "quotes": out}
+    now = dt.datetime.now(KST)
+    # at 은 화면 표기용, ts 는 페이지가 신선도를 견주는 값이다. 브리핑보다
+    # 오래된 시세로 종가를 덮어쓰지 않으려면 기계가 읽을 시각이 있어야 한다.
+    return {"at": now.strftime("%m.%d %H:%M"),
+            "ts": now.isoformat(timespec="seconds"), "quotes": out}
 
 
 def main() -> int:
