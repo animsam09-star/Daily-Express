@@ -214,6 +214,9 @@ def build_us(data, path):
         "title": "미국 마켓 브리핑",
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                      .strftime("%Y.%m.%d %H:%M KST"),
+        # 시세 갱신이 이 시각보다 오래됐으면 적용하지 않는다(아래 built 비교).
+        "built": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+                   .isoformat(timespec="seconds"),
         "currency": "$",
         "summary": summary,
         "sectors": sectors,
@@ -294,6 +297,9 @@ def build_kr(data, path):
         "title": "한국증시 마감 브리핑",
         "updated": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                      .strftime("%Y.%m.%d %H:%M KST"),
+        # 시세 갱신이 이 시각보다 오래됐으면 적용하지 않는다(아래 built 비교).
+        "built": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
+                   .isoformat(timespec="seconds"),
         "currency": "₩",
         "summary": summary,
         "sectors": sectors,
@@ -560,6 +566,11 @@ async function applyQuotes(D){
     q=(await r.json())[D.market];
   }catch(e){ return; }
   if(!q || !q.quotes) return;
+  // 브리핑보다 오래된 시세는 절대 적용하지 않는다.
+  // 한국 마감 브리핑은 15:30 종가로 만드는데, 시세 갱신 cron(15:05)이
+  // GitHub 지연으로 15:22 에 돌면 그 장중 값이 종가를 덮어썼다 —
+  // 푸터에는 '당일 종가'라고 적혀 있는데 실제로는 장중 시세였다.
+  if(q.ts && D.built && q.ts <= D.built) return;
   const px=q.quotes;
 
   for(const s of (D.summary||[])){
