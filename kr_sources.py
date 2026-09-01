@@ -21,7 +21,8 @@ import urllib3
 import kr_universe
 
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at, _trim,
-                     fetch_quotes, mom_score, pct_change, yahoo_candles,
+                     MONTHLY_RANGE, fetch_quotes, mom_score, monthly_candles,
+                     pct_change, yahoo_candles,
                      yahoo_ohlc, yahoo_series)
 
 if not VERIFY:
@@ -242,16 +243,16 @@ def fetch_company_info(codes):
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        futs = {ex.submit(yahoo_candles, sym): name for sym, name in INDICES}
-        for f, name in futs.items():
+        futs = {ex.submit(yahoo_candles, sym): (sym, name) for sym, name in INDICES}
+        for f, (sym, name) in futs.items():
             try:
                 o = f.result()
             except Exception as e:             # noqa: BLE001
                 print(f"[kr] 지수 {name} 실패: {type(e).__name__}")
                 continue
             s = [(r[0], r[4]) for r in o]
-            out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
-                         "chg_pct": pct_change(s),
+            out[name] = {"series": s, "ohlc": o, "ohlc_m": monthly_candles(sym),
+                         "last": s[-1][1], "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
     return out
 
@@ -273,7 +274,7 @@ def _row(code, quotes, info, rets, pick=None):
            "chg_pct": q.get("chg_pct"),
            "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),
            "returns": r.get("returns", {}), "series": r.get("series", []),
-           "ohlc": r.get("ohlc", []),
+           "ohlc": r.get("ohlc", []), "ohlc_m": r.get("ohlc_m", []),
            "profile": i.get("profile") or {}, "quarters": i.get("quarters") or []}
     if pick:
         row["pick"] = pick
@@ -433,16 +434,24 @@ def attach_benchmarks(sectors, holdings, indices):
 
 
 def _fetch_returns(symbols):
-    """{sym: {"returns", "series", "ohlc"}}. 웹 대시보드 종목 상세는 이
-    OHLC 로 캔들차트를 그린다 — 수익률 계산에 어차피 받는 것을 버리지 않는다."""
+    """{sym: {"returns", "series", "ohlc", "ohlc_m"}}. 웹 대시보드 종목 상세는 이
+    OHLC 로 캔들차트를 그린다 — 수익률 계산에 어차피 받는 것을 버리지 않는다.
+
+    월봉은 따로 받는다. 주봉은 브라우저가 일봉을 묶어 만들지만(2년 = 104봉)
+    월봉은 2년이 24봉뿐이라 일목균형표가 아예 안 나온다. 미국판과 같은 이유·
+    같은 방식이다(sources.fetch_returns 참고)."""
     def one(sym):
         try:
             o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {"returns": {}, "series": [], "ohlc": []}
+            return sym, {"returns": {}, "series": [], "ohlc": [], "ohlc_m": []}
+        try:
+            m = yahoo_candles(sym, rng=MONTHLY_RANGE, interval="1mo")
+        except Exception:                      # noqa: BLE001
+            m = []                             # 월봉만 비고 일봉·주봉은 그대로 나간다
         s = [(r[0], r[4]) for r in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
-                     "series": s, "ohlc": o}
+                     "series": s, "ohlc": o, "ohlc_m": m}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         return dict(ex.map(one, symbols))
