@@ -102,7 +102,7 @@ def yahoo_ohlc(symbol: str, rng: str = "2y"):
     return out
 
 
-def yahoo_candles(symbol: str, rng: str = "2y"):
+def yahoo_candles(symbol: str, rng: str = "2y", interval: str = "1d"):
     """캔들차트용 OHLC + 거래량. [(date, open, high, low, close, volume), ...]
 
     yahoo_ohlc 는 일목균형표용이라 고·저·종만 뽑는다. 캔들은 시가가 있어야
@@ -110,10 +110,14 @@ def yahoo_candles(symbol: str, rng: str = "2y"):
     남은 막대 그래프가 된다. 같은 응답에 open 이 들어 있으므로 그냥 쓴다.
     거래량도 같은 응답에 들어 있어 추가 호출 없이 딸려온다. 지수처럼
     거래량이 안 오는 종목은 0 으로 채운다.
+
+    interval 은 봉의 단위다. 월봉은 "1mo" 로 받는다 — 일봉을 브라우저에서
+    묶어 만들 수도 있지만, 10년치 일봉을 페이지에 실을 수는 없다(종목당
+    2,500봉). 야후가 이미 월봉으로 집계해 주므로 120봉이면 끝난다.
     """
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/"
-        f"{requests.utils.quote(symbol, safe='')}?range={rng}&interval=1d"
+        f"{requests.utils.quote(symbol, safe='')}?range={rng}&interval={interval}"
     )
     res = _get(url).json()["chart"]["result"][0]
     q = res["indicators"]["quote"][0]
@@ -137,6 +141,14 @@ def pct_change(series):
     return (series[-1][1] / series[-2][1] - 1.0) * 100.0
 
 
+def monthly_candles(symbol: str):
+    """월봉 10년치. 실패하면 빈 목록 — 월봉만 비고 일봉·주봉은 그대로 나간다."""
+    try:
+        return yahoo_candles(symbol, rng=MONTHLY_RANGE, interval="1mo")
+    except Exception:                          # noqa: BLE001
+        return []
+
+
 def fetch_indices():
     out = {}
     with ThreadPoolExecutor(max_workers=6) as ex:
@@ -144,8 +156,8 @@ def fetch_indices():
         for f, (sym, name) in futs.items():
             o = f.result()
             s = [(r[0], r[4]) for r in o]
-            out[name] = {"series": s, "ohlc": o, "last": s[-1][1],
-                         "chg_pct": pct_change(s),
+            out[name] = {"series": s, "ohlc": o, "ohlc_m": monthly_candles(sym),
+                         "last": s[-1][1], "chg_pct": pct_change(s),
                          "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
     return out
 
@@ -350,23 +362,38 @@ def _return_at(series, days_back: int):
     return (series[-1][1] / base - 1.0) * 100.0 if base else None
 
 
+# 월봉은 10년치를 받는다. 일목균형표 선행스팬2가 52봉을 쓰므로 60봉(5년)이면
+# 구름대가 마지막 몇 칸에만 생겨 사실상 안 보인다. 120봉이면 51봉째부터
+# 구름이 생겨 6년 가까이 덮인다.
+MONTHLY_RANGE = "10y"
+
+
 def fetch_returns(tickers):
     """종목별 1개월·6개월·12개월 등락률 + 2개년 시계열(OHLC 포함).
 
     같은 차트 API 가 시가·고가·저가·종가를 한 번에 주므로 종가만 쓰고 버리지
-    않는다. 웹 대시보드의 종목 상세는 이 OHLC 로 캔들차트를 그린다(5튜플:
-    date, open, high, low, close).
-    반환: {sym: {"returns": {...}, "series": [...], "ohlc": [...]}}.
+    않는다. 웹 대시보드의 종목 상세는 이 OHLC 로 캔들차트를 그린다(6튜플:
+    date, open, high, low, close, volume).
+
+    월봉(ohlc_m)은 따로 한 번 더 받는다. 주봉은 일봉을 브라우저에서 묶어
+    만들지만(2년 = 104봉이면 일목이 계산된다) 월봉은 2년이 24봉뿐이라 지표가
+    아예 안 나온다. 10년 월봉은 120봉짜리 작은 응답이라 한 번 더 받는 값이
+    있다.
+    반환: {sym: {"returns", "series", "ohlc", "ohlc_m"}}.
     """
     def one(sym):
         try:
             # 1y 로 받으면 365일 전 시점이 구간 밖이라 12M 수익률이 비므로 2y 로 받는다
             o = yahoo_candles(sym, rng="2y")
         except Exception:                      # noqa: BLE001
-            return sym, {"returns": {}, "series": [], "ohlc": []}
+            return sym, {"returns": {}, "series": [], "ohlc": [], "ohlc_m": []}
+        try:
+            m = yahoo_candles(sym, rng=MONTHLY_RANGE, interval="1mo")
+        except Exception:                      # noqa: BLE001
+            m = []                             # 월봉만 비고 일봉·주봉은 그대로 나간다
         s = [(r[0], r[4]) for r in o]
         return sym, {"returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS},
-                     "series": s, "ohlc": o}
+                     "series": s, "ohlc": o, "ohlc_m": m}
 
     with ThreadPoolExecutor(max_workers=12) as ex:
         return dict(ex.map(one, tickers))
@@ -424,6 +451,7 @@ def fetch_sector_holdings(sector_symbols, caps=None):
             h["returns"] = r.get("returns", {})
             h["series"] = r.get("series", [])
             h["ohlc"] = r.get("ohlc", [])
+            h["ohlc_m"] = r.get("ohlc_m", [])
     return holdings
 
 
@@ -470,6 +498,36 @@ MOM_MIN_1M = 0.0        # 1개월 등락률 하한(%) — 최근에 꺾인 종�
 # 시계열을 받을 수는 없으니, 50일선 이격(quote 에 있다)으로 섹터당 후보를
 # 이만큼 좁힌 뒤 그 후보만 실제 시계열로 재계산한다.
 MOM_PRESELECT = 12
+
+# ---- 관심종목 스크리닝 --------------------------------------------------
+# 손으로 적은 WATCHLIST 는 '늘 보고 싶은 종목'이라 시장 상황과 무관하게 고정이다.
+# 그것과 별개로, 매일 시장에서 '지금 올라타 볼 만한' 종목을 기계로 골라 같은
+# 카드에 붙인다. 두 갈래로 나눈 이유는 성격이 정반대이기 때문이다.
+#
+#   추세(trend)  — 이미 오르고 있는 것. 정배열(종가>50일선>200일선)에
+#                  3개월 상승률이 크고 최근 한 달도 안 꺾인 종목.
+#   반등(rebound)— 바닥에서 돌아선 것. 1년 내내 빠져서 아직 200일선 아래인데,
+#                  최근 50일선을 되찾았고 50일선 자체가 상승 전환했으며
+#                  거래량까지 붙은 종목.
+#
+# 두 조건은 서로 배타적이다(200일선 위/아래). 한 종목이 양쪽에 걸리지 않는다.
+SCREEN_N = 6            # 갈래별 자리 수
+SCREEN_PRESELECT = 30   # 시계열까지 받아볼 갈래별 후보 수(시세 요약으로 좁힌 뒤)
+
+# 추세: 3개월 +20% 이상. 주도주(15%)보다 높게 잡았다 — 섹터마다 2자리를 채우는
+# 주도주와 달리 여기는 전 섹터를 통틀어 6자리뿐이라 문턱이 높아야 한다.
+SCREEN_TREND_3M = 20.0
+SCREEN_TREND_1M = 0.0
+
+# 반등: '바닥이었다'는 증거와 '돌아섰다'는 증거를 함께 요구한다.
+# 후보 추리기에는 '1년 등락률이 마이너스'라는 부호만 쓴다 — 야후가 이 값을
+# 퍼센트로 주는지 비율로 주는지에 따라 문턱값이 100배 어긋나기 때문이다.
+# 실제 문턱(1년 고점 대비 몇 % 아래인가)은 아래 OFF_HIGH 로, 우리가 받은
+# 시계열에서 직접 잰다.
+SCREEN_REB_1M = 5.0     # 1개월 등락률 하한(%) — 실제로 오르고 있어야 한다
+SCREEN_REB_OFF_HIGH = 15.0   # 1년 고점 대비 최소 하락폭(%) — 이미 신고가면 추세다
+SCREEN_REB_VOL = 1.2    # 최근 20봉 평균 거래량 / 직전 60봉 평균의 하한(수급 확인)
+SCREEN_REB_SLOPE = 20   # 50일선 상승 전환 판정에 쓸 비교 시점(봉)
 
 # 점수와 무관하게 항상 넣을 종목. 값은 넣을 섹터(None 이면 스크리너 분류를 따른다).
 # '지금은 모멘텀이 죽었지만 계속 보고 싶은' 종목을 여기에 적는다.
@@ -572,6 +630,81 @@ def mom_score(returns):
     return r3
 
 
+def _sma(vals, w, i):
+    """vals[i] 시점의 w봉 단순이동평균. 봉이 모자라면 None."""
+    if i < w - 1 or i >= len(vals):
+        return None
+    return sum(vals[i - w + 1:i + 1]) / w
+
+
+def _screen_preselect(cands, quotes):
+    """시세 요약(50·200일선 이격, 1년 등락률)만으로 후보를 좁힌다.
+
+    시계열은 종목당 한 번씩 받아야 해서 전 종목에 못 돌린다. 야후 시세 응답에
+    이미 들어 있는 세 값이면 '정배열인가 / 바닥권인가'는 가려낼 수 있다.
+    """
+    trend, rebound = [], []
+    for sector, rows in cands.items():
+        for r in rows:
+            q = quotes.get(r["ticker"]) or {}
+            v50, v200, y = q.get("vs_50d"), q.get("vs_200d"), q.get("chg_52w")
+            if v50 is None or v200 is None or y is None or v50 <= 0:
+                continue
+            if v200 > 0 and y > 0:
+                trend.append((v200, sector, r))    # 200일선 이격이 큰 순
+            elif v200 < 0 and y < 0:
+                rebound.append((v50, sector, r))   # 50일선을 되찾은 폭이 큰 순
+    trend.sort(key=lambda x: -x[0])
+    rebound.sort(key=lambda x: -x[0])
+    return ([(sec, r) for _, sec, r in trend[:SCREEN_PRESELECT]],
+            [(sec, r) for _, sec, r in rebound[:SCREEN_PRESELECT]])
+
+
+def _trend_score(rets, ohlc):
+    """추세 자격을 갖추면 점수(3개월 등락률), 아니면 None."""
+    r3, r1 = (rets or {}).get("m3"), (rets or {}).get("m1")
+    if r3 is None or r3 < SCREEN_TREND_3M:
+        return None
+    if r1 is not None and r1 < SCREEN_TREND_1M:
+        return None
+    return r3
+
+
+def _rebound_score(rets, ohlc):
+    """반등 자격을 갖추면 점수(1개월 등락률 × 거래량 배수), 아니면 None.
+
+    거래량을 곱하는 이유: 같은 +10% 라도 거래량이 붙은 반등이 이어질 확률이
+    높다. 값이 없는 종목(지수 등)은 1배로 본다.
+    """
+    r1 = (rets or {}).get("m1")
+    if r1 is None or r1 < SCREEN_REB_1M:
+        return None
+    if len(ohlc or []) < 250:
+        return None                            # 1년치가 없으면 '바닥'을 못 잰다
+    closes = [r[4] for r in ohlc]
+    # 1년 고점 대비 아직 충분히 아래여야 '반등'이다. 이미 회복했으면 추세다.
+    hi = max(closes[-252:])
+    if hi <= 0 or (hi - closes[-1]) / hi * 100 < SCREEN_REB_OFF_HIGH:
+        return None
+    # 50일선이 상승 전환했는가 — 오늘 50일선 > SCREEN_REB_SLOPE 봉 전 50일선.
+    now = _sma(closes, 50, len(closes) - 1)
+    then = _sma(closes, 50, len(closes) - 1 - SCREEN_REB_SLOPE)
+    if now is None or then is None or now <= then:
+        return None
+    # 수급 확인 — 최근 20봉 평균 거래량이 직전 60봉 평균보다 뚜렷이 많은가.
+    vols = [r[5] for r in ohlc if len(r) > 5]
+    mult = 1.0
+    if len(vols) >= 80:
+        recent = sum(vols[-20:]) / 20
+        base = sum(vols[-80:-20]) / 60
+        if base <= 0:
+            return None
+        mult = recent / base
+        if mult < SCREEN_REB_VOL:
+            return None
+    return r1 * mult
+
+
 def pick_extras(holdings, universe):
     """섹터마다 시총 상위 5 밖의 '주도주'와 워치리스트 종목을 골라 붙인다.
 
@@ -609,8 +742,13 @@ def pick_extras(holdings, universe):
         short[sector] = watch + [r for r in keep[:MOM_PRESELECT]
                                  if r["ticker"] not in {w["ticker"] for w in watch}]
 
+    # 관심종목 카드용 스크리닝 후보. 주도주 후보(short)와 섞지 않는다 —
+    # 섞으면 섹터당 2자리인 주도주 선정 결과까지 흔들린다.
+    scr_trend, scr_reb = _screen_preselect(cands, quotes)
+
     # 2차: 후보의 실제 시계열로 3개월·1개월 등락률을 재고 자격을 본다
-    rets = fetch_returns(sorted({r["ticker"] for rs in short.values() for r in rs}))
+    rets = fetch_returns(sorted({r["ticker"] for rs in short.values() for r in rs}
+                                | {r["ticker"] for _, r in scr_trend + scr_reb}))
 
     extras = {}
     for sector, rows in short.items():
@@ -634,8 +772,35 @@ def pick_extras(holdings, universe):
             p["returns"] = r.get("returns", {})
             p["series"] = r.get("series", [])
             p["ohlc"] = r.get("ohlc", [])
+            p["ohlc_m"] = r.get("ohlc_m", [])
         if picked:
             extras[sector] = picked
+
+    # 전 섹터를 통틀어 추세·반등을 각각 SCREEN_N 자리씩. 섹터마다 자리를 주면
+    # 아무도 안 오른 섹터에까지 억지로 종목을 앉히게 된다 — 시장 전체에서
+    # 가장 뚜렷한 것만 골라야 '스크리닝'이다.
+    taken = {h["ticker"] for hs in extras.values() for h in hs} | have
+    for kind, pool, score in (("trend", scr_trend, _trend_score),
+                              ("rebound", scr_reb, _rebound_score)):
+        ranked = []
+        for sector, r in pool:
+            if r["ticker"] in taken:
+                continue
+            d = rets.get(r["ticker"]) or {}
+            sc = score(d.get("returns"), d.get("ohlc"))
+            if sc is not None:
+                ranked.append((sc, sector, r, d))
+        ranked.sort(key=lambda x: -x[0])
+        for _, sector, r, d in ranked[:SCREEN_N]:
+            p = {**r, "pick": kind}
+            p.update({k: v for k, v in (quotes.get(r["ticker"]) or {}).items()
+                      if v is not None})
+            p["returns"] = d.get("returns", {})
+            p["series"] = d.get("series", [])
+            p["ohlc"] = d.get("ohlc", [])
+            p["ohlc_m"] = d.get("ohlc_m", [])
+            extras.setdefault(sector, []).append(p)
+            taken.add(r["ticker"])
     return extras
 
 
@@ -749,7 +914,8 @@ def fetch_kr_proxy():
     """
     o = yahoo_candles("EWY")
     s = [(r[0], r[4]) for r in o]
-    return {"series": s, "ohlc": o, "last": s[-1][1], "chg_pct": pct_change(s),
+    return {"series": s, "ohlc": o, "ohlc_m": monthly_candles("EWY"),
+            "last": s[-1][1], "chg_pct": pct_change(s),
             "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
 
 
@@ -778,7 +944,8 @@ def fetch_fx():
     o = yahoo_candles("KRW=X")
     s = [(r[0], r[4]) for r in o]
     diff = s[-1][1] - s[-2][1] if len(s) > 1 else 0.0
-    return {"series": s, "ohlc": o, "last": s[-1][1], "chg": diff}
+    return {"series": s, "ohlc": o, "ohlc_m": monthly_candles("KRW=X"),
+            "last": s[-1][1], "chg": diff}
 
 
 # ------------------------------------------------------------- 美 국채

@@ -51,7 +51,7 @@ def _ds(series):
     return out
 
 
-def _ds_ohlc(ohlc):
+def _ds_ohlc(ohlc, days=CANDLE_DAYS):
     """[(date, open, high, low, close)] -> [[iso, o, h, l, c]]. 캔들차트용.
 
     2년치를 전부 일봉으로 싣는다. 오래된 구간을 주봉으로 묶으면 용량은
@@ -63,12 +63,13 @@ def _ds_ohlc(ohlc):
     """
     if not ohlc:
         return []
-    cut = ohlc[-1][0] - dt.timedelta(days=CANDLE_DAYS)
+    # days=None 이면 자르지 않는다 — 월봉은 10년치 120봉이 통째로 필요하다.
+    cut = ohlc[-1][0] - dt.timedelta(days=days) if days else None
     # 6번째 칸은 거래량. 주식은 야후가 주고, 지수·환율은 안 줘서 0 이 된다.
     # 정수로 반올림한다 — 소수점은 의미도 없고 용량만 먹는다.
     return [[r[0].isoformat(), round(r[1], 2), round(r[2], 2), round(r[3], 2),
              round(r[4], 2), int(r[5]) if len(r) > 5 else 0]
-            for r in ohlc if r[0] >= cut]
+            for r in ohlc if cut is None or r[0] >= cut]
 
 
 def _ds_full(series):
@@ -112,6 +113,9 @@ def _holding(h, notes):
         # 종가 시계열은 싣지 않는다 — 종목 상세는 캔들(ohlc)로 그리므로
         # 쓰이지 않는데 용량만 차지했다.
         "ohlc": _ds_ohlc(h.get("ohlc") or []),
+        # 월봉은 야후에서 이미 월 단위로 받아온 10년치다. 주봉은 브라우저가
+        # 위 일봉을 묶어 만들므로 따로 싣지 않는다.
+        "ohlc_m": _ds_ohlc(h.get("ohlc_m") or [], days=None),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
@@ -125,14 +129,15 @@ def _holding(h, notes):
 
 
 def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num",
-                  ohlc=None, sym=""):
+                  ohlc=None, sym="", ohlc_m=None):
     # ohlc 를 주면 카드를 눌렀을 때 라인 대신 일봉 캔들 + 일목균형표 구름대가
     # 뜬다. 지수·환율에는 있고 금리(재무부 CMT·네이버)에는 없다.
     # sym 은 한 시간마다 도는 시세 갱신이 이 카드를 찾는 열쇠다. 금리처럼
     # 야후에 없는 값은 비워 둔다 — 갱신에서 그냥 빠진다.
     return {"label": label, "value": value, "chg": chg, "unit": unit,
             "chg_unit": chg_unit, "series": _ds(series or []), "fmt": fmt,
-            "ohlc": _ds_ohlc(ohlc or []), "sym": sym}
+            "ohlc": _ds_ohlc(ohlc or []),
+            "ohlc_m": _ds_ohlc(ohlc_m or [], days=None), "sym": sym}
 
 
 def build_us(data, path):
@@ -151,14 +156,14 @@ def build_us(data, path):
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series"), ohlc=d.get("ohlc"),
+                                         d.get("series"), ohlc=d.get("ohlc"), ohlc_m=d.get("ohlc_m"),
                                          sym=sym))
     px = data.get("kr_proxy") or {}
     if px.get("last") is not None:
         # 코스피 야간선물 무료 시세 부재 — EWY(미국장 한국 ETF)가 야간 프록시
         summary.append(_summary_item("코스피 야간 프록시 EWY", round(px["last"], 2),
                                      round(px["chg_pct"], 2), "달러", "%",
-                                     px.get("series"), ohlc=px.get("ohlc"),
+                                     px.get("series"), ohlc=px.get("ohlc"), ohlc_m=px.get("ohlc_m"),
                                      sym="EWY"))
     for sym, label in (("US2Y", "미국채 2년"), ("US10Y", "미국채 10년"),
                        ("US30Y", "미국채 30년")):
@@ -170,7 +175,7 @@ def build_us(data, path):
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series"), ohlc=fx.get("ohlc"),
+                                     fx.get("series"), ohlc=fx.get("ohlc"), ohlc_m=fx.get("ohlc_m"),
                                      sym="KRW=X"))
     corp, spread = dom.get("corp_aa3y") or {}, dom.get("spread") or {}
     if corp.get("last") is not None:
@@ -200,11 +205,14 @@ def build_us(data, path):
     watch = []
     for sec in sectors:
         for h in sec["holdings"]:
-            if h.get("pick") == "watch":
+            if h.get("pick") in ("watch", "trend", "rebound"):
                 watch.append({"ticker": h["ticker"], "symbol": sec["symbol"],
-                              "sector": sec["name"],
+                              "sector": sec["name"], "kind": h["pick"],
                               "cap": h.get("market_cap") or 0})
-    watch.sort(key=lambda w: w["cap"], reverse=True)
+    # 고정 목록 → 추세 → 반등 순으로 묶고, 묶음 안에서는 시가총액 큰 순.
+    # 셋은 고른 기준이 아예 다르므로 한 덩어리로 섞으면 읽을 수 없다.
+    _ORDER = {"watch": 0, "trend": 1, "rebound": 2}
+    watch.sort(key=lambda w: (_ORDER.get(w["kind"], 9), -w["cap"]))
 
     bench = idx.get("S&P500") or {}
     payload = {
@@ -242,12 +250,12 @@ def build_kr(data, path):
         if d:
             summary.append(_summary_item(name, round(d["last"], 2),
                                          round(d["chg_pct"], 2), "", "%",
-                                         d.get("series"), ohlc=d.get("ohlc"),
+                                         d.get("series"), ohlc=d.get("ohlc"), ohlc_m=d.get("ohlc_m"),
                                          sym=sym))
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
-                                     fx.get("series"), ohlc=fx.get("ohlc"),
+                                     fx.get("series"), ohlc=fx.get("ohlc"), ohlc_m=fx.get("ohlc_m"),
                                      sym="KRW=X"))
     for key, label in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "AA- 3년 Spread")):
@@ -523,7 +531,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     </div>
   </div>
 
-  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 섹터 시총 상위에 안 들어오지만 늘 보고 싶은 종목</span></h2>
+  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 손으로 지정한 종목 + 오늘 스크리닝한 추세·반등주</span></h2>
   <div id="watchwrap"></div>
 
   <h2>섹터 상세 <span class="hint">— 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
@@ -606,6 +614,48 @@ async function applyQuotes(D){
 await applyQuotes(D);
 const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
 const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7']];  // 검증된 categorical 슬롯
+// 봉 단위(일/주/월)별 이동평균. 어느 단위에서나 '한 달 남짓 / 반년 / 1~2년'을
+// 보도록 창을 맞췄다. 색은 위 MA 와 같은 슬롯을 그대로 쓴다.
+const MA_TF={d:[[20,'20일'],[60,'60일'],[120,'120일']],
+             w:[[13,'13주'],[26,'26주'],[52,'52주']],
+             m:[[6,'6개월'],[12,'12개월'],[24,'24개월']]};
+const TF_NAME={d:'일봉', w:'주봉', m:'월봉'};
+
+// 일봉을 주봉/월봉으로 묶는다. 시가는 구간 첫 봉, 종가는 마지막 봉,
+// 고·저는 구간 전체의 최대·최소, 거래량은 합. 라벨은 구간의 '마지막' 날짜다 —
+// 지수 대비 상대강도가 일별 지수 시계열을 날짜로 찾아 쓰기 때문에, 실제로
+// 존재하는 거래일이어야 맞아떨어진다.
+function aggBars(ohlc, tf){
+  if(tf==='d' || !ohlc || !ohlc.length) return ohlc||[];
+  const key = tf==='m'
+    ? iso => iso.slice(0,7)
+    : iso => {                                  // ISO 주차(목요일 기준)
+        const d=new Date(iso+'T00:00:00Z');
+        d.setUTCDate(d.getUTCDate()+4-(d.getUTCDay()||7));
+        const y0=Date.UTC(d.getUTCFullYear(),0,1);
+        return d.getUTCFullYear()+'W'+Math.ceil(((d-y0)/86400000+1)/7);
+      };
+  const out=[]; let cur=null;
+  for(const r of ohlc){
+    const k=key(r[0]);
+    if(k!==cur){ out.push([r[0], r[1], r[2], r[3], r[4], r[5]||0]); cur=k; }
+    else { const b=out[out.length-1];
+           b[0]=r[0]; b[2]=Math.max(b[2],r[2]); b[3]=Math.min(b[3],r[3]);
+           b[4]=r[4]; b[5]+=r[5]||0; }
+  }
+  return out;
+}
+
+// 구름대는 26봉 앞으로 밀려 그려지므로 '미래 라벨'이 필요하다. 일봉은 다음
+// 영업일, 주봉은 7일 뒤, 월봉은 다음 달 — 봉 단위를 따라간다.
+function nextLabel(iso, tf){
+  const d=new Date(iso+'T00:00:00Z');
+  if(tf==='m'){ d.setUTCMonth(d.getUTCMonth()+1); }
+  else if(tf==='w'){ d.setUTCDate(d.getUTCDate()+7); }
+  else { do { d.setUTCDate(d.getUTCDate()+1); }
+         while(d.getUTCDay()===0 || d.getUTCDay()===6); }
+  return d.toISOString().slice(0,10);
+}
 if(typeof Chart!=='undefined'){
   // 줌 플러그인은 UMD 자동 등록에 의존하지 않고 명시적으로 붙인다
   if(window.ChartZoom) { try{ Chart.register(window.ChartZoom); }catch(e){} }
@@ -665,7 +715,7 @@ const chartArea_left=chart=>chart.chartArea.left;
 // 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
 // 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
 // grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
-function candleChart(canvas, ohlc, {unit='', span=null}={}){
+function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
  try{
   const labels=ohlc.map(r=>r[0]), n=ohlc.length;
   const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
@@ -689,11 +739,8 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
   // 26봉 앞으로 이동: 앞쪽 26칸을 비우고 뒤쪽에 미래 라벨을 붙인다
   const pad=Array(AHEAD).fill(null);
   const cloudA=pad.concat(spanA), cloudB=pad.concat(spanB);
-  let d=new Date(labels[n-1]);
-  while(future.length<AHEAD){
-    d=new Date(d.getTime()+86400000);
-    if(d.getUTCDay()!==0 && d.getUTCDay()!==6) future.push(d.toISOString().slice(0,10));
-  }
+  let cur=labels[n-1];
+  while(future.length<AHEAD){ cur=nextLabel(cur, tf); future.push(cur); }
   labels.push(...future);
 
   const ds=[
@@ -731,9 +778,9 @@ function candleChart(canvas, ohlc, {unit='', span=null}={}){
     }
   }
   const closes=ohlc.map(r=>r[4]);
-  for(const [w,c] of MA) if(closes.length>w)
-    ds.push({type:'line', label:w+'일', data:ma(closes,w), borderColor:c,
-             borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0});
+  (MA_TF[tf]||MA_TF.d).forEach(([w,name],i)=>{ if(closes.length>w)
+    ds.push({type:'line', label:name, data:ma(closes,w), borderColor:MA[i][1],
+             borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0}); });
   // 2년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
   // 잡힌다 — 네이버 차트와 같은 조작감.
@@ -906,7 +953,7 @@ D.summary.forEach((s,i)=>{
   // 지수·환율은 ohlc 가 있어 캔들 + 일목균형표로 열리고, 금리는 라인으로 열린다
   if(s.series.length||s.ohlc.length) el.onclick=()=>openDlg(s.label,
     `${fmt(s.value)}${s.unit} (${sgn(s.chg)}${s.chg_unit})`, null, s.series,
-    s.unit, '', s.ohlc);
+    s.unit, '', s.ohlc, null, s.ohlc_m);
   cards.appendChild(el);
 });
 
@@ -1022,7 +1069,10 @@ D.sectors.forEach(s=>{
   // 주도주가 시총 순위 뒤에 붙은 것처럼 읽히므로 구분선으로 갈라 놓는다.
   const grp=t=>`<tr class="grp"><td colspan="5">${t}</td></tr>`;
   let opened=false;
-  const rows=s.holdings.map((h,i)=>{
+  // 스크리닝(추세·반등)은 관심종목 카드에서만 보여준다. 섹터 표에도 넣으면
+  // 같은 종목이 한 페이지에 두 번 나오고, 시총 상위 표가 길어져 읽기 어렵다.
+  // 데이터 자체는 s.holdings 에 남는다 — 관심종목 카드가 여기서 찾아 쓴다.
+  const rows=s.holdings.filter(h=>h.pick!=='trend'&&h.pick!=='rebound').map((h,i)=>{
     let head=i===0?grp('시가총액 상위'):'';
     if(h.pick&&!opened){opened=true; head=grp('주도주 · 최근 3개월 상승률 상위');}
     const note=h.note?`<tr class="note-row"><td colspan="5">↳ ${h.note}
@@ -1059,7 +1109,7 @@ D.sectors.forEach(s=>{
                 capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`,
       `${sgn(h.chg_pct)}%  ·  ${meta}`, h.returns, null,
-      '', h.note?`↳ ${h.note}`:'', h.ohlc, h);
+      '', h.note?`↳ ${h.note}`:'', h.ohlc, h, h.ohlc_m);
   });
 });
 
@@ -1075,7 +1125,8 @@ D.sectors.forEach(s=>{
     }
     return null;
   };
-  const found = W.map(w => ({...find(w.ticker), sector: w.sector})).filter(x => x.h);
+  const found = W.map(w => ({...find(w.ticker), sector: w.sector, kind: w.kind}))
+                 .filter(x => x.h);
   if(!found.length) return;
   document.getElementById('watch-h').hidden = false;
   const div = document.createElement('div');
@@ -1083,11 +1134,24 @@ D.sectors.forEach(s=>{
   const px = h => h.price == null ? '–'
       : (D.currency === '₩' ? Math.round(h.price).toLocaleString() + '원'
                             : '$' + fmt(h.price));
+  const GRP = {watch:'늘 보는 종목 · 손으로 지정',
+               trend:'추세 상승 · 오늘 스크리닝',
+               rebound:'바닥 반등 · 오늘 스크리닝'};
+  const TIP = {
+    trend:'종가가 50일선·200일선 위(정배열)이고 3개월 +20% 이상, 최근 한 달도 안 꺾인 종목',
+    rebound:'1년 등락률이 마이너스라 아직 200일선 아래인데, 50일선을 되찾고 그 50일선이 상승 전환했으며 최근 거래량까지 늘어난 종목'};
   div.innerHTML = `<div class="tablewrap"><table>
       <thead><tr><th>종목</th><th>섹터</th><th>등락</th><th>주가</th><th>시총</th>
       <th>기간수익률</th></tr></thead><tbody>${
-      found.map(({h, sector}) => `<tr class="stk" data-t="${h.ticker}">
-        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span></td>
+      found.map(({h, sector, kind}, i) => {
+        // 셋은 고른 기준이 아예 다르다. 구분선 없이 붙여 놓으면 고정 목록에
+        // 오늘 뽑힌 종목이 슬쩍 섞인 것처럼 읽힌다.
+        const head = (i===0 || found[i-1].kind!==kind)
+          ? `<tr class="grp"><td colspan="6">${GRP[kind]||''}</td></tr>` : '';
+        return head+`<tr class="stk${kind!=='watch'?' extra':''}" data-t="${h.ticker}">
+        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
+          kind!=='watch'?`<span class="badge" title="${TIP[kind]}">${
+            kind==='trend'?'추세':'반등'}</span>`:''}</td>
         <td style="color:var(--sub);font-size:12px">${sector}</td>
         <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
         <td>${px(h)}</td>
@@ -1095,7 +1159,8 @@ D.sectors.forEach(s=>{
         <td style="color:var(--sub);font-size:12px">${spans(h.returns)}</td></tr>`
         + (h.note ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
             h.note_url ? ` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>` : ''
-          }</td></tr>` : '')).join('')}</tbody></table></div>`;
+          }</td></tr>` : '');
+      }).join('')}</tbody></table></div>`;
   document.getElementById('watchwrap').appendChild(div);
   div.querySelectorAll('tr.stk').forEach(tr => tr.onclick = () => {
     const f = found.find(x => x.h.ticker === tr.dataset.t);
@@ -1104,7 +1169,7 @@ D.sectors.forEach(s=>{
     const meta = [h.price != null ? px(h) : null,
                   capF(h.market_cap, D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`, `${sgn(h.chg_pct)}%  ·  ${meta}`,
-            h.returns, null, '', h.note ? `↳ ${h.note}` : '', h.ohlc, h);
+            h.returns, null, '', h.note ? `↳ ${h.note}` : '', h.ohlc, h, h.ohlc_m);
   });
 })();
 
@@ -1148,7 +1213,7 @@ function aboutHtml(h){
   return out;
 }
 
-function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=null){
+function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=null, ohlcM=null){
   document.getElementById('dlg-title').textContent=title;
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
   document.getElementById('dlg-about').innerHTML=about?aboutHtml(about):'';
@@ -1163,40 +1228,39 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
   if(dlgVol){dlgVol.destroy();dlgVol=null;}
   volBox.hidden = true;
   segs.innerHTML='';
-  if(ohlc&&ohlc.length){         // 개별 종목: 일봉 캔들 + 기간 프리셋 + 줌
-    // 차트는 한 번만 만들고(1년 전체), 프리셋은 x 축 범위만 바꾼다.
-    // 다시 그리면 줌 상태가 초기화돼 조작감이 끊긴다.
-    const setSpan=days=>{
-      const n=ohlc.length, total=dlgChart.data.labels.length;
-      const span = days || n;
-      // 구름대는 26봉 앞으로 밀려 있어 미래 칸이 필요하다. 그렇다고 26칸을
-      // 통째로 붙이면 1M(21봉)에서 오른쪽 절반이 텅 비어 봉이 왼쪽에
-      // 몰린다. 보이는 구간의 1/4 까지만 앞을 보여준다.
-      const ahead = Math.min(total - n, Math.max(4, Math.round(span * 0.25)));
-      dlgChart.options.scales.x.min = days ? Math.max(0, n-days) : 0;
-      dlgChart.options.scales.x.max = Math.min(total-1, n-1+ahead);
-      dlgChart.update('none');
-      syncVol();
+  if(ohlc&&ohlc.length){         // 개별 종목: 캔들 + 봉 단위 전환 + 줌
+    // 일봉은 실려 온 2년치 그대로, 주봉은 그걸 브라우저에서 묶어 만든다.
+    // 월봉만 따로 실려 온다(10년치) — 2년을 묶으면 24봉뿐이라 일목균형표가
+    // 아예 안 나온다. 월봉이 안 왔으면 일봉을 묶어 쓴다(짧아도 없는 것보다 낫다).
+    const bars={d:ohlc, w:aggBars(ohlc,'w'),
+                m:(ohlcM&&ohlcM.length)?ohlcM:aggBars(ohlc,'m')};
+    // 기본 표시 구간(봉 수). 일봉은 최근 6개월만 보여야 봉이 뭉개지지 않고,
+    // 주봉·월봉은 전체를 보는 것이 그 단위를 쓰는 이유다.
+    const SPAN={d:126, w:0, m:0};
+    const draw=tf=>{
+      if(dlgChart){dlgChart.destroy();dlgChart=null;}
+      if(dlgVol){dlgVol.destroy();dlgVol=null;}
+      const rows=bars[tf]||[];
+      dlgChart=candleChart(cv, rows, {unit, span:SPAN[tf]||null, tf});
+      // 거래량은 아래에 별도 차트로. 라벨·x범위를 캔들과 공유해 세로로 맞춘다.
+      dlgVol = dlgChart ? volChart(volCv, rows, dlgChart.data.labels,
+                                   dlgChart.options.scales.x.min,
+                                   dlgChart.options.scales.x.max) : null;
+      volBox.hidden = !dlgVol;
       segs.querySelectorAll('button').forEach(b=>
-        b.classList.toggle('on', +b.dataset.d===days));
+        b.classList.toggle('on', b.dataset.tf===tf));
     };
-    dlgChart=candleChart(cv, ohlc, {unit, span:63});   // 기본 3개월 구간
-    // 거래량은 아래에 별도 차트로. 라벨·x범위를 캔들과 공유해 세로로 맞춘다.
-    dlgVol = dlgChart ? volChart(volCv, ohlc, dlgChart.data.labels,
-                                 dlgChart.options.scales.x.min,
-                                 dlgChart.options.scales.x.max) : null;
-    volBox.hidden = !dlgVol;
-    // 봉 수 기준(전부 일봉이라 21≈1개월, 252≈1년). 0 은 전체(2년).
-    [[21,'1M'],[63,'3M'],[126,'6M'],[252,'1Y'],[0,'2Y']].forEach(([d,label])=>{
+    ['d','w','m'].forEach(tf=>{
+      if(!(bars[tf]||[]).length) return;
       const b=document.createElement('button');
-      b.textContent=label; b.dataset.d=d; b.onclick=()=>setSpan(d);
-      if(d===63) b.classList.add('on');
+      b.textContent=TF_NAME[tf]; b.dataset.tf=tf; b.onclick=()=>draw(tf);
       segs.appendChild(b);
     });
     const hint=document.createElement('span');
     hint.style.cssText='margin-left:8px;color:var(--muted);font-size:11.5px';
     hint.textContent='휠: 확대·축소 · 드래그: 이동';
     segs.appendChild(hint);
+    draw('d');                                 // 버튼을 만든 뒤에 그려야 표시가 붙는다
   } else if(series&&series.length){ // 지수·금리·환율: 2년 라인 + 이동평균
     dlgChart=lineChart(cv, series, {unit});
   }
