@@ -29,9 +29,9 @@ TIMEOUT = 25
 INDICES = [("^DJI", "Dow"), ("^GSPC", "S&P500"), ("^IXIC", "Nasdaq")]
 
 SECTORS = [
-    ("XLK", "기술"), ("XLC", "커뮤니케이션"), ("XLY", "경기소비재"),
-    ("XLP", "필수소비재"), ("XLE", "에너지"), ("XLF", "금융"),
-    ("XLV", "헬스케어"), ("XLI", "산업재"), ("XLB", "소재"),
+    ("XLK", "기술"), ("IGV", "소프트웨어"), ("XLC", "커뮤니케이션"),
+    ("XLY", "경기소비재"), ("XLP", "필수소비재"), ("XLE", "에너지"),
+    ("XLF", "금융"), ("XLV", "헬스케어"), ("XLI", "산업재"), ("XLB", "소재"),
     ("XLRE", "부동산"), ("XLU", "유틸리티"), ("NLR", "원자력"),
 ]
 
@@ -41,7 +41,38 @@ SECTORS = [
 # 별도 섹터로 세우되, SPDR 이 아니라서 SSGA 구성종목 파일이 없다. 지수·차트는
 # NLR(VanEck 원자력 ETF)로 그리고 구성종목은 아래 목록으로 직접 관리한다.
 # 순위는 다른 섹터와 똑같이 스크리너 시가총액으로 매긴다.
+#
+# 소프트웨어도 GICS 상으로는 기술(XLK) 안에 있는데, XLK 시총 상위는 반도체와
+# 하드웨어가 차지한다(엔비디아·애플·브로드컴·AMD·시스코…). 그 결과 소프트웨어
+# 대장주가 표에서 밀려, 세일즈포스·서비스나우·어도비·인튜이트를 관심종목에
+# 손으로 끼워 넣어야 했다. 별도 섹터로 세워 그 우회를 없앤다.
+# 지수·차트는 IGV(iShares 소프트웨어 ETF)로 그린다 — SPDR 이 아니라 SSGA
+# 구성종목 파일이 없으므로 목록은 아래에서 직접 관리한다.
 CURATED = {
+    "IGV": {
+        "MSFT": "Microsoft",             # 윈도우·오피스·애저
+        "ORCL": "Oracle",                # 데이터베이스·클라우드
+        "SAP": "SAP",                    # 전사 자원관리(ERP)
+        "CRM": "Salesforce",             # 고객관계관리(CRM)
+        "NOW": "ServiceNow",             # 업무 자동화
+        "INTU": "Intuit",                # 세무·회계
+        "ADBE": "Adobe",                 # 크리에이티브·문서
+        "PANW": "Palo Alto Networks",    # 보안
+        "CRWD": "CrowdStrike",           # 엔드포인트 보안
+        "SNPS": "Synopsys",              # 반도체 설계 소프트웨어(EDA)
+        "CDNS": "Cadence Design",        # 반도체 설계 소프트웨어(EDA)
+        "ADSK": "Autodesk",              # 설계·엔지니어링
+        "WDAY": "Workday",               # 인사·재무
+        "TEAM": "Atlassian",             # 개발 협업
+        "DDOG": "Datadog",               # 관측·모니터링
+        "SNOW": "Snowflake",             # 데이터 웨어하우스
+        "MDB": "MongoDB",                # 데이터베이스
+        "ZS": "Zscaler",                 # 보안(SASE)
+        "NET": "Cloudflare",             # 엣지·보안
+        "HUBS": "HubSpot",               # 마케팅·영업
+        "FTNT": "Fortinet",              # 네트워크 보안
+        "ANSS": "Ansys",                 # 시뮬레이션
+    },
     "NLR": {
         "CEG": "Constellation Energy",   # 미국 최대 원전 운영사
         "VST": "Vistra",                 # 원전·가스 발전
@@ -58,6 +89,14 @@ CURATED = {
     },
 }
 CURATED_SECTOR = {t: sym for sym, ts in CURATED.items() for t in ts}
+
+# 옮겨 온 종목을 원래 섹터 표에서 뺄지. 소프트웨어는 빼야 한다 — 마이크로소프트·
+# 오라클은 XLK 시총 상위라, 안 빼면 같은 종목이 기술과 소프트웨어 두 카드에
+# 나란히 나온다. 원자력은 뺀 적이 없다: 컨스텔레이션·비스트라는 유틸리티
+# 대장주이기도 해서 유틸리티 표에서 사라지면 그 표가 이상해진다.
+CURATED_EXCLUSIVE = {"IGV"}
+EXCLUDE_FROM_OTHERS = {t for t, sym in CURATED_SECTOR.items()
+                       if sym in CURATED_EXCLUSIVE}
 
 
 def _get(url: str, **kw) -> requests.Response:
@@ -165,7 +204,7 @@ def fetch_indices():
 def fetch_sectors():
     """섹터별 일간 등락률 + 2개년 시계열(상대성과 차트용)."""
     out = []
-    with ThreadPoolExecutor(max_workers=11) as ex:
+    with ThreadPoolExecutor(max_workers=len(SECTORS)) as ex:
         futs = {ex.submit(yahoo_ohlc, sym): (sym, name) for sym, name in SECTORS}
         for f, (sym, name) in futs.items():
             o = f.result()
@@ -415,11 +454,16 @@ def fetch_sector_holdings(sector_symbols, caps=None):
     etfs = [s for s in sector_symbols if s not in CURATED]
     with ThreadPoolExecutor(max_workers=6) as ex:
         holdings = dict(zip(etfs, ex.map(lambda e: _top_holdings(e, n=999), etfs)))
-    # 큐레이션 섹터(원자력)는 보유목록 공시가 없어 목록을 직접 넣는다
+    # 큐레이션 섹터(소프트웨어·원자력)는 보유목록 공시가 없어 목록을 직접 넣는다
     for sym in sector_symbols:
         if sym in CURATED:
             holdings[sym] = [{"ticker": t, "name": n}
                              for t, n in CURATED[sym].items()]
+    # 전용 섹터로 옮긴 종목은 원래 섹터 표에서 뺀다(위 CURATED_EXCLUSIVE 참고)
+    for sym, hs in holdings.items():
+        if sym not in CURATED_EXCLUSIVE:
+            holdings[sym] = [h for h in hs
+                             if h["ticker"] not in EXCLUDE_FROM_OTHERS]
 
     caps = dict(caps or {})
     tickers = sorted({h["ticker"] for hs in holdings.values() for h in hs})
@@ -555,14 +599,11 @@ WATCHLIST = {
     "COHR": "XLK",      # 코히어런트
     "CIEN": "XLK",      # 시에나
     "VRT": "XLI",       # 버티브 — 데이터센터 전력·냉각. GICS 산업재
-    # 소프트웨어
-    "CRM": "XLK",       # 세일즈포스
-    "NOW": "XLK",       # 서비스나우
-    "ADBE": "XLK",      # 어도비
-    "INTU": "XLK",      # 인튜이트
-    "PANW": "XLK",      # 팔로알토
-    "CRWD": "XLK",      # 크라우드스트라이크
-    # IT 서비스
+    # 소프트웨어는 여기서 뺐다 — 세일즈포스·서비스나우·어도비·인튜이트·
+    # 팔로알토·크라우드스트라이크는 소프트웨어 섹터(IGV)를 새로 세우면서
+    # 그 표의 시총 상위로 제자리를 찾았다. 관심종목에 손으로 끼워 넣던
+    # 우회가 필요 없어졌다.
+    # IT 서비스 — 소프트웨어가 아니라 기술에 남는다
     "IBM": "XLK", "ACN": "XLK",
     # 플랫폼
     "ABNB": "XLY",      # 에어비앤비
