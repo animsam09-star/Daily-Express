@@ -981,6 +981,35 @@ def sort_sectors_by_cap(sectors, holdings):
     return sectors
 
 
+# 유가. 야후 선물 티커를 그대로 쓴다 — 지수·환율과 같은 경로라 캔들·월봉·
+# 시간별 시세 갱신까지 공짜로 따라온다.
+# 중동산(두바이유)은 야후에 없다. 브렌트(북해)·WTI(미국)와 달리 두바이·오만은
+# 장외 현물이라 무료 시세가 안 나온다 — 한국석유공사 페트로넷 같은 별도
+# 소스가 필요하고, 그건 API 키가 있어야 한다.
+OIL = [("CL=F", "WTI"), ("BZ=F", "브렌트유")]
+
+
+def fetch_oil():
+    """{이름: {series, ohlc, ohlc_m, last, chg_pct}}. 한 종목이 실패해도 나머지는 나간다."""
+    out = {}
+    with ThreadPoolExecutor(max_workers=len(OIL)) as ex:
+        futs = {ex.submit(yahoo_candles, sym): (sym, name) for sym, name in OIL}
+        for f, (sym, name) in futs.items():
+            try:
+                o = f.result()
+            except Exception as e:                 # noqa: BLE001
+                print(f"[oil] {name} 실패: {type(e).__name__}")
+                continue
+            if not o:
+                continue
+            s = [(r[0], r[4]) for r in o]
+            out[name] = {"symbol": sym, "series": s, "ohlc": o,
+                         "ohlc_m": monthly_candles(sym),
+                         "last": s[-1][1], "chg_pct": pct_change(s),
+                         "returns": {k: _return_at(s, d) for k, d in RETURN_WINDOWS}}
+    return out
+
+
 def fetch_fx():
     o = yahoo_candles("KRW=X")
     s = [(r[0], r[4]) for r in o]
@@ -1160,6 +1189,7 @@ def collect_all():
     data.pop("company_info", None)
 
     run("fx", fetch_fx)
+    run("oil", fetch_oil)
     run("kr_proxy", fetch_kr_proxy)
     run("ust_now", fetch_treasury_now)
     run("ust_hist", fetch_treasury_history)
