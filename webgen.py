@@ -177,6 +177,14 @@ def build_us(data, path):
                                      round(fx.get("chg", 0), 1), "원", "원",
                                      fx.get("series"), ohlc=fx.get("ohlc"), ohlc_m=fx.get("ohlc_m"),
                                      sym="KRW=X"))
+    # 유가는 달러 소수 2자리. 지수와 같은 캔들·월봉 경로를 그대로 탄다.
+    for name, d in (data.get("oil") or {}).items():
+        if d.get("last") is None:
+            continue
+        summary.append(_summary_item(name, round(d["last"], 2),
+                                     round(d["chg_pct"], 2), "달러", "%",
+                                     d.get("series"), ohlc=d.get("ohlc"),
+                                     ohlc_m=d.get("ohlc_m"), sym=d.get("symbol", "")))
     corp, spread = dom.get("corp_aa3y") or {}, dom.get("spread") or {}
     if corp.get("last") is not None:
         summary.append(_summary_item("회사채 AA- 3년", round(corp["last"], 2),

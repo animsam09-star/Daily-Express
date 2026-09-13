@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -420,6 +421,86 @@ def collect(holdings: dict) -> list[dict]:
     return [s for s in stocks if s["headlines"]]
 
 
+# 구글 뉴스 RSS 의 <link> 는 기사 주소가 아니라 경유 주소다
+# (news.google.com/rss/articles/CBMi...). 예전에는 열면 원문으로 넘어갔지만
+# 지금은 자바스크립트 없이는 넘어가지 않아, 눌러도 구글 뉴스 페이지에서
+# 멈춘다. 게다가 그 경유 주소를 TinyURL 로 한 번 더 감싸므로 사용자는
+# tinyurl → 구글 → 막다른 길을 보게 된다.
+#
+# 구글이 그 페이지에서 쓰는 내부 엔드포인트(batchexecute)로 원문 주소를
+# 받아온다. 기사 페이지에 서명(data-n-a-sg)과 시각(data-n-a-ts)이 박혀 있고,
+# 그 둘을 실어 보내면 원문 URL 이 돌아온다. 같은 계정의 news-briefing
+# 저장소에서 쓰고 있는 방식 그대로다.
+GNEWS_HOST = "news.google.com/rss/articles/"
+GNEWS_BATCH = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+
+
+def decode_gnews_url(url: str) -> str:
+    """구글 뉴스 경유 주소 -> 원문 주소. 실패하면 빈 문자열.
+
+    경유 주소가 아니면(핀허브·야후 링크) 그대로 통과시킨다 — 그쪽은 이미
+    원문 주소다.
+    """
+    if not url or GNEWS_HOST not in url:
+        return url
+    m = re.search(r"articles/([^?/]+)", url)
+    if not m:
+        return ""
+    art_id = m.group(1)
+    try:
+        page = _get(f"https://news.google.com/rss/articles/{art_id}").text
+        sg = re.search(r'data-n-a-sg="([^"]+)"', page)
+        ts = re.search(r'data-n-a-ts="([^"]+)"', page)
+        if not (sg and ts):
+            return ""
+        payload = [
+            "Fbv4je",
+            f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,'
+            f'null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,'
+            f'null,0],"{art_id}",{ts.group(1)},"{sg.group(1)}"]',
+        ]
+        r = requests.post(
+            GNEWS_BATCH,
+            data={"f.req": json.dumps([[payload]])},
+            headers={**UA, "Content-Type":
+                     "application/x-www-form-urlencoded;charset=UTF-8"},
+            verify=VERIFY, timeout=TIMEOUT)
+        r.raise_for_status()
+        for line in r.text.splitlines():
+            if "garturlres" in line:
+                try:
+                    return json.loads(json.loads(line)[0][2])[1]
+                except Exception:              # noqa: BLE001, PERF203
+                    continue
+    except Exception:                          # noqa: BLE001
+        pass
+    return ""
+
+
+# 디코딩 성공률. 구글이 페이지 구조나 엔드포인트를 바꾸면 조용히 전부
+# 실패하는데, 링크가 예전처럼 경유 주소로 돌아갈 뿐이라 겉으로는 티가 안
+# 난다. 실행 끝 진단 줄에 찍어 두면 다음 실행 로그만 보고 알 수 있다.
+GNEWS_DECODED = [0, 0]          # [성공, 시도]
+
+
+def article_url(url: str) -> str:
+    """기사 링크 하나를 사용자에게 보여줄 형태로 만든다.
+
+    경유 주소면 원문으로 푼 뒤 축약한다. 못 풀면 경유 주소를 그대로 쓴다 —
+    구글이 방식을 바꿔 디코딩이 통째로 실패해도 링크가 사라지지는 않아야
+    한다(고쳐지기 전과 같은 상태로 남을 뿐이다).
+    """
+    if not url:
+        return ""
+    if GNEWS_HOST in url:
+        GNEWS_DECODED[1] += 1
+        real = decode_gnews_url(url)
+        if real:
+            GNEWS_DECODED[0] += 1
+        url = real or url
+    return shorten(url)
+
+
 def shorten(url: str) -> str:
     """TinyURL 축약. 실패하면 원본을 그대로 쓴다."""
     if not url:
@@ -730,12 +811,18 @@ def build(holdings: dict, sectors: list[dict] | None = None,
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         short = dict(zip([t for t, _ in targets],
-                         ex.map(shorten, [u for _, u in targets])))
+                         ex.map(article_url, [u for _, u in targets])))
 
     kept = {tk: v for tk, v in summaries.items()
             if v.get("importance", 0) >= MIN_IMPORTANCE}
+    ok, tried = GNEWS_DECODED
     print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
           f"/ 링크 {len(short)}건 / 섹터 코멘트 {len(sector_notes)}건")
+    if tried:
+        _status(f"구글 뉴스 링크 디코딩 {ok}/{tried}")
+        if not ok:
+            print("[news] 구글 뉴스 경유 링크를 하나도 못 풀었다 — "
+                  "구글이 방식을 바꿨는지 확인 필요", file=sys.stderr)
     notes = {tk: {"note": v["note"], "url": short.get(tk, ""),
                   "importance": v.get("importance", 0)}
              for tk, v in kept.items()}
@@ -827,11 +914,17 @@ def build_kr(holdings: dict, sectors: list[dict] | None = None,
             targets.append((tk, s["headlines"][src]["url"]))
     with ThreadPoolExecutor(max_workers=8) as ex:
         short = dict(zip([t for t, _ in targets],
-                         ex.map(shorten, [u for _, u in targets])))
+                         ex.map(article_url, [u for _, u in targets])))
     kept = {tk: v for tk, v in summaries.items()
             if v.get("importance", 0) >= MIN_IMPORTANCE}
     print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
           f"/ 링크 {len(short)}건 / 테마 코멘트 {len(sector_notes)}건")
+    ok, tried = GNEWS_DECODED
+    if tried:
+        _status(f"구글 뉴스 링크 디코딩 {ok}/{tried}")
+        if not ok:
+            print("[news] 구글 뉴스 경유 링크를 하나도 못 풀었다 — "
+                  "구글이 방식을 바꿨는지 확인 필요", file=sys.stderr)
     return ({tk: {"note": v["note"], "url": short.get(tk, ""),
                   "importance": v.get("importance", 0)}
              for tk, v in kept.items()}, sector_notes)

@@ -46,6 +46,12 @@ def build_message(data) -> str:
     if fx:
         lines.append(f"□ 원/달러 환율 {fx['last']:,.1f}원({fx['chg']:+.1f}원)")
 
+    oil = data.get("oil") or {}
+    if oil:
+        lines.append("□ 유가: " + ", ".join(
+            f"{n} ${d['last']:,.2f}({d['chg_pct']:+.1f}%)"
+            for n, d in oil.items() if d.get("last") is not None))
+
     dom = data.get("domestic") or {}
     corp, spread = dom.get("corp_aa3y"), dom.get("spread")
     if corp and corp.get("last") is not None:
