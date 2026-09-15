@@ -44,6 +44,8 @@ def get_pools():
         except Exception as e:              # noqa: BLE001
             print(f"[kr] 테마 구성 실패, 최소 구성으로 진행: {type(e).__name__}: {e}")
             _POOLS = {"반도체": list(kr_universe.SEMI_LARGE)}
+        n = sum(len(v) for v in _POOLS.values())
+        print(f"[kr] 테마 {len(_POOLS)}개 / 종목 {n}개로 브리핑을 만든다")
     return _POOLS
 
 TOP_N = 5           # 텔레그램 캡션용(웹은 WEB_TOP_N 개까지 보여준다)
@@ -269,7 +271,11 @@ def _row(code, quotes, info, rets, pick=None):
         return None
     r = rets.get(_ys(code)) or {}
     i = info.get(code) or {}
-    row = {"ticker": code, "name": i.get("name") or code,
+    # 네이버가 막히면 개별 종목 페이지도 같이 죽어 사명이 통째로 빈다.
+    # 그때는 유니버스 캐시에 남아 있는 사명을 쓴다 — 표에 종목코드만
+    # 늘어서는 것보다 낫다.
+    row = {"ticker": code,
+           "name": i.get("name") or kr_universe.NAMES.get(code) or code,
            "price": q.get("price"), "market_cap": q.get("market_cap"),
            "chg_pct": q.get("chg_pct"),
            "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),

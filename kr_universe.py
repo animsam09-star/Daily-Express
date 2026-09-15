@@ -13,6 +13,9 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -156,8 +159,31 @@ def _dec(r):
     return ""
 
 
+# 네이버 요청 성패. 실패해도 정규식이 빈 결과를 낼 뿐이라 예외가 안 난다 —
+# 세어 두지 않으면 '수집 실패'와 '그날 종목이 없음'을 구별할 수 없다.
+FETCH = [0, 0]                  # [실패, 시도]
+FETCH_LOG_MAX = 5               # 통째로 막히면 90건이 줄줄이 찍힌다 — 앞만 남긴다
+
+
+def _fail(msg):
+    FETCH[0] += 1
+    if FETCH[0] <= FETCH_LOG_MAX:
+        print(f"[kr유니버스] {msg}")
+    elif FETCH[0] == FETCH_LOG_MAX + 1:
+        print("[kr유니버스] ... 이하 생략, 합계는 아래 요약에")
+
+
 def _get(url):
-    return _dec(requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT))
+    FETCH[1] += 1
+    try:
+        r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT)
+    except Exception as e:                     # noqa: BLE001
+        _fail(f"요청 실패({type(e).__name__}) {url[:70]}")
+        return ""
+    if r.status_code != 200:
+        _fail(f"HTTP {r.status_code} {url[:70]}")
+        return ""
+    return _dec(r)
 
 
 ITEM_RE = re.compile(r'code=(\d{6})">([^<]+)</a>')
@@ -167,6 +193,9 @@ def upjong_members() -> dict[str, list[str]]:
     """{업종명: [종목코드]}. 전 종목을 훑으며 사명(NAMES)도 함께 채운다."""
     ups = re.findall(r'no=(\d+)">([^<]+)</a>', _get(GROUP_URL))
     wanted = [(no, name) for no, name in ups if name in UPJONG_THEME]
+    if not wanted:
+        print(f"[kr유니버스] 업종 목록 0건 — 네이버 업종 페이지를 못 읽었다"
+              f"(전체 {len(ups)}개 파싱)")
 
     def one(no):
         # 같은 종목 링크가 행마다 두 번 나와 중복이 생긴다
@@ -210,7 +239,7 @@ def etf_members(etf_code: str) -> list[tuple[str, float]]:
     return out
 
 
-def build_pools() -> dict[str, list[str]]:
+def _scrape_pools() -> dict[str, list[str]]:
     """테마 -> 종목코드 목록. 시가총액 필터는 호출한 쪽에서 적용한다."""
     pools: dict[str, list[str]] = {}
 
@@ -297,3 +326,72 @@ def build_pools() -> dict[str, list[str]]:
 
     return {t: [c for c in dict.fromkeys(cs) if keep(t, c)]
             for t, cs in pools.items() if cs}
+
+
+# ------------------------------------------------------------------ 캐시
+# 네이버가 막히면 긁어오는 쪽이 통째로 0건이 되고, 남는 건 이 파일에 손으로
+# 박아 둔 SEMI_LARGE·PINNED_THEME 9종목뿐이다. 실측(2026-09-14): 테마 6개
+# 종목 9개짜리 브리핑이 아무 경고 없이 발송됐다. 마지막으로 성공한 구성을
+# 남겨 두고, 수집이 무너지면 그걸 쓴다 — 어제 목록이 9종목보다 훨씬 낫다.
+POOLS_CACHE = os.environ.get("KR_POOLS_CACHE", "data/kr_pools.json")
+
+# 이보다 적으면 수집이 깨진 것으로 본다. 정상 수집은 300종목을 넘고,
+# 고정 목록만 남은 붕괴 상태는 9종목이다 — 사이가 넓어 오판할 일이 없다.
+POOLS_MIN = 60
+
+
+def _load_cache() -> dict:
+    try:
+        with open(POOLS_CACHE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return d if isinstance(d, dict) and d.get("pools") else {}
+
+
+def _save_cache(pools: dict[str, list[str]]) -> None:
+    """구성종목만이 아니라 사명·ETF 비중까지 남긴다.
+
+    셋 다 같은 스크래핑에서 나온다. 종목 목록만 저장하면 캐시로 되살렸을 때
+    이름이 종목코드로 나오고(NAMES 가 빈다) ETF 테마의 순서가 무너진다
+    (ETF_WEIGHTS 가 비어 비중이 전부 0 이 된다).
+    """
+    try:
+        os.makedirs(os.path.dirname(POOLS_CACHE) or ".", exist_ok=True)
+        with open(POOLS_CACHE, "w", encoding="utf-8") as f:
+            json.dump({"saved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                       "pools": pools, "names": NAMES, "weights": ETF_WEIGHTS},
+                      f, ensure_ascii=False)
+    except OSError as e:
+        print(f"[kr유니버스] 캐시 저장 실패: {type(e).__name__}: {e}")
+
+
+def build_pools() -> dict[str, list[str]]:
+    """테마 -> 종목코드 목록. 수집이 무너지면 마지막 성공분으로 대체한다."""
+    try:
+        pools = _scrape_pools()
+    except Exception as e:                     # noqa: BLE001
+        print(f"[kr유니버스] 수집 중 예외: {type(e).__name__}: {e}")
+        pools = {}
+    n = sum(len(v) for v in pools.values())
+    print(f"[kr유니버스] 테마 {len(pools)}개 / 종목 {n}개 "
+          f"(네이버 요청 실패 {FETCH[0]}/{FETCH[1]})")
+
+    if n >= POOLS_MIN:
+        _save_cache(pools)
+        return pools
+
+    cached = _load_cache()
+    if cached:
+        cp = {t: list(cs) for t, cs in cached["pools"].items()}
+        NAMES.update(cached.get("names") or {})
+        for theme, w in (cached.get("weights") or {}).items():
+            ETF_WEIGHTS.setdefault(theme, {}).update(w)
+        cn = sum(len(v) for v in cp.values())
+        print(f"::warning::[kr유니버스] 수집이 무너졌다({n}종목) — "
+              f"{cached.get('saved_at', '?')} 캐시로 대체({cn}종목)")
+        return cp
+
+    print(f"::warning::[kr유니버스] 수집이 무너졌고({n}종목) 캐시도 없다 — "
+          f"고정 목록만으로 진행한다")
+    return pools
