@@ -21,23 +21,45 @@ SNIP = 600
 TIMEOUT = 15
 
 # (이름, URL, 헤더). 순서는 기대치 높은 것부터.
+#
+# 1차 탐색 결과(2026-09-17): /api/stocks/industry 가 200 JSON 이고 업종명이
+# 기존 UPJONG_THEME 키와 그대로 일치했다({"no":284,"name":"우주항공과국방"}).
+# /basic, /integration 도 200. 남은 건 업종 상세와 ETF 구성종목 경로다.
+# 2차는 그 둘을 no(=284, 우주항공과국방 34종목)로 찔러본다.
+IND_NO = 284
+ETF = "445290"          # TIGER 로봇
+CODE = "005930"         # 삼성전자
+
 CANDIDATES = [
-    # --- 네이버 새 JSON API 후보 ---
-    ("네이버 업종 목록",
-     "https://m.stock.naver.com/api/stocks/industry", NAVER),
-    ("네이버 업종 상세(반도체 예시)",
-     "https://m.stock.naver.com/api/stocks/industry/G2510?page=1&pageSize=60", NAVER),
-    ("네이버 종목 기본정보(삼성전자)",
-     "https://m.stock.naver.com/api/stock/005930/basic", NAVER),
-    ("네이버 종목 통합(삼성전자)",
-     "https://m.stock.naver.com/api/stock/005930/integration", NAVER),
-    ("네이버 ETF 구성종목(TIGER 로봇)",
-     "https://m.stock.naver.com/api/stock/445290/etfComponent", NAVER),
-    ("네이버 api.stock 업종",
-     "https://api.stock.naver.com/industry", NAVER),
-    # --- KRX 공식 ---
-    ("KRX 전종목 시세(MDCSTAT01501)",
-     "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd", None),
+    # --- 업종 목록 페이지네이션(79개 업종을 다 받을 수 있는지) ---
+    ("업종 목록 pageSize=100",
+     "https://m.stock.naver.com/api/stocks/industry?page=1&pageSize=100", NAVER),
+
+    # --- 업종 상세: 그 업종의 구성종목 ---
+    ("업종 상세 /industry/{no}",
+     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}", NAVER),
+    ("업종 상세 /industry/{no}/stocks",
+     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}/stocks?page=1&pageSize=60", NAVER),
+    ("업종 상세 ?no=",
+     f"https://m.stock.naver.com/api/stocks/industry?no={IND_NO}&page=1&pageSize=60", NAVER),
+    ("업종 상세 /industry/{no}?page",
+     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}?page=1&pageSize=60", NAVER),
+
+    # --- ETF 구성종목 ---
+    ("ETF /etfComponents",
+     f"https://m.stock.naver.com/api/stock/{ETF}/etfComponents", NAVER),
+    ("ETF /etf/component",
+     f"https://m.stock.naver.com/api/stock/{ETF}/etf/component", NAVER),
+    ("ETF /api/etf/{code}/component",
+     f"https://m.stock.naver.com/api/etf/{ETF}/component", NAVER),
+    ("ETF /etfAnalysis",
+     f"https://m.stock.naver.com/api/stock/{ETF}/etfAnalysis", NAVER),
+
+    # --- 분기 실적(지금 0/9 로 죽어 있다) ---
+    ("실적 /finance/quarter",
+     f"https://m.stock.naver.com/api/stock/{CODE}/finance/quarter", NAVER),
+    ("실적 /finance/annual",
+     f"https://m.stock.naver.com/api/stock/{CODE}/finance/annual", NAVER),
 ]
 
 KRX_FORM = {
@@ -80,12 +102,11 @@ for name, url, hdr in CANDIDATES:
         note(f"  본문: {body_snip(r)}")
         continue
     if isinstance(d, dict):
-        note(f"  JSON dict, 키: {list(d)[:15]}")
-        for k in list(d)[:3]:
-            v = d[k]
+        note(f"  JSON dict, 키: {list(d)[:20]}")
+        for k, v in d.items():                 # 리스트는 전부 본다(구성종목이 어디 있는지 모른다)
             if isinstance(v, list) and v:
                 note(f"  d[{k!r}] 리스트 {len(v)}건, 첫 항목: "
-                     f"{json.dumps(v[0], ensure_ascii=False)[:400]}")
+                     f"{json.dumps(v[0], ensure_ascii=False)[:300]}")
     elif isinstance(d, list):
         note(f"  JSON list {len(d)}건, 첫 항목: "
              f"{json.dumps(d[0], ensure_ascii=False)[:400] if d else '(빈 리스트)'}")
