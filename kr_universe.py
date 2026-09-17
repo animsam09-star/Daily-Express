@@ -186,16 +186,37 @@ def _get(url):
     return _dec(r)
 
 
+# 응답은 200 인데 파싱이 0건이면 네이버가 페이지를 바꾼 것이다. 그때 무엇이
+# 왔는지 눈으로 봐야 새 정규식을 쓸 수 있는데, 개발 환경에서는 프록시가
+# 네이버를 막아 확인이 안 된다 — 그래서 실행 로그에 남긴다.
+# 공개 시세 페이지라 비밀이 없고, 앞부분만 짧게 자른다.
+DUMP_CHARS = 700
+DUMPED = [0]
+DUMP_MAX = 2                    # 같은 원인으로 90건이 쏟아지는 걸 막는다
+
+
+def _dump(what, url, text):
+    if DUMPED[0] >= DUMP_MAX:
+        return
+    DUMPED[0] += 1
+    body = " ".join((text or "").split())      # 줄바꿈을 접어 로그 한 덩어리로
+    print(f"[kr유니버스][덤프] {what} {url}")
+    print(f"[kr유니버스][덤프] 길이 {len(text or '')}자 / 앞 {DUMP_CHARS}자:")
+    print(f"[kr유니버스][덤프] {body[:DUMP_CHARS]}")
+
+
 ITEM_RE = re.compile(r'code=(\d{6})">([^<]+)</a>')
 
 
 def upjong_members() -> dict[str, list[str]]:
     """{업종명: [종목코드]}. 전 종목을 훑으며 사명(NAMES)도 함께 채운다."""
-    ups = re.findall(r'no=(\d+)">([^<]+)</a>', _get(GROUP_URL))
+    page = _get(GROUP_URL)
+    ups = re.findall(r'no=(\d+)">([^<]+)</a>', page)
     wanted = [(no, name) for no, name in ups if name in UPJONG_THEME]
     if not wanted:
         print(f"[kr유니버스] 업종 목록 0건 — 네이버 업종 페이지를 못 읽었다"
               f"(전체 {len(ups)}개 파싱)")
+        _dump("업종 페이지", GROUP_URL, page)
 
     def one(no):
         # 같은 종목 링크가 행마다 두 번 나와 중복이 생긴다
@@ -224,6 +245,7 @@ def etf_members(etf_code: str) -> list[tuple[str, float]]:
     text = _get(ITEM_URL.format(code=etf_code))
     i = text.find(ETF_TABLE_MARK)
     if i < 0:
+        _dump(f"ETF {etf_code} 구성종목표", ITEM_URL.format(code=etf_code), text)
         return []
     end = text.find("</table>", i)
     seg = text[i:end if end > 0 else i + 20000]
