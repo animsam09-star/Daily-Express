@@ -160,6 +160,12 @@ def _quarters(code):
 
 
 
+# 기업 개요(FnGuide)는 아직 HTML 이라 태그를 걷어내야 한다. 네이버 실적
+# 파싱이 JSON 으로 옮겨가면서 같이 지웠다가 sectors 수집이 통째로
+# NameError 로 죽었다(실측) — _text 를 쓰는 곳이 거기만이 아니었다.
+TAG_RE = re.compile(r"<[^>]+>")
+
+
 def _text(html):
     """태그·공백을 걷어낸 알맹이 글자."""
     return " ".join(TAG_RE.sub(" ", html).replace("\xa0", " ").split())
