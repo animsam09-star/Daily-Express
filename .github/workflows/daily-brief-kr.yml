@@ -18,7 +18,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write           # data-kr 브랜치에 테마 구성 캐시를 남긴다
   actions: read             # 중복 발송 가드가 최근 run 목록을 조회한다
 
 jobs:
@@ -85,12 +85,51 @@ jobs:
         if: steps.guard.outputs.skip != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         run: npm install -g @anthropic-ai/claude-code
 
+      # 네이버 업종·ETF 페이지가 막히면 테마 구성이 통째로 0건이 되고
+      # 손으로 박아 둔 9종목짜리 브리핑이 나간다(실측 2026-09-14). 마지막으로
+      # 성공한 구성을 data-kr 브랜치에 두고 그때 대신 쓴다.
+      # quotes.yml 이 쓰는 data 브랜치와 따로 둔 이유는, 그쪽이 한 시간마다
+      # force-push 해서 같은 브랜치를 쓰면 서로 덮어쓸 수 있기 때문이다.
+      - name: 테마 구성 캐시 받아두기
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code origin data-kr >/dev/null 2>&1; then
+            git fetch origin data-kr --depth=1
+            git show FETCH_HEAD:kr_pools.json > data/kr_pools.json 2>/dev/null || true
+          fi
+          if [ -s data/kr_pools.json ]; then
+            echo "캐시 있음($(wc -c < data/kr_pools.json) bytes)"
+          else
+            rm -f data/kr_pools.json
+            echo "캐시 없음 — 이번 수집 결과로 처음 만든다"
+          fi
+
       # 발송은 여기서 하지 않는다 — 웹이 먼저 갱신되도록 --defer-send 로
       # 본문·차트만 저장해 두고, Cloudflare 배포가 끝난 뒤 아래 단계에서 보낸다.
       # web_only 면 --dry-run 이라 저장도 하지 않아 발송 단계가 조용히 넘어간다.
       - name: 브리핑 생성
         if: steps.guard.outputs.skip != 'true'
         run: python main_kr.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
+
+      # 수집이 정상일 때만 파일이 갱신된다(붕괴하면 build_pools 가 저장하지
+      # 않는다). 그래서 내용이 그대로면 푸시할 것도 없다.
+      - name: 테마 구성 캐시 남기기
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true      # 캐시 저장 실패가 브리핑을 막지 않는다
+        run: |
+          [ -s data/kr_pools.json ] || { echo "저장할 캐시 없음"; exit 0; }
+          cd data
+          rm -f quotes.json
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b data-kr
+          git add kr_pools.json
+          git commit -q -m "테마 구성 $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            data-kr
 
       # ---- 웹 대시보드 (Cloudflare Pages) ---- daily-brief.yml 과 같은 구조
       - name: 웹 대시보드 아티팩트 보관
