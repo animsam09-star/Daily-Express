@@ -50,11 +50,24 @@ def get_pools():
 
 TOP_N = 5           # 텔레그램 캡션용(웹은 WEB_TOP_N 개까지 보여준다)
 WEB_TOP_N = 10
-NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
-NAME_URL = "https://finance.naver.com/item/main.naver?code={code}"
-# 제목은 '삼성전자 : Npay 증권' 형태. 네이버가 표기를 바꾼 적이 있어
-# 콜론 앞부분만 취한다(':' 뒤 문구에 의존하지 않는다).
-NAME_RE = re.compile(r"<title>\s*([^<:]+?)\s*:", re.I)
+# 네이버 금융이 Next.js 로 개편되어 종목 페이지 HTML 에서 사명·실적을 더는
+# 긁을 수 없다(kr_universe 참고). 화면이 쓰는 JSON API 로 옮긴다.
+NAVER_HDR = {**UA, "Referer": "https://m.stock.naver.com/",
+             "Accept": "application/json, text/plain, */*"}
+BASIC_URL = "https://m.stock.naver.com/api/stock/{code}/basic"
+FIN_URL = "https://m.stock.naver.com/api/stock/{code}/finance/quarter"
+
+
+def _api_json(url):
+    """응답 JSON 객체, 실패하면 {}. 한 종목이 비어도 브리핑은 나간다."""
+    try:
+        r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT)
+        if r.status_code != 200:
+            return {}
+        d = r.json()
+    except Exception:                          # noqa: BLE001
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
 _SUFFIX_CACHE: dict[str, str] = {}
@@ -97,65 +110,46 @@ def _page(url, timeout=TIMEOUT):
 
 
 def stock_name(code: str) -> str:
-    """네이버 종목 페이지 제목에서 한글 사명."""
-    try:
-        m = NAME_RE.search(_page(NAME_URL.format(code=code)))
-        if m:
-            return m.group(1).strip()
-    except Exception:                          # noqa: BLE001
-        pass
-    return code
+    """한글 사명. 업종 목록을 받을 때 이미 채워 뒀으면 그걸 쓴다."""
+    return (kr_universe.NAMES.get(code)
+            or _api_json(BASIC_URL.format(code=code)).get("stockName")
+            or code)
 
 
-# 종목 페이지의 '기업실적분석' 표. 연간 4개 열 뒤에 분기 열이 이어진다.
-FIN_MARK = "기업실적분석"
-# 열 머리글은 '2026.06' 또는 '2026.09(E)' 형태다. (E)는 컨센서스 추정치라
-# 실적으로 보여주면 안 된다 — 머리글 전체를 읽어 표시를 확인한다.
-FIN_HEAD_RE = re.compile(r"<th[^>]*>(.*?)</th>", re.S)
-FIN_DATE_RE = re.compile(r"(\d{4}\.\d{2})")
-# 항목 이름이 <span> 안에 있을 거라 보고 짰다가 한 행도 못 잡았다(실측).
-# 네이버는 <strong>·<span>·평문을 섞어 쓰므로 태그를 걷어내고 글자만 본다.
-FIN_ROW_RE = re.compile(r"""<th[^>]*scope=['"]?row['"]?[^>]*>(.*?)</th>(.*?)</tr>""",
-                        re.S)
-FIN_CELL_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+
 FIN_WANT = {"매출액": "revenue", "영업이익": "op", "당기순이익": "net"}
 KR_QUARTERS = 5
-TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _quarters(html):
-    """'기업실적분석' 표에서 최근 5개 분기. [{date, revenue, op, net}, ...]
+def _quarters(code):
+    """최근 5개 분기 실적. [{date, revenue, op, net}, ...]
 
-    표는 '최근 연간 실적' 4열 + '최근 분기 실적' 6열이 한 줄에 이어 붙어 있고,
-    뒤쪽 열에는 추정치도 섞여 있다(값이 비면 그 분기는 버린다).
-    단위는 억원이다 — 화면에서 조·억으로 다시 표기한다.
+    financeInfo.trTitleList 가 분기 열을 시간순으로 주고(key·표시·컨센서스
+    여부), rowList 가 항목별 값을 그 key 로 물고 있다.
+
+        trTitleList: [{"isConsensus":"N","title":"2026.06.","key":"202606"}, ...]
+        rowList:     [{"title":"매출액","columns":{"202606":{"value":"1,714,995"}}}, ...]
+
+    isConsensus 가 "Y" 인 열은 실적이 아니라 증권사 추정치다 — 실적으로
+    보여주면 안 되므로 버린다. 값 단위는 억원이고, 화면에서 조·억으로
+    다시 표기한다.
     """
-    i = html.find(FIN_MARK)
-    if i < 0:
+    info = _api_json(FIN_URL.format(code=code)).get("financeInfo") or {}
+    titles = [t for t in (info.get("trTitleList") or [])
+              if t.get("isConsensus") != "Y" and t.get("key")]
+    if not titles:
         return []
-    seg = html[i:i + 12000]
-    cols = []                                  # [(열번호, 'YYYY.MM', 추정치인가)]
-    for th in FIN_HEAD_RE.findall(seg):
-        t = _text(th)
-        m = FIN_DATE_RE.search(t)
-        if m:
-            cols.append((len(cols), m.group(1), "(E)" in t))
-    if len(cols) < 5:
-        return []
-    annual = 4                                 # 앞 4열은 연간
-    vals = {}
-    for label, body in FIN_ROW_RE.findall(seg):
-        key = FIN_WANT.get(_text(label))
+    rows = {}
+    for r in info.get("rowList") or []:
+        key = FIN_WANT.get((r.get("title") or "").strip())
         if key:
-            vals[key] = [_text(c) for c in FIN_CELL_RE.findall(body)]
+            rows[key] = r.get("columns") or {}
 
     out = []
-    for j, date, est in cols[annual:]:
-        if est:                                # 컨센서스 추정치는 싣지 않는다
-            continue
-        row = {"date": date}
-        for key, cells in vals.items():
-            v = cells[j].replace(",", "") if j < len(cells) else ""
+    for t in titles:
+        row = {"date": (t.get("title") or "").strip().rstrip(".")}
+        for key, cols in rows.items():
+            v = str((cols.get(t["key"]) or {}).get("value") or "").replace(",", "")
             try:
                 row[key] = float(v) * 1e8      # 억원 -> 원
             except ValueError:
@@ -163,6 +157,13 @@ def _quarters(html):
         if row.get("revenue") is not None:     # 값이 아직 없는 분기는 버린다
             out.append(row)
     return out[-KR_QUARTERS:]
+
+
+
+# 기업 개요(FnGuide)는 아직 HTML 이라 태그를 걷어내야 한다. 네이버 실적
+# 파싱이 JSON 으로 옮겨가면서 같이 지웠다가 sectors 수집이 통째로
+# NameError 로 죽었다(실측) — _text 를 쓰는 곳이 거기만이 아니었다.
+TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _text(html):
@@ -210,17 +211,15 @@ def fetch_names(codes):
 def fetch_company_info(codes):
     """{종목코드: {"profile": {...}, "quarters": [...]}}.
 
-    사명·분기 실적은 종목 페이지 한 번으로 함께 얻고(사명만 받던 요청을 재활용),
-    기업 개요는 FnGuide 에서 따로 받는다.
+    사명과 분기 실적은 네이버 API 에서, 기업 개요는 FnGuide 에서 받는다.
+    사명은 업종 목록을 받을 때 이미 채워져 있는 게 보통이라 대개 요청이
+    한 번(실적)으로 끝난다.
     """
     def naver(code):
         info = {"name": code, "profile": {}, "quarters": []}
         try:
-            html = _page(NAME_URL.format(code=code))
-            m = NAME_RE.search(html)
-            if m:
-                info["name"] = m.group(1).strip()
-            info["quarters"] = _quarters(html)
+            info["name"] = stock_name(code)
+            info["quarters"] = _quarters(code)
         except Exception:                      # noqa: BLE001
             pass
         return code, info

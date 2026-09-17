@@ -28,11 +28,19 @@ if not VERIFY:
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 MIN_CAP = 1_000e8               # 시가총액 하한: 1,000억원
-NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
-GROUP_URL = "https://finance.naver.com/sise/sise_group.naver?type=upjong"
-DETAIL_URL = "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}"
-ITEM_URL = "https://finance.naver.com/item/main.naver?code={code}"
-ETF_CODE_RE = r"[0-9A-Z]{6}"
+# 2026-09 네이버 금융이 Next.js 로 개편되면서 종목 목록이 HTML 에서 사라졌다
+# (실측: 요청은 200 인데 파싱은 0건, 응답은 _next/static 투성이의 React 껍데기).
+# 화면이 쓰는 JSON API 를 그대로 쓴다. 업종명이 예전 그대로라 아래
+# UPJONG_THEME 매핑은 한 줄도 손대지 않아도 된다.
+API = "https://m.stock.naver.com/api"
+NAVER_HDR = {**UA, "Referer": "https://m.stock.naver.com/",
+             "Accept": "application/json, text/plain, */*"}
+IND_LIST_URL = API + "/stocks/industry?page=1&pageSize=100"
+IND_DETAIL_URL = API + "/stocks/industry/{no}?page={page}&pageSize={size}"
+ETF_URL = API + "/stock/{code}/etfAnalysis"
+# page 를 안 주면 20건만 온다(실측). 가장 큰 업종이 170종목대라 여유를 둔다.
+IND_PAGE = 100
+IND_MAX_PAGES = 3
 
 # 업종 -> 테마. 여기 없는 업종은 어느 테마에도 들어가지 않는다.
 UPJONG_THEME = {
@@ -150,17 +158,6 @@ THEME_ETFS = {
 }
 
 
-def _dec(r):
-    for enc in ("euc-kr", "utf-8"):
-        try:
-            return r.content.decode(enc)
-        except UnicodeDecodeError:
-            continue
-    return ""
-
-
-# 네이버 요청 성패. 실패해도 정규식이 빈 결과를 낼 뿐이라 예외가 안 난다 —
-# 세어 두지 않으면 '수집 실패'와 '그날 종목이 없음'을 구별할 수 없다.
 FETCH = [0, 0]                  # [실패, 시도]
 FETCH_LOG_MAX = 5               # 통째로 막히면 90건이 줄줄이 찍힌다 — 앞만 남긴다
 
@@ -173,23 +170,27 @@ def _fail(msg):
         print("[kr유니버스] ... 이하 생략, 합계는 아래 요약에")
 
 
-def _get(url):
+def _get_json(url):
+    """응답 JSON 객체, 실패하면 {}. 실패는 세어 두고 앞 몇 건만 찍는다."""
     FETCH[1] += 1
     try:
         r = requests.get(url, headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT)
     except Exception as e:                     # noqa: BLE001
         _fail(f"요청 실패({type(e).__name__}) {url[:70]}")
-        return ""
+        return {}
     if r.status_code != 200:
         _fail(f"HTTP {r.status_code} {url[:70]}")
-        return ""
-    return _dec(r)
+        return {}
+    try:
+        d = r.json()
+    except ValueError:
+        _fail(f"JSON 이 아님 {url[:70]}")
+        _dump("JSON 이 아닌 응답", url, r.text)
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
-# 응답은 200 인데 파싱이 0건이면 네이버가 페이지를 바꾼 것이다. 그때 무엇이
-# 왔는지 눈으로 봐야 새 정규식을 쓸 수 있는데, 개발 환경에서는 프록시가
-# 네이버를 막아 확인이 안 된다 — 그래서 실행 로그에 남긴다.
-# 공개 시세 페이지라 비밀이 없고, 앞부분만 짧게 자른다.
+
 DUMP_CHARS = 700
 DUMPED = [0]
 DUMP_MAX = 2                    # 같은 원인으로 90건이 쏟아지는 걸 막는다
@@ -205,60 +206,61 @@ def _dump(what, url, text):
     print(f"[kr유니버스][덤프] {body[:DUMP_CHARS]}")
 
 
-ITEM_RE = re.compile(r'code=(\d{6})">([^<]+)</a>')
-
-
 def upjong_members() -> dict[str, list[str]]:
     """{업종명: [종목코드]}. 전 종목을 훑으며 사명(NAMES)도 함께 채운다."""
-    page = _get(GROUP_URL)
-    ups = re.findall(r'no=(\d+)">([^<]+)</a>', page)
-    wanted = [(no, name) for no, name in ups if name in UPJONG_THEME]
+    groups = _get_json(IND_LIST_URL).get("groups") or []
+    wanted = [(g["no"], g["name"]) for g in groups
+              if g.get("no") is not None and g.get("name") in UPJONG_THEME]
     if not wanted:
-        print(f"[kr유니버스] 업종 목록 0건 — 네이버 업종 페이지를 못 읽었다"
-              f"(전체 {len(ups)}개 파싱)")
-        _dump("업종 페이지", GROUP_URL, page)
+        print(f"[kr유니버스] 업종 목록 0건 — 네이버 업종 API 를 못 읽었다"
+              f"(전체 {len(groups)}개)")
 
     def one(no):
-        # 같은 종목 링크가 행마다 두 번 나와 중복이 생긴다
-        pairs = ITEM_RE.findall(_get(DETAIL_URL.format(no=no)))
-        NAMES.update({c: n.strip() for c, n in pairs})
-        return list(dict.fromkeys(c for c, _ in pairs))
+        codes = []
+        for page in range(1, IND_MAX_PAGES + 1):
+            d = _get_json(IND_DETAIL_URL.format(no=no, page=page, size=IND_PAGE))
+            rows = d.get("stocks") or []
+            for st in rows:
+                code = (st.get("itemCode") or "").strip()
+                if not code:
+                    continue
+                codes.append(code)
+                if st.get("stockName"):
+                    NAMES[code] = st["stockName"].strip()
+            # 다 받았거나 마지막 페이지면 멈춘다
+            if len(rows) < IND_PAGE or len(codes) >= (d.get("totalCount") or 0):
+                break
+        return list(dict.fromkeys(codes))
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         codes = list(ex.map(one, [no for no, _ in wanted]))
     return {name: c for (_, name), c in zip(wanted, codes)}
 
 
-ETF_TABLE_MARK = "구성종목(구성자산)"
-ETF_ROW_RE = re.compile(
-    r'<td class="ctg">\s*<a href="/item/main\.naver\?code=([0-9A-Z]{6})">([^<]+)</a>.*?'
-    r'<td class="per">\s*([\d.]+)%', re.S)
-
 
 def etf_members(etf_code: str) -> list[tuple[str, float]]:
     """ETF 구성종목과 구성비중(상위 10). [(종목코드, 비중%), ...]
 
-    페이지 전체의 링크를 긁으면 '인기종목'·'동일업종' 같은 다른 영역까지
-    들어온다(로봇 ETF 에 셀트리온·한미약품이 섞여 나왔다). 구성종목 표
-    안쪽만 파싱한다.
+    etfAnalysis 응답의 etfTop10MajorConstituentAssets 가 정확히 그 표다
+    ({"seq":1,"itemCode":"108490","itemName":"로보티즈","etfWeight":"9.34%"}).
+    예전 HTML 시절에는 페이지 전체를 긁다 '인기종목'·'동일업종'이 섞여
+    들어왔는데(로봇 ETF 에 셀트리온·한미약품), 이제 그 걱정이 없다.
     """
-    text = _get(ITEM_URL.format(code=etf_code))
-    i = text.find(ETF_TABLE_MARK)
-    if i < 0:
-        _dump(f"ETF {etf_code} 구성종목표", ITEM_URL.format(code=etf_code), text)
-        return []
-    end = text.find("</table>", i)
-    seg = text[i:end if end > 0 else i + 20000]
+    rows = _get_json(ETF_URL.format(code=etf_code)).get(
+        "etfTop10MajorConstituentAssets") or []
     out = []
-    for code, _name, pct in ETF_ROW_RE.findall(seg):
-        if code == etf_code:
+    for r in rows:
+        code = (r.get("itemCode") or "").strip()
+        if not code or code == etf_code:
             continue
-        NAMES.setdefault(code, _name.strip())
+        if r.get("itemName"):
+            NAMES.setdefault(code, r["itemName"].strip())
         try:
-            out.append((code, float(pct)))
+            out.append((code, float(str(r.get("etfWeight", "")).rstrip("%"))))
         except ValueError:
             continue
     return out
+
 
 
 def _scrape_pools() -> dict[str, list[str]]:
