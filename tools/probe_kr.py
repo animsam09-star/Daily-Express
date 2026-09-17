@@ -31,36 +31,15 @@ ETF = "445290"          # TIGER 로봇
 CODE = "005930"         # 삼성전자
 
 CANDIDATES = [
-    # --- 업종 목록 페이지네이션(79개 업종을 다 받을 수 있는지) ---
-    ("업종 목록 pageSize=100",
-     "https://m.stock.naver.com/api/stocks/industry?page=1&pageSize=100", NAVER),
-
-    # --- 업종 상세: 그 업종의 구성종목 ---
-    ("업종 상세 /industry/{no}",
-     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}", NAVER),
-    ("업종 상세 /industry/{no}/stocks",
-     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}/stocks?page=1&pageSize=60", NAVER),
-    ("업종 상세 ?no=",
-     f"https://m.stock.naver.com/api/stocks/industry?no={IND_NO}&page=1&pageSize=60", NAVER),
-    ("업종 상세 /industry/{no}?page",
-     f"https://m.stock.naver.com/api/stocks/industry/{IND_NO}?page=1&pageSize=60", NAVER),
-
-    # --- ETF 구성종목 ---
-    ("ETF /etfComponents",
-     f"https://m.stock.naver.com/api/stock/{ETF}/etfComponents", NAVER),
-    ("ETF /etf/component",
-     f"https://m.stock.naver.com/api/stock/{ETF}/etf/component", NAVER),
-    ("ETF /api/etf/{code}/component",
-     f"https://m.stock.naver.com/api/etf/{ETF}/component", NAVER),
-    ("ETF /etfAnalysis",
-     f"https://m.stock.naver.com/api/stock/{ETF}/etfAnalysis", NAVER),
-
-    # --- 분기 실적(지금 0/9 로 죽어 있다) ---
-    ("실적 /finance/quarter",
-     f"https://m.stock.naver.com/api/stock/{CODE}/finance/quarter", NAVER),
-    ("실적 /finance/annual",
-     f"https://m.stock.naver.com/api/stock/{CODE}/finance/annual", NAVER),
+    # 3차: 경로는 다 찾았다. 남은 건 분기 실적·기본정보의 내부 모양이다
+    # (dict 안이라 구조가 안 찍혔다). 원문을 길게 떠서 필드명을 확인한다.
+    ("실적 quarter 원문",
+     "https://m.stock.naver.com/api/stock/005930/finance/quarter", NAVER),
+    ("종목 basic 원문",
+     "https://m.stock.naver.com/api/stock/005930/basic", NAVER),
 ]
+RAW = True          # 3차는 구조 요약 대신 원문을 본다
+RAW_CHARS = 2200
 
 KRX_FORM = {
     "bld": "dbms/MDC/STAT/standard/MDCSTAT01501",
@@ -95,6 +74,9 @@ for name, url, hdr in CANDIDATES:
         continue
     ct = r.headers.get("content-type", "?")
     note(f"[{name}] HTTP {r.status_code} / {ct} / {len(r.text)}자")
+    if RAW:
+        note("  " + " ".join((r.text or "").split())[:RAW_CHARS])
+        continue
     # JSON 이면 구조를 요약해 준다 — 본문 600자보다 훨씬 쓸모 있다.
     try:
         d = r.json()
