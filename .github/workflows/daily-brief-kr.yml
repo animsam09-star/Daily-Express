@@ -39,23 +39,56 @@ jobs:
       # 바꾸고 싶으면 CLOUDFLARE_PAGES_PROJECT 시크릿으로 덮어쓴다.
       PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT || format('daily-express-{0}', github.repository_owner) }}
     steps:
-      # 지연 도착한 schedule 실행이, 정시 dispatch 가 이미 보낸 브리핑을
-      # 또 보내지 않게 한다. 하루 1회 발송이므로 6시간 창이면 충분하다.
-      # 조회 실패 시에는 발송하는 쪽으로 폴백(미발송보다 중복이 낫다).
-      - name: 중복 발송 가드 (schedule 전용)
+      # 이미 보낸 브리핑을 또 보내지 않게 한다. 하루 한 번 발송이므로,
+      # 20시간 안에 실제로 발송한 실행이 있으면 이번 실행은 생략한다.
+      #
+      # 창이 6시간이던 때 실측으로 두 번 뚫렸다. GitHub cron 이 7시간 38분
+      # 밀려 도착했고(15:45 목표가 23:23 발송), 외부 스케줄러의 dispatch 가
+      # 10시간 밀려 온 적도 있다. 24시간을 다 쓰지 않는 것은 다음 날 정시
+      # 실행까지 여유를 남기기 위해서다.
+      #
+      # 가드를 dispatch 에도 건다. 뚫린 두 번 중 하나가 지연 도착한
+      # dispatch 였는데, schedule 전용이라 가드가 아예 돌지 않았다.
+      # web_only 실행은 애초에 보내지 않으므로 가드를 건너뛴다.
+      #
+      # '발송했다'의 판정은 지난 실행의 '텔레그램 발송' 단계가 success 인지로
+      # 본다. 실행 자체의 conclusion 을 보면 안 된다 — 가드가 생략시킨
+      # 실행도, web_only 로 웹만 갱신한 실행도 success 로 끝나기 때문이다.
+      #
+      # 조회가 실패하면 발송하는 쪽으로 폴백한다(미발송보다 중복이 낫다).
+      - name: 중복 발송 가드
         id: guard
-        if: github.event_name == 'schedule'
+        if: inputs.web_only != true
         env:
           GH_TOKEN: ${{ github.token }}
+          WF: daily-brief-kr.yml
         run: |
-          CUTOFF=$(date -u -d '6 hours ago' '+%Y-%m-%dT%H:%M:%S+00:00')
-          DONE=$(gh run list -R "$GITHUB_REPOSITORY" -w daily-brief-kr.yml \
-            --created ">=$CUTOFF" --json event,status,conclusion \
-            -q '[.[] | select(.event == "workflow_dispatch")
-                     | select(.conclusion == "success" or .status == "in_progress" or .status == "queued")] | length' || echo 0)
-          if [ "${DONE:-0}" -gt 0 ]; then
+          CUTOFF=$(date -u -d '20 hours ago' '+%Y-%m-%dT%H:%M:%S+00:00')
+          ROWS=$(gh run list -R "$GITHUB_REPOSITORY" -w "$WF" \
+                   --created ">=$CUTOFF" --json databaseId,status \
+                   -q '.[] | [.databaseId, .status] | @tsv' || echo "")
+          SENT=0
+          while IFS=$'\t' read -r ID STATUS; do
+            if [ -z "$ID" ] || [ "$ID" = "$GITHUB_RUN_ID" ]; then
+              continue
+            fi
+            if [ "$STATUS" != "completed" ]; then
+              # 지금 돌고 있다 — 곧 보낸다고 보고 비켜 준다.
+              # 둘이 나란히 보내는 것이 가장 나쁘다.
+              SENT=$((SENT + 1))
+              continue
+            fi
+            STEP=$(gh run view "$ID" -R "$GITHUB_REPOSITORY" --json jobs \
+                     -q '[.jobs[].steps[]
+                          | select(.name == "텔레그램 발송")
+                          | .conclusion] | .[0] // ""' || echo "")
+            if [ "$STEP" = "success" ]; then
+              SENT=$((SENT + 1))
+            fi
+          done <<< "$ROWS"
+          if [ "$SENT" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "이미 정시 dispatch 로 발송됨 — 지연 스케줄 실행 생략"
+            echo "최근 20시간 안에 이미 발송함($SENT건) — 이번 실행은 생략"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
