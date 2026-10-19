@@ -91,6 +91,22 @@ def main() -> int:
     if news.STATUS:
         print(f"[진단] {news.STATUS}")
 
+    # 선정 내역. 스크리닝(추세·반등·초동)은 웹 전용이라 위 캡션에 안 나오고,
+    # 여기 없으면 제대로 뽑혔는지 확인할 길이 아예 없다 — 로그는 꼬리만
+    # 꺼낼 수 있고 웹 페이지는 러너 밖에서 열리지 않는다.
+    kinds, dead = {}, []
+    for rows in (data.get("holdings") or {}).values():
+        for h in rows:
+            if h.get("pick"):
+                kinds.setdefault(h["pick"], []).append(h["ticker"])
+            if h.get("price") is None:
+                dead.append(h["ticker"])
+    print("[진단] 선정 — " + (" / ".join(
+        f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
+        for k, v in sorted(kinds.items())) or "없음"))
+    print(f"[진단] 시세 못 받은 종목 {len(dead)}건"
+          + (": " + ", ".join(sorted(dead)) if dead else ""))
+
     if args.dry_run:
         print(f"[3/3] --dry-run 이므로 발송 생략. ({time.time() - t0:.1f}s)")
         return 0
