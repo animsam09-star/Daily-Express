@@ -101,7 +101,9 @@ def main() -> int:
                 kinds.setdefault(h["pick"], []).append(h["ticker"])
             if h.get("price") is None:
                 dead.append(h["ticker"])
-    print("[진단] 선정 — " + (" / ".join(
+    # ::notice:: 로 띄우면 작업 로그 전체를 받지 않고 주석 API 로만 꺼낼 수
+    # 있다. 로그는 꼬리만 받을 수 있는데 이 줄까지 닿는 데만 230줄이 든다.
+    print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
     print(f"[진단] 시세 못 받은 종목 {len(dead)}건"

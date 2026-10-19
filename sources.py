@@ -651,9 +651,14 @@ SCREEN_REB_SLOPE = 20   # 50일선 상승 전환 판정에 쓸 비교 시점(봉
 EARLY_N = 6
 EARLY_MIN_3M = 5.0       # 3개월 등락률 하한(%) — 움직이기는 해야 한다
 EARLY_MAX_3M = 40.0      # 3개월 등락률 상한(%) — 이보다 갔으면 초동이 아니다
-EARLY_CROSS = 20         # 50일선 상향 돌파가 이 봉 수 안쪽이어야 '막' 돌아선 것
-EARLY_VOL = 1.5          # 최근 20봉 평균 거래량 / 직전 60봉 평균
-EARLY_QUIET = 1.0        # 돌파 직전 60봉 변동폭 / 1년 평균 — 눌려 있었는가
+# 아래 셋은 첫 실전 실행(2026-10-19)에서 6자리 중 1자리밖에 못 채워 완화했다.
+# 조건이 네 겹이라 후보가 다 죽는다 — 추세는 두 겹이라 같은 풀에서 6자리가 찬다.
+EARLY_CROSS = 30         # 50일선 상향 돌파가 이 봉 수 안쪽이어야 '막' 돌아선 것
+EARLY_VOL = 1.3          # 최근 20봉 평균 거래량 / 직전 60봉 평균
+EARLY_QUIET = 1.1        # 돌파 직전 60봉 변동폭 / 1년 평균 — 눌려 있었는가
+# 초동 후보만 풀을 따로 키운다. 네 겹을 통과할 확률이 낮아 30개로는 자리가
+# 안 찬다. 시계열을 더 받는 비용이 붙지만 한 자리짜리 카드는 의미가 없다.
+EARLY_PRESELECT = 70
 
 # 점수와 무관하게 항상 넣을 종목. 값은 넣을 섹터(None 이면 스크리너 분류를 따른다).
 # '지금은 모멘텀이 죽었지만 계속 보고 싶은' 종목을 여기에 적는다.
@@ -798,8 +803,10 @@ def _screen_preselect(cands, quotes):
                 early.append((sg, sector, r))
     for pool in (trend, rebound, early):
         pool.sort(key=lambda x: -x[0])
-    return tuple([(sec, r) for _, sec, r in pool[:SCREEN_PRESELECT]]
-                 for pool in (trend, rebound, early))
+    return tuple([(sec, r) for _, sec, r in pool[:n]]
+                 for pool, n in ((trend, SCREEN_PRESELECT),
+                                 (rebound, SCREEN_PRESELECT),
+                                 (early, EARLY_PRESELECT)))
 
 
 def _trend_score(rets, ohlc):
