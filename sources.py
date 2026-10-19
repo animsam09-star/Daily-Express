@@ -33,7 +33,7 @@ SECTORS = [
     ("XLY", "경기소비재"), ("XLP", "필수소비재"), ("XLE", "에너지"),
     ("XLF", "금융"), ("XLV", "헬스케어"), ("XLI", "산업재"), ("XLB", "소재"),
     ("XLRE", "부동산"), ("XLU", "유틸리티"), ("NLR", "원자력"),
-    ("ARKX", "우주"),
+    ("ARKX", "우주"), ("ITA", "방산"),
 ]
 
 # 원자력은 GICS 섹터가 아니라 세 곳에 흩어져 있다 — 원전 발전사(CEG·VST)는
@@ -95,12 +95,13 @@ CURATED = {
 # (실측: 로켓랩은 XLI 안에 있어도 GE·RTX·캐터필러에 밀려 표에 안 나온다).
 # 지수·차트는 ARKX(ARK 우주탐사 ETF)로 그리고 목록은 아래에서 직접 관리한다.
 #
-# 대형 방산(LMT·NOC·BA·RTX·LHX)은 일부러 뺐다. 시총 순으로 줄을 세우므로
-# 넣는 순간 이 카드가 방산 카드가 되고, 정작 보려던 우주 전업 기업이 아래로
-# 밀린다. 그 종목들은 산업재(XLI) 카드에 이미 있다.
-#
-# 스페이스X 는 비상장이라 넣을 수 없다 — 티커 자체가 없다.
+# 대형 방산은 여기 섞지 않고 아래 ITA 섹터로 따로 세웠다. 시총 순으로 줄을
+# 세우는데 보잉·RTX·록히드는 우주 전업 기업보다 한두 자릿수 크다 — 같은
+# 카드에 두면 자리 10개를 방산이 다 먹고 로켓랩·AST 가 밀려난다.
 CURATED["ARKX"] = {
+    # SPCX(스페이스X)와 SPCE(버진갤럭틱)는 티커가 한 글자 차이다. 둘 다
+    # 목록에 있으니 고칠 때 섞이지 않게 주의.
+    "SPCX": "SpaceX",                # 2026-06 나스닥 상장. 발사체·스타링크
     "RKLB": "Rocket Lab",            # 발사체(일렉트론·뉴트론)·위성 제조
     "ASTS": "AST SpaceMobile",       # 위성↔스마트폰 직접통신
     "IRDM": "Iridium",               # 저궤도 위성통신
@@ -112,9 +113,33 @@ CURATED["ARKX"] = {
     "BKSY": "BlackSky",              # 지구관측·실시간 영상
     "SPIR": "Spire Global",          # 소형위성 데이터
     "SPCE": "Virgin Galactic",       # 준궤도 우주관광
-    "KTOS": "Kratos",                # 무인기·극초음속·로켓 추진
     "VOYG": "Voyager Technologies",  # 상업 우주정거장 (2025 상장)
     "FLY": "Firefly Aerospace",      # 발사체·달 착륙선 (2025 상장)
+}
+
+# 방산도 GICS 로는 산업재 안이고, XLI 상위는 GE·캐터필러·유니온퍼시픽처럼
+# 방산이 아닌 종목이 섞여 있어 방산만 따로 보기가 어렵다. 지수·차트는
+# ITA(iShares 미국 항공우주·방산 ETF)로 그린다 — SPDR 이 아니라 SSGA
+# 보유목록 파일이 없으므로 목록은 아래에서 직접 관리한다.
+# 우주(ARKX)와 겹치지 않게 나눴다: 발사체·위성은 우주, 무기체계·항공기·
+# 부품은 여기다. 무인기(AVAV·KTOS)는 방산 쪽으로 뒀다.
+CURATED["ITA"] = {
+    "GE": "GE Aerospace",            # 항공엔진
+    "BA": "Boeing",                  # 민항기·방산·우주(ULA 절반)
+    "RTX": "RTX",                    # 미사일·프랫앤휘트니 엔진
+    "LMT": "Lockheed Martin",        # F-35·미사일·위성
+    "TDG": "TransDigm",              # 항공 부품(애프터마켓)
+    "NOC": "Northrop Grumman",       # B-21 폭격기·우주시스템
+    "GD": "General Dynamics",        # 잠수함·전투차량·걸프스트림
+    "HWM": "Howmet Aerospace",       # 항공 구조재·엔진 부품
+    "LHX": "L3Harris",               # 전술통신·에어로젯 로켓다인
+    "HEI": "HEICO",                  # 항공 부품·전자
+    "TXT": "Textron",                # 벨 헬기·세스나
+    "LDOS": "Leidos",                # 방산 IT·정보분석
+    "CW": "Curtiss-Wright",          # 원자력·항공 구동장치
+    "BAH": "Booz Allen Hamilton",    # 방산·정보기관 컨설팅
+    "AVAV": "AeroVironment",         # 무인기·정밀타격
+    "KTOS": "Kratos",                # 무인기·극초음속·로켓 추진
 }
 
 CURATED_SECTOR = {t: sym for sym, ts in CURATED.items() for t in ts}
