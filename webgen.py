@@ -213,13 +213,15 @@ def build_us(data, path):
     watch = []
     for sec in sectors:
         for h in sec["holdings"]:
-            if h.get("pick") in ("watch", "trend", "rebound"):
+            if h.get("pick") in ("watch", "trend", "rebound", "early"):
                 watch.append({"ticker": h["ticker"], "symbol": sec["symbol"],
                               "sector": sec["name"], "kind": h["pick"],
                               "cap": h.get("market_cap") or 0})
-    # 고정 목록 → 추세 → 반등 순으로 묶고, 묶음 안에서는 시가총액 큰 순.
-    # 셋은 고른 기준이 아예 다르므로 한 덩어리로 섞으면 읽을 수 없다.
-    _ORDER = {"watch": 0, "trend": 1, "rebound": 2}
+    # 고정 목록 → 초동 → 추세 → 반등 순으로 묶고, 묶음 안에서는 시총 큰 순.
+    # 갈래마다 고른 기준이 아예 다르므로 한 덩어리로 섞으면 읽을 수 없다.
+    # 초동을 추세보다 위에 두는 이유는 그게 이 카드에서 가장 이른 신호라서다 —
+    # 추세는 이미 오른 것이고, 먼저 읽혀야 하는 쪽은 아직 안 간 쪽이다.
+    _ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
     watch.sort(key=lambda w: (_ORDER.get(w["kind"], 9), -w["cap"]))
 
     bench = idx.get("S&P500") or {}
@@ -680,7 +682,23 @@ const capF=(v,cur)=>{if(!v)return'';
   const jo=cur==='₩'?'조원':'조달러', eok=cur==='₩'?'억원':'억달러';
   if(v>=1e15) return fmt(v/1e12,0)+jo;   // 1,000조 넘으면 소수점은 군더더기
   if(v>=1e12) return fmt(v/1e12,1)+jo;
-  return fmt(v/1e8,0)+eok;};
+  if(v>=1e10) return fmt(v/1e8,0)+eok;   // 100억 이상은 정수 억으로 충분하다
+  return fmt(v/1e8,1)+eok;};            // 그 아래는 소수점 한 자리 — '0억'을 막는다
+
+// 분기 실적은 표 전체가 한 단위여야 읽힌다. 셀마다 단위를 고르면 매출은 억,
+// 순이익은 백만으로 찍혀 세로 비교가 안 된다. 가장 큰 값으로 단위를 정하고
+// 단위는 라벨에 한 번만 적는다(리서치 표가 '단위: 백만달러'를 쓰는 이유다).
+// 달러는 1억 달러 언저리 기업이 흔해 백만 달러까지 내려간다 — 억으로 쓰면
+// 매출 7억·영업이익 1억·순이익 0억처럼 한 표가 통째로 뭉개진다.
+// 원화는 억원이 자연스러운 최소 단위라 거기서 멈춘다(5억원을 '500백만원'
+// 이라고 쓰지는 않는다).
+const finUnit=(vals,cur)=>{
+  const krw=cur==='₩';
+  const m=Math.max(0,...vals.filter(v=>v!=null).map(Math.abs));
+  if(m>=1e12) return {d:1e12,u:krw?'조원':'조달러',p:1};
+  if(m>=1e10) return {d:1e8, u:krw?'억원':'억달러',p:0};
+  if(krw)     return {d:1e8, u:'억원',p:1};
+  return {d:1e6, u:'백만달러',p:0};};
 
 document.getElementById('title').textContent=D.title;
 document.getElementById('updated').textContent='업데이트 '+D.updated
@@ -1080,7 +1098,8 @@ D.sectors.forEach(s=>{
   // 스크리닝(추세·반등)은 관심종목 카드에서만 보여준다. 섹터 표에도 넣으면
   // 같은 종목이 한 페이지에 두 번 나오고, 시총 상위 표가 길어져 읽기 어렵다.
   // 데이터 자체는 s.holdings 에 남는다 — 관심종목 카드가 여기서 찾아 쓴다.
-  const rows=s.holdings.filter(h=>h.pick!=='trend'&&h.pick!=='rebound').map((h,i)=>{
+  const SCREENED=['trend','rebound','early'];
+  const rows=s.holdings.filter(h=>!SCREENED.includes(h.pick)).map((h,i)=>{
     let head=i===0?grp('시가총액 상위'):'';
     if(h.pick&&!opened){opened=true; head=grp('주도주 · 최근 3개월 상승률 상위');}
     const note=h.note?`<tr class="note-row"><td colspan="5">↳ ${h.note}
@@ -1143,11 +1162,14 @@ D.sectors.forEach(s=>{
       : (D.currency === '₩' ? Math.round(h.price).toLocaleString() + '원'
                             : '$' + fmt(h.price));
   const GRP = {watch:'늘 보는 종목 · 손으로 지정',
+               early:'초동 · 아직 안 간 종목 (오늘 스크리닝)',
                trend:'추세 상승 · 오늘 스크리닝',
                rebound:'바닥 반등 · 오늘 스크리닝'};
   const TIP = {
+    early:'돌파 직전 60봉이 1년 평균보다 조용했고, 최근 20봉 안에 50일선을 되찾았으며, 거래량이 직전 대비 1.5배 이상 붙은 종목. 3개월 등락률이 +5~40% 구간이라 아직 크게 가지 않았다',
     trend:'종가가 50일선·200일선 위(정배열)이고 3개월 +20% 이상, 최근 한 달도 안 꺾인 종목',
     rebound:'1년 등락률이 마이너스라 아직 200일선 아래인데, 50일선을 되찾고 그 50일선이 상승 전환했으며 최근 거래량까지 늘어난 종목'};
+  const BADGE = {early:'초동', trend:'추세', rebound:'반등'};
   div.innerHTML = `<div class="tablewrap"><table>
       <thead><tr><th>종목</th><th>섹터</th><th>등락</th><th>주가</th><th>시총</th>
       <th>기간수익률</th></tr></thead><tbody>${
@@ -1159,7 +1181,7 @@ D.sectors.forEach(s=>{
         return head+`<tr class="stk${kind!=='watch'?' extra':''}" data-t="${h.ticker}">
         <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
           kind!=='watch'?`<span class="badge" title="${TIP[kind]}">${
-            kind==='trend'?'추세':'반등'}</span>`:''}</td>
+            BADGE[kind]||''}</span>`:''}</td>
         <td style="color:var(--sub);font-size:12px">${sector}</td>
         <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
         <td>${px(h)}</td>
@@ -1204,11 +1226,13 @@ function aboutHtml(h){
   if(qs.length){
     const yoy=(i,k)=>{const prev=qs[i-4]; return prev&&prev[k]&&qs[i][k]!=null
       ? (qs[i][k]/prev[k]-1)*100 : null;};
+    const U=finUnit(qs.flatMap(q=>[q.revenue,q.op,q.net]),cur);
     const cells=k=>qs.map((q,i)=>{
       const v=q[k]; const g=k==='revenue'?yoy(i,k):null;
-      return `<td>${v==null?'–':capF(Math.abs(v),cur).replace(/^/,v<0?'-':'')}${
+      return `<td>${v==null?'–':fmt(v/U.d,U.p)}${
         g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
-    out+=`<div class="about"><div class="lb">최근 ${qs.length}개 분기 실적</div>
+    out+=`<div class="about"><div class="lb">최근 ${qs.length}개 분기 실적 <span
+        style="color:var(--sub);font-weight:400">(단위: ${U.u})</span></div>
       <div class="tablewrap"><table class="fin">
         <thead><tr><th>항목</th>${qs.map(q=>`<th>${q.date}</th>`).join('')}</tr></thead>
         <tbody>

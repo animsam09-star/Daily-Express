@@ -33,6 +33,7 @@ SECTORS = [
     ("XLY", "경기소비재"), ("XLP", "필수소비재"), ("XLE", "에너지"),
     ("XLF", "금융"), ("XLV", "헬스케어"), ("XLI", "산업재"), ("XLB", "소재"),
     ("XLRE", "부동산"), ("XLU", "유틸리티"), ("NLR", "원자력"),
+    ("ARKX", "우주"),
 ]
 
 # 원자력은 GICS 섹터가 아니라 세 곳에 흩어져 있다 — 원전 발전사(CEG·VST)는
@@ -88,6 +89,34 @@ CURATED = {
         "DNN": "Denison Mines",          # 우라늄 개발
     },
 }
+
+# 우주도 GICS 섹터가 아니다. 발사체·위성 제조는 산업재, 위성통신은
+# 커뮤니케이션으로 흩어져 있고 그나마 시총이 작아 어느 쪽 상위 5에도 못 든다
+# (실측: 로켓랩은 XLI 안에 있어도 GE·RTX·캐터필러에 밀려 표에 안 나온다).
+# 지수·차트는 ARKX(ARK 우주탐사 ETF)로 그리고 목록은 아래에서 직접 관리한다.
+#
+# 대형 방산(LMT·NOC·BA·RTX·LHX)은 일부러 뺐다. 시총 순으로 줄을 세우므로
+# 넣는 순간 이 카드가 방산 카드가 되고, 정작 보려던 우주 전업 기업이 아래로
+# 밀린다. 그 종목들은 산업재(XLI) 카드에 이미 있다.
+#
+# 스페이스X 는 비상장이라 넣을 수 없다 — 티커 자체가 없다.
+CURATED["ARKX"] = {
+    "RKLB": "Rocket Lab",            # 발사체(일렉트론·뉴트론)·위성 제조
+    "ASTS": "AST SpaceMobile",       # 위성↔스마트폰 직접통신
+    "IRDM": "Iridium",               # 저궤도 위성통신
+    "VSAT": "Viasat",                # 위성 광대역
+    "SATS": "EchoStar",              # 위성통신·주파수
+    "LUNR": "Intuitive Machines",    # 달 착륙선·우주 서비스
+    "RDW": "Redwire",                # 우주 구조물·부품
+    "PL": "Planet Labs",             # 지구관측 위성 영상
+    "BKSY": "BlackSky",              # 지구관측·실시간 영상
+    "SPIR": "Spire Global",          # 소형위성 데이터
+    "SPCE": "Virgin Galactic",       # 준궤도 우주관광
+    "KTOS": "Kratos",                # 무인기·극초음속·로켓 추진
+    "VOYG": "Voyager Technologies",  # 상업 우주정거장 (2025 상장)
+    "FLY": "Firefly Aerospace",      # 발사체·달 착륙선 (2025 상장)
+}
+
 CURATED_SECTOR = {t: sym for sym, ts in CURATED.items() for t in ts}
 
 # 옮겨 온 종목을 원래 섹터 표에서 뺄지. 소프트웨어는 빼야 한다 — 마이크로소프트·
@@ -326,6 +355,11 @@ def _quote_batch(session, crumb, batch, out):
             "chg_52w": q.get("fiftyTwoWeekChangePercent"),
             "vs_200d": q.get("twoHundredDayAverageChangePercent"),
             "vs_50d": q.get("fiftyDayAverageChangePercent"),
+            # 초동 후보를 가리는 데 쓴다. 같은 응답에 이미 들어 있어 공짜다.
+            # 둘 다 '하루 평균 주식 수'라 우리가 직접 나눈다 — 이격처럼
+            # 야후가 %로 줄지 비율로 줄지 따질 필요가 없는 값이다.
+            "vol_10d": q.get("averageDailyVolume10Day"),
+            "vol_3m": q.get("averageDailyVolume3Month"),
         }
 
 
@@ -488,6 +522,13 @@ def fetch_sector_holdings(sector_symbols, caps=None):
             if not h.get("market_cap"):
                 h["market_cap"] = caps.get(h["ticker"])
 
+    # 큐레이션 섹터는 티커를 손으로 적는다. 오타나 상장폐지면 시세가 통째로
+    # 비어 표에 빈 줄로 나가는데, 화면을 봐야만 알 수 있다 — 로그로 끌어낸다.
+    dead = [h["ticker"] for sym in CURATED if sym in holdings
+            for h in holdings[sym] if not (quotes.get(h["ticker"]) or {}).get("price")]
+    if dead:
+        print(f"::warning::[큐레이션] 시세를 못 받은 티커 {len(dead)}개: {', '.join(dead)}")
+
     rets = fetch_returns(kept)
     for hs in holdings.values():
         for h in hs:
@@ -542,6 +583,11 @@ MOM_MIN_1M = 0.0        # 1개월 등락률 하한(%) — 최근에 꺾인 종�
 # 시계열을 받을 수는 없으니, 50일선 이격(quote 에 있다)으로 섹터당 후보를
 # 이만큼 좁힌 뒤 그 후보만 실제 시계열로 재계산한다.
 MOM_PRESELECT = 12
+# 그 12자리를 전부 '이격이 큰 순'으로 채우면, 막 올라타기 시작한 종목은
+# 점수를 한 번 받아보지도 못하고 잘린다(늦게 알게 되는 가장 큰 원인이다).
+# 그래서 절반은 지금처럼 이격 순으로 두고 — 이미 주도주인 종목이 후보에서
+# 빠지면 안 된다 — 나머지 절반을 거래량이 막 붙은 순으로 채운다.
+MOM_PRESELECT_VOL = 6
 
 # ---- 관심종목 스크리닝 --------------------------------------------------
 # 손으로 적은 WATCHLIST 는 '늘 보고 싶은 종목'이라 시장 상황과 무관하게 고정이다.
@@ -572,6 +618,17 @@ SCREEN_REB_1M = 5.0     # 1개월 등락률 하한(%) — 실제로 오르고 �
 SCREEN_REB_OFF_HIGH = 15.0   # 1년 고점 대비 최소 하락폭(%) — 이미 신고가면 추세다
 SCREEN_REB_VOL = 1.2    # 최근 20봉 평균 거래량 / 직전 60봉 평균의 하한(수급 확인)
 SCREEN_REB_SLOPE = 20   # 50일선 상승 전환 판정에 쓸 비교 시점(봉)
+
+# 초동: '오래 눌려 있다가 막 돌아선' 종목. 추세는 이미 간 것이고 반등은
+# 바닥에서 올라온 것인데, 이건 아직 어느 쪽도 아닌 구간을 잡는다. '너무 오른
+# 뒤에 알게 된다'는 불만의 정면 대응이라, 다른 두 갈래에 없는 조건이 하나
+# 있다 — 등락률 상한. 많이 오른 종목은 여기서 탈락한다.
+EARLY_N = 6
+EARLY_MIN_3M = 5.0       # 3개월 등락률 하한(%) — 움직이기는 해야 한다
+EARLY_MAX_3M = 40.0      # 3개월 등락률 상한(%) — 이보다 갔으면 초동이 아니다
+EARLY_CROSS = 20         # 50일선 상향 돌파가 이 봉 수 안쪽이어야 '막' 돌아선 것
+EARLY_VOL = 1.5          # 최근 20봉 평균 거래량 / 직전 60봉 평균
+EARLY_QUIET = 1.0        # 돌파 직전 60봉 변동폭 / 1년 평균 — 눌려 있었는가
 
 # 점수와 무관하게 항상 넣을 종목. 값은 넣을 섹터(None 이면 스크리너 분류를 따른다).
 # '지금은 모멘텀이 죽었지만 계속 보고 싶은' 종목을 여기에 적는다.
@@ -671,6 +728,19 @@ def mom_score(returns):
     return r3
 
 
+def _vol_surge(q):
+    """최근 10일 평균 거래량 / 3개월 평균. 값이 없으면 None.
+
+    '뭔가 막 시작됐다'를 시세 요약만으로 알 수 있는 거의 유일한 값이다.
+    1차 후보를 추릴 때 이격 대신 이걸 쓰면, 아직 많이 오르지 않은 종목도
+    시계열 계산까지 갈 수 있다.
+    """
+    v10, v3m = (q or {}).get("vol_10d"), (q or {}).get("vol_3m")
+    if not v10 or not v3m or v3m <= 0:
+        return None
+    return v10 / v3m
+
+
 def _sma(vals, w, i):
     """vals[i] 시점의 w봉 단순이동평균. 봉이 모자라면 None."""
     if i < w - 1 or i >= len(vals):
@@ -684,7 +754,7 @@ def _screen_preselect(cands, quotes):
     시계열은 종목당 한 번씩 받아야 해서 전 종목에 못 돌린다. 야후 시세 응답에
     이미 들어 있는 세 값이면 '정배열인가 / 바닥권인가'는 가려낼 수 있다.
     """
-    trend, rebound = [], []
+    trend, rebound, early = [], [], []
     for sector, rows in cands.items():
         for r in rows:
             q = quotes.get(r["ticker"]) or {}
@@ -695,10 +765,16 @@ def _screen_preselect(cands, quotes):
                 trend.append((v200, sector, r))    # 200일선 이격이 큰 순
             elif v200 < 0 and y < 0:
                 rebound.append((v50, sector, r))   # 50일선을 되찾은 폭이 큰 순
-    trend.sort(key=lambda x: -x[0])
-    rebound.sort(key=lambda x: -x[0])
-    return ([(sec, r) for _, sec, r in trend[:SCREEN_PRESELECT]],
-            [(sec, r) for _, sec, r in rebound[:SCREEN_PRESELECT]])
+            # 초동 후보는 위 두 갈래와 겹쳐도 그냥 담는다(최종 선정에서 먼저
+            # 집어간 쪽이 가져간다). 여기서 이격으로 줄을 세우면 초동은
+            # 정의상 맨 뒤라 한 종목도 안 남으므로, 거래량이 붙은 순으로 센다.
+            sg = _vol_surge(q)
+            if sg is not None:
+                early.append((sg, sector, r))
+    for pool in (trend, rebound, early):
+        pool.sort(key=lambda x: -x[0])
+    return tuple([(sec, r) for _, sec, r in pool[:SCREEN_PRESELECT]]
+                 for pool in (trend, rebound, early))
 
 
 def _trend_score(rets, ohlc):
@@ -746,6 +822,50 @@ def _rebound_score(rets, ohlc):
     return r1 * mult
 
 
+def _early_score(rets, ohlc):
+    """초동 자격을 갖추면 점수(거래량 배수), 아니면 None.
+
+    네 가지를 모두 요구한다 — 아직 많이 안 갔고(3개월 상한), 돌파 직전까지
+    눌려 있었고, 50일선을 막 되찾았고, 거래량이 붙었다. 점수를 등락률이
+    아니라 거래량 배수로 두는 이유는 후보가 전부 '조금 오른' 종목이라
+    등락률로는 서로 구분이 안 되기 때문이다.
+    """
+    r3 = (rets or {}).get("m3")
+    if r3 is None or not EARLY_MIN_3M <= r3 <= EARLY_MAX_3M:
+        return None
+    ohlc = ohlc or []
+    if len(ohlc) < 250:
+        return None                            # 1년치가 없으면 '눌려 있었나'를 못 잰다
+    closes = [r[4] for r in ohlc]
+    n = len(closes) - 1
+    # 50일선을 언제 되찾았나 — 오늘은 위에 있고 EARLY_CROSS 봉 전에는
+    # 아래에 있어야 '막' 돌아선 것이다. 한참 전에 올라선 종목은 여기서 빠진다.
+    now, then = _sma(closes, 50, n), _sma(closes, 50, n - EARLY_CROSS)
+    if now is None or then is None:
+        return None
+    if closes[n] <= now or closes[n - EARLY_CROSS] > then:
+        return None
+
+    def rng(lo, hi):
+        xs = [(r[2] - r[3]) / r[4] for r in ohlc[lo:hi] if r[4]]
+        return sum(xs) / len(xs) if xs else None
+
+    # 돌파 직전 60봉이 1년 평균보다 조용했는가. 내내 출렁이던 종목의
+    # 50일선 돌파는 '바닥을 다지고 나온 것'이 아니라 그냥 잡음이다.
+    quiet, base = rng(-80, -20), rng(-252, None)
+    if quiet is None or base is None or base <= 0 or quiet / base > EARLY_QUIET:
+        return None
+    # 수급 — 최근 20봉 평균 거래량이 직전 60봉 평균보다 뚜렷이 많은가.
+    vols = [r[5] for r in ohlc if len(r) > 5 and r[5]]
+    if len(vols) < 80:
+        return None
+    base_v = sum(vols[-80:-20]) / 60
+    if base_v <= 0:
+        return None
+    mult = sum(vols[-20:]) / 20 / base_v
+    return mult if mult >= EARLY_VOL else None
+
+
 def pick_extras(holdings, universe):
     """섹터마다 시총 상위 5 밖의 '주도주'와 워치리스트 종목을 골라 붙인다.
 
@@ -770,26 +890,37 @@ def pick_extras(holdings, universe):
 
     quotes = fetch_quotes(sorted({r["ticker"] for rs in cands.values() for r in rs}))
 
-    # 1차: 50일선 위에 있는 종목만, 이격이 큰 순으로 섹터당 MOM_PRESELECT 개.
-    #      전 종목의 시계열을 받는 건 불가능하므로 여기서 후보를 줄인다.
+    # 1차: 50일선 위에 있는 종목만 섹터당 MOM_PRESELECT 개. 전 종목의 시계열을
+    #      받는 건 불가능하므로 여기서 후보를 줄인다. 자리는 둘로 나눈다 —
+    #      이격 순(기존 주도주가 후보에서 빠지지 않게)과 거래량이 막 붙은 순.
     short = {}
     for sector, rows in cands.items():
         keep = [r for r in rows
                 if (quotes.get(r["ticker"]) or {}).get("vs_50d") is not None
                 and quotes[r["ticker"]]["vs_50d"] > 0]
-        keep.sort(key=lambda r: quotes[r["ticker"]]["vs_50d"], reverse=True)
+        by_ext = sorted(keep, key=lambda r: quotes[r["ticker"]]["vs_50d"],
+                        reverse=True)[:MOM_PRESELECT - MOM_PRESELECT_VOL]
+        with_vol = [r for r in keep if _vol_surge(quotes.get(r["ticker"])) is not None]
+        by_vol = sorted(with_vol, key=lambda r: -_vol_surge(quotes[r["ticker"]])
+                        )[:MOM_PRESELECT_VOL]
         watch = [r for r in rows if r["ticker"] in WATCHLIST
                  and WATCHLIST[r["ticker"]] in (None, sector)]
-        short[sector] = watch + [r for r in keep[:MOM_PRESELECT]
-                                 if r["ticker"] not in {w["ticker"] for w in watch}]
+        seen = {w["ticker"] for w in watch}
+        picked = list(watch)
+        for r in by_ext + by_vol:
+            if r["ticker"] not in seen:
+                seen.add(r["ticker"])
+                picked.append(r)
+        short[sector] = picked
 
     # 관심종목 카드용 스크리닝 후보. 주도주 후보(short)와 섞지 않는다 —
     # 섞으면 섹터당 2자리인 주도주 선정 결과까지 흔들린다.
-    scr_trend, scr_reb = _screen_preselect(cands, quotes)
+    scr_trend, scr_reb, scr_early = _screen_preselect(cands, quotes)
 
     # 2차: 후보의 실제 시계열로 3개월·1개월 등락률을 재고 자격을 본다
     rets = fetch_returns(sorted({r["ticker"] for rs in short.values() for r in rs}
-                                | {r["ticker"] for _, r in scr_trend + scr_reb}))
+                                | {r["ticker"]
+                                   for _, r in scr_trend + scr_reb + scr_early}))
 
     extras = {}
     for sector, rows in short.items():
@@ -821,8 +952,12 @@ def pick_extras(holdings, universe):
     # 아무도 안 오른 섹터에까지 억지로 종목을 앉히게 된다 — 시장 전체에서
     # 가장 뚜렷한 것만 골라야 '스크리닝'이다.
     taken = {h["ticker"] for hs in extras.values() for h in hs} | have
-    for kind, pool, score in (("trend", scr_trend, _trend_score),
-                              ("rebound", scr_reb, _rebound_score)):
+    for kind, pool, score, slots in (("trend", scr_trend, _trend_score, SCREEN_N),
+                                     ("rebound", scr_reb, _rebound_score, SCREEN_N),
+                                     # 초동을 맨 뒤에 둔다 — 추세·반등과 겹치는
+                                     # 종목은 그쪽이 먼저 가져가고, 어느 쪽에도
+                                     # 안 걸린 '아직 안 간' 종목만 여기 남는다.
+                                     ("early", scr_early, _early_score, EARLY_N)):
         ranked = []
         for sector, r in pool:
             if r["ticker"] in taken:
@@ -832,7 +967,7 @@ def pick_extras(holdings, universe):
             if sc is not None:
                 ranked.append((sc, sector, r, d))
         ranked.sort(key=lambda x: -x[0])
-        for _, sector, r, d in ranked[:SCREEN_N]:
+        for _, sector, r, d in ranked[:slots]:
             p = {**r, "pick": kind}
             p.update({k: v for k, v in (quotes.get(r["ticker"]) or {}).items()
                       if v is not None})
