@@ -796,11 +796,17 @@ def _screen_preselect(cands, quotes):
             elif v200 < 0 and y < 0:
                 rebound.append((v50, sector, r))   # 50일선을 되찾은 폭이 큰 순
             # 초동 후보는 위 두 갈래와 겹쳐도 그냥 담는다(최종 선정에서 먼저
-            # 집어간 쪽이 가져간다). 여기서 이격으로 줄을 세우면 초동은
-            # 정의상 맨 뒤라 한 종목도 안 남으므로, 거래량이 붙은 순으로 센다.
+            # 집어간 쪽이 가져간다).
+            #
+            # 줄 세우는 기준이 중요하다. 처음엔 거래량 급증 순으로 했는데
+            # 6자리 중 1자리밖에 안 찼다 — 거래량과 '50일선을 막 넘었는가'는
+            # 상관이 없어서, 거래량만 터진 이미 간 종목으로 70자리가 찼다.
+            # 가장 많이 거르는 조건에 맞춰 50일선 이격이 '작은' 순으로 센다.
+            # 값의 단위(%인지 비율인지)를 몰라도 정렬은 안전하다.
+            # 거래량이 줄고 있는 종목은 애초에 뺀다.
             sg = _vol_surge(q)
-            if sg is not None:
-                early.append((sg, sector, r))
+            if sg is not None and sg >= 1.0:
+                early.append((-v50, sector, r))
     for pool in (trend, rebound, early):
         pool.sort(key=lambda x: -x[0])
     return tuple([(sec, r) for _, sec, r in pool[:n]]
@@ -854,6 +860,17 @@ def _rebound_score(rets, ohlc):
     return r1 * mult
 
 
+# 어느 조건에서 떨어지는지 센다. 문턱을 낮춰도 건수가 안 늘면 범인이 따로
+# 있다는 뜻인데(실측: 네 값을 모두 완화했는데 1건 그대로였다), 사유를 안
+# 세면 추측밖에 할 게 없다.
+EARLY_REJECT = {}
+
+
+def _no(why):
+    EARLY_REJECT[why] = EARLY_REJECT.get(why, 0) + 1
+    return None
+
+
 def _early_score(rets, ohlc):
     """초동 자격을 갖추면 점수(거래량 배수), 아니면 None.
 
@@ -863,20 +880,26 @@ def _early_score(rets, ohlc):
     등락률로는 서로 구분이 안 되기 때문이다.
     """
     r3 = (rets or {}).get("m3")
-    if r3 is None or not EARLY_MIN_3M <= r3 <= EARLY_MAX_3M:
-        return None
+    if r3 is None:
+        return _no("3개월 등락률 없음")
+    if r3 < EARLY_MIN_3M:
+        return _no("덜 올랐다")
+    if r3 > EARLY_MAX_3M:
+        return _no("너무 올랐다")
     ohlc = ohlc or []
     if len(ohlc) < 250:
-        return None                            # 1년치가 없으면 '눌려 있었나'를 못 잰다
+        return _no("시계열 1년 미만")          # '눌려 있었나'를 못 잰다
     closes = [r[4] for r in ohlc]
     n = len(closes) - 1
     # 50일선을 언제 되찾았나 — 오늘은 위에 있고 EARLY_CROSS 봉 전에는
     # 아래에 있어야 '막' 돌아선 것이다. 한참 전에 올라선 종목은 여기서 빠진다.
     now, then = _sma(closes, 50, n), _sma(closes, 50, n - EARLY_CROSS)
     if now is None or then is None:
-        return None
-    if closes[n] <= now or closes[n - EARLY_CROSS] > then:
-        return None
+        return _no("이동평균 계산 불가")
+    if closes[n] <= now:
+        return _no("50일선 아래")
+    if closes[n - EARLY_CROSS] > then:
+        return _no("한참 전에 올라섰다")
 
     def rng(lo, hi):
         xs = [(r[2] - r[3]) / r[4] for r in ohlc[lo:hi] if r[4]]
@@ -885,17 +908,19 @@ def _early_score(rets, ohlc):
     # 돌파 직전 60봉이 1년 평균보다 조용했는가. 내내 출렁이던 종목의
     # 50일선 돌파는 '바닥을 다지고 나온 것'이 아니라 그냥 잡음이다.
     quiet, base = rng(-80, -20), rng(-252, None)
-    if quiet is None or base is None or base <= 0 or quiet / base > EARLY_QUIET:
-        return None
+    if quiet is None or base is None or base <= 0:
+        return _no("변동폭 계산 불가")
+    if quiet / base > EARLY_QUIET:
+        return _no("눌림 없이 시끄러웠다")
     # 수급 — 최근 20봉 평균 거래량이 직전 60봉 평균보다 뚜렷이 많은가.
     vols = [r[5] for r in ohlc if len(r) > 5 and r[5]]
     if len(vols) < 80:
-        return None
+        return _no("거래량 데이터 부족")
     base_v = sum(vols[-80:-20]) / 60
     if base_v <= 0:
-        return None
+        return _no("거래량 데이터 부족")
     mult = sum(vols[-20:]) / 20 / base_v
-    return mult if mult >= EARLY_VOL else None
+    return mult if mult >= EARLY_VOL else _no("거래량 안 붙었다")
 
 
 def pick_extras(holdings, universe):

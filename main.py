@@ -106,6 +106,10 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    if sources.EARLY_REJECT:
+        top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
+        print("::notice::[진단] 초동 탈락 사유 — "
+              + ", ".join(f"{k} {v}" for k, v in top))
     print(f"[진단] 시세 못 받은 종목 {len(dead)}건"
           + (": " + ", ".join(sorted(dead)) if dead else ""))
 
