@@ -21,7 +21,8 @@ import urllib3
 import kr_universe
 
 from sources import (RETURN_WINDOWS, TIMEOUT, UA, VERIFY, _return_at, _trim,
-                     MONTHLY_RANGE, fetch_quotes, mom_score, monthly_candles,
+                     EARLY_N, EARLY_PRESELECT, MONTHLY_RANGE, _early_score,
+                     _vol_surge, fetch_quotes, mom_score, monthly_candles,
                      pct_change, yahoo_candles,
                      yahoo_ohlc, yahoo_series)
 
@@ -261,6 +262,9 @@ def fetch_indices():
 MOM_MIN_CAP = 5_000e8   # 주도주 후보 시가총액 하한(5,000억) — 잡주를 막는다
 MOM_N = 2               # 테마당 주도주 자리 수
 MOM_PRESELECT = 12      # 50일선 이격으로 좁힐 테마당 후보 수(미국판과 같은 구조)
+# 미국판과 같은 이유로 12자리를 반씩 나눈다. 전부 이격 순으로 채우면 막
+# 올라타기 시작한 종목이 점수를 받아보지도 못하고 잘린다(sources.py 참고).
+MOM_PRESELECT_VOL = 6
 
 
 def _row(code, quotes, info, rets, pick=None):
@@ -305,11 +309,48 @@ def _preselect(full_pools, pools, quotes):
                 continue
             if q.get("vs_50d") is None or q["vs_50d"] <= 0:
                 continue
-            cands.append((q["vs_50d"], c))
-        cands.sort(reverse=True)
-        if cands:
-            out[theme] = [c for _, c in cands[:MOM_PRESELECT]]
+            cands.append((q["vs_50d"], _vol_surge(q), c))
+        # 절반은 이격 순(이미 주도주인 종목을 후보에 남긴다), 절반은 거래량이
+        # 막 붙은 순. 미국판 pick_extras 와 같은 구조다.
+        by_ext = sorted(cands, key=lambda t: -t[0])[:MOM_PRESELECT - MOM_PRESELECT_VOL]
+        by_vol = sorted((t for t in cands if t[1] is not None),
+                        key=lambda t: -t[1])[:MOM_PRESELECT_VOL]
+        picked, seen = [], set()
+        for _, _, c in by_ext + by_vol:
+            if c not in seen:
+                seen.add(c)
+                picked.append(c)
+        if picked:
+            out[theme] = picked
     return out
+
+
+def _early_preselect(full_pools, quotes, taken):
+    """초동 후보를 전 시장에서 EARLY_PRESELECT 개. [(테마, 종목코드), ...]
+
+    테마마다 자리를 주지 않는 이유는 미국판과 같다 — 아무도 안 움직인
+    테마에까지 억지로 종목을 앉히게 된다. 줄 세우는 기준은 '50일선 이격이
+    작은 순'이다. 가장 많이 거르는 조건이 '막 돌파했는가'라서, 거래량이나
+    이격이 큰 순으로 세우면 통과할 종목이 후보에 들어오지도 못한다
+    (미국판에서 실측으로 확인했다. sources._screen_preselect 주석 참고).
+    """
+    cands = []
+    for theme, pool in full_pools.items():
+        for c in pool:
+            if c in taken:
+                continue
+            q = quotes.get(_ys(c)) or {}
+            v50 = q.get("vs_50d")
+            if v50 is None or v50 <= 0:
+                continue
+            if (q.get("market_cap") or 0) < MOM_MIN_CAP:
+                continue
+            sg = _vol_surge(q)
+            if sg is None or sg < 1.0:         # 거래량이 줄고 있으면 뺀다
+                continue
+            cands.append((v50, theme, c))
+    cands.sort(key=lambda t: t[0])             # 이격이 작은 순
+    return [(t, c) for _, t, c in cands[:EARLY_PRESELECT]]
 
 
 def _rank_extras(cands, rets):
@@ -356,8 +397,14 @@ def fetch_sectors_and_holdings():
     # 구조적으로 사라진다). 최종 선별은 시계열을 받은 뒤 3개월 등락률로 한다.
     cands = _preselect(full_pools, pools, quotes)
 
+    # 초동 후보. 표에 이미 나오는 종목은 뺀다(주도주 후보는 남겨둔다 —
+    # 테마당 2자리뿐이라 대부분은 주도주로 안 뽑히고, 그중에 초동이 있다).
+    shown = {c for cs in pools.values() for c in cs[:WEB_TOP_N]}
+    early_cands = _early_preselect(full_pools, quotes, shown)
+
     hist_codes = {c for cs in pools.values() for c in cs}
     hist_codes |= {c for cs in cands.values() for c in cs}
+    hist_codes |= {c for _, c in early_cands}
     name_codes = {c for cs in pools.values() for c in cs[:WEB_TOP_N]}
 
     with ThreadPoolExecutor(max_workers=2) as ex:
@@ -366,9 +413,28 @@ def fetch_sectors_and_holdings():
     info, rets = f_info.result(), f_rets.result()
 
     extras = _rank_extras(cands, rets)
-    # 최종 선정된 주도주의 사명·개요·실적은 여기서 마저 받는다
+
+    # 초동. 주도주로 이미 뽑힌 종목은 뺀다 — 같은 종목이 한 페이지에 두 번
+    # 나오면 자리만 먹는다. 점수는 거래량 배수(sources._early_score).
+    picked = {c for cs in extras.values() for c in cs} | shown
+    scored = []
+    for theme, c in early_cands:
+        if c in picked:
+            continue
+        d = rets.get(_ys(c)) or {}
+        sc = _early_score(d.get("returns"), d.get("ohlc"))
+        if sc is not None:
+            scored.append((sc, theme, c))
+    scored.sort(key=lambda t: -t[0])
+    early = {}
+    for _, theme, c in scored[:EARLY_N]:
+        early.setdefault(theme, []).append(c)
+
+    # 최종 선정된 주도주·초동의 사명·개요·실적은 여기서 마저 받는다
     # (후보 전체를 받으면 낭비다)
-    info.update(fetch_company_info(sorted({c for cs in extras.values() for c in cs})))
+    info.update(fetch_company_info(sorted(
+        {c for cs in extras.values() for c in cs}
+        | {c for cs in early.values() for c in cs})))
 
     sectors, holdings = [], {}
     for theme, pool in pools.items():
@@ -382,7 +448,9 @@ def fetch_sectors_and_holdings():
         # 메시지에는 상위 5종목 + 주도주. 상위 5의 자리는 그대로 두고 뒤에 붙인다.
         holdings[theme] = rows[:WEB_TOP_N] + [
             r for r in (_row(c, quotes, info, rets, pick="momentum")
-                        for c in extras.get(theme, [])) if r]
+                        for c in extras.get(theme, [])) if r] + [
+            r for r in (_row(c, quotes, info, rets, pick="early")
+                        for c in early.get(theme, [])) if r]
 
         # 섹터 지표·차트는 테마 전체(후보 풀)를 시총가중해 만든다.
         # 상위 5개만 쓰면 소부장(12종목)처럼 저변이 넓은 테마의 대표성이 떨어진다.

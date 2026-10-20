@@ -140,6 +140,30 @@ def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num
             "ohlc_m": _ds_ohlc(ohlc_m or [], days=None), "sym": sym}
 
 
+# 고정 목록 → 초동 → 추세 → 반등 순. 갈래마다 고른 기준이 아예 달라
+# 한 덩어리로 섞으면 읽을 수 없다. 초동을 추세보다 위에 두는 이유는 그게
+# 이 카드에서 가장 이른 신호라서다 — 추세는 이미 오른 것이고, 먼저 읽혀야
+# 하는 쪽은 아직 안 간 쪽이다.
+_WATCH_ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
+
+
+def _watch_list(sectors):
+    """관심종목 카드용 목록. 미국·국내가 같은 카드를 쓴다.
+
+    종목 데이터를 복사하지 않고 어느 섹터에 있는지만 적어 둔다 — 브라우저가
+    D.sectors 에서 찾아 쓴다(페이지 용량 유지). 국내는 초동만 들어온다.
+    """
+    out = []
+    for sec in sectors:
+        for h in sec["holdings"]:
+            if h.get("pick") in _WATCH_ORDER:
+                out.append({"ticker": h["ticker"], "symbol": sec["symbol"],
+                            "sector": sec["name"], "kind": h["pick"],
+                            "cap": h.get("market_cap") or 0})
+    out.sort(key=lambda w: (_WATCH_ORDER.get(w["kind"], 9), -w["cap"]))
+    return out
+
+
 def build_us(data, path):
     idx = data.get("indices") or {}
     now = data.get("ust_now") or {}
@@ -208,21 +232,7 @@ def build_us(data, path):
             "holdings": [_holding(h, notes) for h in holdings.get(s["symbol"]) or []],
         })
 
-    # 관심종목 카드용. 종목 데이터를 복사하지 않고 어느 섹터에 있는지만
-    # 적어 둔다 — 브라우저가 D.sectors 에서 찾아 쓴다(페이지 용량 유지).
-    watch = []
-    for sec in sectors:
-        for h in sec["holdings"]:
-            if h.get("pick") in ("watch", "trend", "rebound", "early"):
-                watch.append({"ticker": h["ticker"], "symbol": sec["symbol"],
-                              "sector": sec["name"], "kind": h["pick"],
-                              "cap": h.get("market_cap") or 0})
-    # 고정 목록 → 초동 → 추세 → 반등 순으로 묶고, 묶음 안에서는 시총 큰 순.
-    # 갈래마다 고른 기준이 아예 다르므로 한 덩어리로 섞으면 읽을 수 없다.
-    # 초동을 추세보다 위에 두는 이유는 그게 이 카드에서 가장 이른 신호라서다 —
-    # 추세는 이미 오른 것이고, 먼저 읽혀야 하는 쪽은 아직 안 간 쪽이다.
-    _ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
-    watch.sort(key=lambda w: (_ORDER.get(w["kind"], 9), -w["cap"]))
+    watch = _watch_list(sectors)
 
     bench = idx.get("S&P500") or {}
     payload = {
@@ -319,6 +329,7 @@ def build_kr(data, path):
         "built": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                    .isoformat(timespec="seconds"),
         "currency": "₩",
+        "watch": _watch_list(sectors),
         "summary": summary,
         "sectors": sectors,
         "flows": flow_out,
@@ -541,7 +552,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     </div>
   </div>
 
-  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 손으로 지정한 종목 + 오늘 스크리닝한 추세·반등주</span></h2>
+  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 오늘 스크리닝한 종목 (국내는 초동만)</span></h2>
   <div id="watchwrap"></div>
 
   <h2>섹터 상세 <span class="hint">— 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
