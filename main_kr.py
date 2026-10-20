@@ -239,6 +239,21 @@ def main() -> int:
     if news.STATUS:
         print(f"[진단] {news.STATUS}")
 
+    # 초동은 웹 전용이라 캡션에 안 나온다. ::notice:: 로 올려 주석 API 로
+    # 꺼낸다 — 작업 로그는 꼬리만 받을 수 있어 여기까지 닿는 게 비싸다.
+    kinds = {}
+    for rows in (data.get("holdings") or {}).values():
+        for h in rows:
+            if h.get("pick"):
+                kinds.setdefault(h["pick"], []).append(h["ticker"])
+    print("::notice::[진단] 선정 — " + (" / ".join(
+        f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
+        for k, v in sorted(kinds.items())) or "없음"))
+    if sources.EARLY_REJECT:
+        top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
+        print("::notice::[진단] 초동 탈락 사유 — "
+              + ", ".join(f"{k} {v}" for k, v in top))
+
     if args.dry_run:
         print(f"[3/3] --dry-run 이므로 발송 생략. ({time.time() - t0:.1f}s)")
         return 0
