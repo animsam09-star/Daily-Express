@@ -552,7 +552,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     </div>
   </div>
 
-  <h2 id="watch-h" hidden>관심종목 <span class="hint">— 오늘 스크리닝한 종목 (국내는 초동만)</span></h2>
+  <h2 id="watch-h" hidden>관심종목 <span class="hint"></span></h2>
   <div id="watchwrap"></div>
 
   <h2>섹터 상세 <span class="hint">— 차트에 마우스를 올리면 수치, 종목을 클릭하면 상세 차트</span></h2>
@@ -1167,6 +1167,13 @@ D.sectors.forEach(s=>{
                  .filter(x => x.h);
   if(!found.length) return;
   document.getElementById('watch-h').hidden = false;
+  // 설명은 카드에 실제로 들어온 갈래로 쓴다. 미국·국내가 이 템플릿을 함께
+  // 쓰는데 국내에는 손으로 지정한 목록도 추세·반등도 없다 — 고정 문구를
+  // 박아 두면 한쪽에서 거짓말이 된다.
+  const HINT={watch:'손으로 지정', early:'초동', trend:'추세', rebound:'반등'};
+  const kinds=Object.keys(HINT).filter(k=>found.some(f=>f.kind===k));
+  document.querySelector('#watch-h .hint').textContent =
+    '— ' + kinds.map(k=>HINT[k]).join(' · ') + (kinds.length>1?' 순':'');
   const div = document.createElement('div');
   div.className = 'panel';
   const px = h => h.price == null ? '–'
