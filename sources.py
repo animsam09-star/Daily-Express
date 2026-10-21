@@ -385,6 +385,9 @@ def _quote_batch(session, crumb, batch, out):
             # 야후가 %로 줄지 비율로 줄지 따질 필요가 없는 값이다.
             "vol_10d": q.get("averageDailyVolume10Day"),
             "vol_3m": q.get("averageDailyVolume3Month"),
+            # 어닝콜 전문 링크가 거래소(nasdaq/nyse)를 주소에 넣는다.
+            # 같은 응답에 있어 공짜다.
+            "exchange": q.get("fullExchangeName") or "",
         }
 
 

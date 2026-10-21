@@ -122,6 +122,7 @@ def _holding(h, notes):
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
         # 종목을 눌렀을 때 보여줄 기업 개요와 분기·연간 실적
+        "exchange": h.get("exchange") or "",
         "profile": h.get("profile") or {},
         "quarters": [{k: (round(v, 4) if isinstance(v, float) else v)
                       for k, v in q.items()} for q in (h.get("quarters") or [])],
@@ -1342,6 +1343,13 @@ function linksHtml(h){
       ${a(`https://finance.yahoo.com/quote/${t}/analysis`,'📊','애널리스트 추정치','야후 · EPS·매출 컨센서스')}
       ${a(`https://stockanalysis.com/stocks/${lo}/financials/`,'🏢','재무제표','StockAnalysis · 분기·연간')}
       ${a(`https://stockanalysis.com/stocks/${lo}/forecast/`,'🏦','목표주가·전망','StockAnalysis')}
+    </div>
+    <div><h4>어닝콜 전문</h4>
+      ${a(`https://www.fool.com/quote/${/nasdaq/i.test(h.exchange||'')?'nasdaq':'nyse'}/${lo}/`,
+          '🎙','어닝콜 전문','Motley Fool · 로그인 없이 열림')}
+      ${a(`https://seekingalpha.com/symbol/${t}/earnings/transcripts`,
+          '🗣','어닝콜 목록','Seeking Alpha · 가입이 필요할 수 있음')}
+      ${a(`https://roic.ai/quote/${t}`,'📝','전문·재무','roic.ai')}
     </div>
     <div><h4>시세</h4>
       ${a(`https://finance.yahoo.com/quote/${t}`,'📈','야후 파이낸스',h.ticker||'')}
