@@ -1052,12 +1052,11 @@ FUNDAMENTALS = ("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/
 # 실측(2026-08-03): quoteSummary 의 분기 손익은 4분기까지만 오고 영업이익이 비지만,
 # fundamentals-timeseries 는 5분기치를 영업이익까지 채워서 준다.
 _FUND_ITEMS = ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS")
-# 분기와 연간을 한 요청에 섞어 봤더니 연간이 한 줄도 안 왔다(실측: 연간
-# 0/193종목, 조회 기간을 6.2년으로 넓힌 뒤에도 그대로). 야후가 앞쪽
-# 묶음만 돌려주는 것으로 보여 따로 받는다. 종목당 요청이 하나 늘지만
-# 빈 탭을 내보내는 것보다 낫다.
-FUND_TYPES = ",".join("quarterly" + t for t in _FUND_ITEMS)
-FUND_TYPES_YEAR = ",".join("annual" + t for t in _FUND_ITEMS)
+# 분기와 연간을 한 요청으로 받는다 — type 만 더 붙이면 되므로 호출이 늘지
+# 않는다. 한때 '야후가 섞으면 앞쪽만 준다'고 보고 요청을 나눴는데 오진이었다.
+# 진짜 원인은 받아 온 연간을 종목에 옮겨 붙이지 않은 것이었다(아래 참고).
+FUND_TYPES = ",".join([*("quarterly" + t for t in _FUND_ITEMS),
+                       *("annual" + t for t in _FUND_ITEMS)])
 # 야후가 실제로 어떤 항목을 돌려줬는지 모아 둔다 — 또 0건이면 추측 대신
 # 응답에 뭐가 들어 있었는지 보고 고친다.
 FUND_SEEN = set()
@@ -1110,7 +1109,7 @@ def fetch_company_info(tickers):
     # 연간은 5개년이 필요해 따로 더 멀리 잡는다.
     p2 = int(dt.datetime.now().timestamp())
     yr = 60 * 60 * 24 * 365
-    p1 = p2 - int(yr * 2.2)
+    # 연간 5개년에 맞춰 잡는다. 분기는 뒤에서 5개만 쓰므로 더 받아도 무방하다.
     p1y = p2 - int(yr * (ANNUALS + 1.2))
 
     def one(sym):
@@ -1130,23 +1129,17 @@ def fetch_company_info(tickers):
                 }
         except Exception:                          # noqa: BLE001
             pass
-        def fund(types, start):
+        try:
             r = session.get(FUNDAMENTALS.format(sym=sym),
-                            params={"symbol": sym, "type": types,
-                                    "merge": "false", "period1": start,
+                            params={"symbol": sym, "type": FUND_TYPES,
+                                    "merge": "false", "period1": p1y,
                                     "period2": p2, "crumb": crumb},
                             timeout=TIMEOUT)
-            return (r.json().get("timeseries") or {}).get("result") or []
-
-        try:
-            info["quarters"] = _fund_rows(fund(FUND_TYPES, p1), "quarterly", QUARTERS)
-        except Exception:                          # noqa: BLE001
-            pass
-        try:
-            rows = fund(FUND_TYPES_YEAR, p1y)
+            rows = (r.json().get("timeseries") or {}).get("result") or []
             if len(FUND_SEEN) < 12:                # 앞 몇 종목만 모아도 충분하다
-                FUND_SEEN.update(k for row in rows for k in row
-                                 if isinstance(row, dict) and k not in ("meta",))
+                FUND_SEEN.update(k for row in rows if isinstance(row, dict)
+                                 for k in row if k != "meta")
+            info["quarters"] = _fund_rows(rows, "quarterly", QUARTERS)
             info["annuals"] = _fund_rows(rows, "annual", ANNUALS)
         except Exception:                          # noqa: BLE001
             pass
@@ -1174,6 +1167,7 @@ def attach_company_info(holdings):
             i = info.get(h["ticker"]) or {}
             h["profile"] = i.get("profile") or {}
             h["quarters"] = i.get("quarters") or []
+            h["annuals"] = i.get("annuals") or []
     return holdings
 
 
