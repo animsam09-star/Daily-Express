@@ -121,10 +121,12 @@ def _holding(h, notes):
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
-        # 종목을 눌렀을 때 보여줄 기업 개요와 최근 5개 분기 실적
+        # 종목을 눌렀을 때 보여줄 기업 개요와 분기·연간 실적
         "profile": h.get("profile") or {},
         "quarters": [{k: (round(v, 4) if isinstance(v, float) else v)
                       for k, v in q.items()} for q in (h.get("quarters") or [])],
+        "annuals": [{k: (round(v, 4) if isinstance(v, float) else v)
+                     for k, v in q.items()} for q in (h.get("annuals") or [])],
     }
 
 
@@ -473,6 +475,28 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
              padding-top:0}
 .note-row a{color:var(--down-t)}
 /* 종목 상세의 기업 개요·분기 실적 */
+/* 상세 모달 탭. 개요·실적·보고서를 위아래로 쌓으면 스크롤이 길어져 차트가
+   밀린다 — 한 번에 하나만 보여준다. */
+.dtabs{display:flex;gap:2px;flex-wrap:wrap;margin:2px 0 12px;
+  border-bottom:1px solid var(--grid)}
+.dtabs button{border:0;background:none;color:var(--muted);font:inherit;font-size:13px;
+  padding:7px 11px;border-bottom:2px solid transparent;cursor:pointer;margin-bottom:-1px}
+.dtabs button:hover{color:var(--ink2)}
+.dtabs button.on{color:var(--ink);border-bottom-color:var(--ink);font-weight:700}
+.pane{display:none}
+.pane.on{display:block}
+/* 탭 안에서는 .about 의 윗줄이 군더더기다 — 이미 탭이 갈라 놨다 */
+.pane>.about:first-child{margin-top:0;padding-top:0;border-top:0}
+/* 보고서 — 볼 곳을 한자리에 모아 고르게 한다 */
+.dlinks{display:grid;gap:14px}
+.dlinks h4{margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:.04em;
+  color:var(--muted);text-transform:uppercase}
+.dlinks a{display:flex;align-items:baseline;gap:8px;padding:7px 10px;
+  border:1px solid var(--grid);border-radius:8px;margin-bottom:5px;
+  text-decoration:none;color:var(--ink);font-size:13px}
+.dlinks a:hover{background:var(--plane)}
+.dlinks .ic{flex:none;width:18px;text-align:center}
+.dlinks .sub2{margin-left:auto;color:var(--muted);font-size:11.5px;text-align:right}
 .about{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid)}
 .about+.about{margin-top:10px}
 .about .lb{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);
@@ -565,11 +589,23 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
 <dialog id="dlg"><div class="dlg">
   <div class="head"><b id="dlg-title"></b><span class="meta" id="dlg-meta"></span>
     <button class="close" onclick="document.getElementById('dlg').close()">닫기</button></div>
-  <div class="rets" id="dlg-rets"></div>
-  <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
-  <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
-  <div class="chartbox vol" id="dlg-volbox" hidden><canvas id="dlg-vol"></canvas></div>
-  <div id="dlg-about"></div>
+  <div class="dtabs" id="dlg-tabs">
+    <button data-p="chart" class="on">차트</button>
+    <button data-p="fin">분기 실적</button>
+    <button data-p="year">연간 실적</button>
+    <button data-p="about">기업 개요</button>
+    <button data-p="doc">보고서</button>
+  </div>
+  <div class="pane on" id="p-chart">
+    <div class="rets" id="dlg-rets"></div>
+    <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
+    <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
+    <div class="chartbox vol" id="dlg-volbox" hidden><canvas id="dlg-vol"></canvas></div>
+  </div>
+  <div class="pane" id="p-fin"></div>
+  <div class="pane" id="p-year"></div>
+  <div class="pane" id="p-about"></div>
+  <div class="pane" id="p-doc"></div>
 </div></dialog>
 
 <script id="data" type="application/json">__DATA__</script>
@@ -1233,40 +1269,107 @@ function syncVol(){
 // 분기 실적 표 — 매출·영업이익·순이익을 조/억 단위로. 전년 동기가 있으면
 // 매출 증감률을 함께 보여준다(직전 분기 대비는 계절성 탓에 오해를 부른다).
 function aboutHtml(h){
-  const cur=D.currency, p=h.profile||{}, qs=h.quarters||[];
-  let out='';
-  if(p.summary){
-    const meta=[p.industry, p.employees?`임직원 ${p.employees.toLocaleString()}명`:''
-      ].filter(Boolean).join(' · ');
-    out+=`<div class="about"><div class="lb">기업 개요</div>
-      <p>${p.summary}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
-  }
-  if(qs.length){
-    const yoy=(i,k)=>{const prev=qs[i-4]; return prev&&prev[k]&&qs[i][k]!=null
-      ? (qs[i][k]/prev[k]-1)*100 : null;};
-    const U=finUnit(qs.flatMap(q=>[q.revenue,q.op,q.net]),cur);
-    const cells=k=>qs.map((q,i)=>{
-      const v=q[k]; const g=k==='revenue'?yoy(i,k):null;
-      return `<td>${v==null?'–':fmt(v/U.d,U.p)}${
-        g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
-    out+=`<div class="about"><div class="lb">최근 ${qs.length}개 분기 실적 <span
-        style="color:var(--sub);font-weight:400">(단위: ${U.u})</span></div>
-      <div class="tablewrap"><table class="fin">
-        <thead><tr><th>항목</th>${qs.map(q=>`<th>${q.date}</th>`).join('')}</tr></thead>
-        <tbody>
-          <tr><th>매출</th>${cells('revenue')}</tr>
-          <tr><th>영업이익</th>${cells('op')}</tr>
-          <tr><th>순이익</th>${cells('net')}</tr>
-        </tbody></table></div>
-      <div class="sub">매출 옆 수치는 전년 동기(4분기 전) 대비 증감률</div></div>`;
-  }
-  return out;
+  const p=h.profile||{};
+  if(!p.summary) return '<div class="about"><p>기업 개요가 없습니다.</p></div>';
+  const meta=[p.industry, p.employees?`임직원 ${p.employees.toLocaleString()}명`:''
+    ].filter(Boolean).join(' · ');
+  return `<div class="about"><div class="lb">기업 개요</div>
+    <p>${p.summary}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
 }
+
+// 실적 표. 분기와 연간이 같은 모양이라 한 함수로 찍는다. 증감률은 분기면
+// 4칸 전(전년 동기), 연간이면 1칸 전과 견준다 — 분기를 직전 분기와 견주면
+// 계절성 탓에 오해를 부른다.
+function finHtml(rows, annual){
+  const cur=D.currency;
+  if(!rows||!rows.length)
+    return `<div class="about"><p>${annual?'연간':'분기'} 실적이 없습니다.</p></div>`;
+  const back=annual?1:4;
+  // 기준 값이 적자면 증감률이 거짓말이 된다(-100 -> +50 이 '-150%' 로 찍힌다).
+  // 원래 매출에만 증감률을 붙였던 이유가 이것으로 보인다 — 영업이익·순이익
+  // 에도 붙이되 기준이 흑자일 때만 센다.
+  const yoy=(i,k)=>{const q=rows[i-back];
+    return q&&q[k]>0&&rows[i][k]!=null ? (rows[i][k]/q[k]-1)*100 : null;};
+  const U=finUnit(rows.flatMap(q=>[q.revenue,q.op,q.net]),cur);
+  const cells=k=>rows.map((q,i)=>{
+    const v=q[k], g=yoy(i,k);
+    return `<td>${v==null?'–':fmt(v/U.d,U.p)}${
+      g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
+  return `<div class="about"><div class="lb">최근 ${rows.length}개 ${
+      annual?'연간':'분기'} 실적 <span
+      style="color:var(--muted);font-weight:400">(단위: ${U.u})</span></div>
+    <div class="tablewrap"><table class="fin">
+      <thead><tr><th>항목</th>${rows.map(q=>`<th>${q.date}</th>`).join('')}</tr></thead>
+      <tbody>
+        <tr><th>매출</th>${cells('revenue')}</tr>
+        <tr><th>영업이익</th>${cells('op')}</tr>
+        <tr><th>순이익</th>${cells('net')}</tr>
+      </tbody></table></div>
+    <div class="sub">옆 수치는 ${annual?'전년':'전년 동기(4분기 전)'} 대비 증감률</div></div>`;
+}
+
+// 보고서 탭 — 볼 곳을 한자리에 모아 고르게 한다. 긁어 오는 게 아니라
+// 링크만 만든다(수집도 API 키도 필요 없고, 상대 사이트가 바뀌어도 페이지가
+// 깨지지 않는다). 주소를 지어내지 않으려고 형식이 확실한 것만 넣었다.
+function linksHtml(h){
+  const nm=encodeURIComponent(h.name||''), t=encodeURIComponent(h.ticker||'');
+  const a=(href,ic,label,note)=>`<a href="${href}" target="_blank" rel="noopener">`
+    +`<span class="ic">${ic}</span><span>${label}</span>`
+    +(note?`<span class="sub2">${note}</span>`:'')+'</a>';
+  if(D.currency==='₩'){
+    const c=(h.ticker||'').replace(/\..*$/,'');      // 야후 접미사(.KS/.KQ)는 뗀다
+    return `<div class="dlinks">
+      <div><h4>공시</h4>
+        ${a('https://dart.fss.or.kr/','🗂','DART 전자공시','금감원 · 회사명으로 검색')}
+        ${a(`https://finance.naver.com/item/news.naver?code=${c}`,'📢','뉴스·공시',`네이버 · ${c}`)}
+      </div>
+      <div><h4>종목</h4>
+        ${a(`https://finance.naver.com/item/main.naver?code=${c}`,'📈','네이버 금융',c)}
+        ${a(`https://m.stock.naver.com/domestic/stock/${c}/total`,'📱','네이버 금융(모바일)',c)}
+      </div></div>`;
+  }
+  const lo=(h.ticker||'').toLowerCase();
+  const ed=(type,label,ic,note)=>a(
+    'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company='+nm
+    +'&type='+type+'&dateb=&owner=include&count=20', ic, label, note);
+  return `<div class="dlinks">
+    <div><h4>공시 (SEC EDGAR)</h4>
+      ${ed('10-','정기보고서 10-Q·10-K','📄','회사명 검색')}
+      ${ed('8-K','8-K','📢','실적발표·수시공시')}
+      ${ed('','전체 공시 목록','🗂','회사명 검색')}
+    </div>
+    <div><h4>리서치</h4>
+      ${a(`https://finance.yahoo.com/quote/${t}/analysis`,'📊','애널리스트 추정치','야후 · EPS·매출 컨센서스')}
+      ${a(`https://stockanalysis.com/stocks/${lo}/financials/`,'🏢','재무제표','StockAnalysis · 분기·연간')}
+      ${a(`https://stockanalysis.com/stocks/${lo}/forecast/`,'🏦','목표주가·전망','StockAnalysis')}
+    </div>
+    <div><h4>시세</h4>
+      ${a(`https://finance.yahoo.com/quote/${t}`,'📈','야후 파이낸스',h.ticker||'')}
+    </div></div>`;
+}
+
+// 탭 전환. 한 번에 한 판만 보여준다.
+function showPane(p){
+  document.querySelectorAll('#dlg-tabs button').forEach(b=>
+    b.className = b.dataset.p===p ? 'on' : '');
+  document.querySelectorAll('#dlg .pane').forEach(el=>
+    el.className = 'pane' + (el.id==='p-'+p ? ' on' : ''));
+}
+document.querySelectorAll('#dlg-tabs button').forEach(b=>
+  b.onclick=()=>showPane(b.dataset.p));
 
 function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=null, ohlcM=null){
   document.getElementById('dlg-title').textContent=title;
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
-  document.getElementById('dlg-about').innerHTML=about?aboutHtml(about):'';
+  // 종목이면 탭을 쓰고, 지수·환율처럼 상세가 없으면 차트만 남긴다.
+  document.getElementById('dlg-tabs').hidden = !about;
+  if(about){
+    document.getElementById('p-about').innerHTML = aboutHtml(about);
+    document.getElementById('p-fin').innerHTML   = finHtml(about.quarters, false);
+    document.getElementById('p-year').innerHTML  = finHtml(about.annuals, true);
+    document.getElementById('p-doc').innerHTML   = linksHtml(about);
+  }
+  showPane('chart');
   document.getElementById('dlg-rets').innerHTML=rets?
     ['m1','m3','m6','m12'].map((k,i)=>rets[k]==null?'':
       `<div><span>${['1M','3M','6M','12M'][i]}</span> <b class="${cls(rets[k])}">${sgn(rets[k])}%</b></div>`)

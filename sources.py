@@ -1048,9 +1048,13 @@ FUNDAMENTALS = ("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/
                 "finance/timeseries/{sym}")
 # 실측(2026-08-03): quoteSummary 의 분기 손익은 4분기까지만 오고 영업이익이 비지만,
 # fundamentals-timeseries 는 5분기치를 영업이익까지 채워서 준다.
-FUND_TYPES = ",".join("quarterly" + t for t in
-                      ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS"))
+_FUND_ITEMS = ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS")
+# 분기와 연간을 한 번에 받는다. 같은 엔드포인트에 type 만 더 붙이면 되므로
+# 호출이 늘지 않는다 — 종목당 요청 수는 그대로다.
+FUND_TYPES = ",".join([*("quarterly" + t for t in _FUND_ITEMS),
+                       *("annual" + t for t in _FUND_ITEMS)])
 QUARTERS = 5
+ANNUALS = 5              # 연간 실적 표에 싣는 연수
 SUMMARY_MAX = 400        # 개요는 화면에서 읽을 만큼만 — 야후 원문은 2천 자에 이른다
 
 
@@ -1110,14 +1114,16 @@ def fetch_company_info(tickers):
                                     "merge": "false", "period1": p1, "period2": p2,
                                     "crumb": crumb}, timeout=TIMEOUT)
             rows = (r.json().get("timeseries") or {}).get("result") or []
-            rev = _fund_series(rows, "quarterlyTotalRevenue")
-            op = _fund_series(rows, "quarterlyOperatingIncome")
-            net = _fund_series(rows, "quarterlyNetIncome")
-            eps = _fund_series(rows, "quarterlyBasicEPS")
-            dates = sorted(rev or net or op)[-QUARTERS:]
-            info["quarters"] = [{"date": d, "revenue": rev.get(d),
-                                 "op": op.get(d), "net": net.get(d),
-                                 "eps": eps.get(d)} for d in dates]
+            for pre, key, n in (("quarterly", "quarters", QUARTERS),
+                                ("annual", "annuals", ANNUALS)):
+                rev = _fund_series(rows, pre + "TotalRevenue")
+                op = _fund_series(rows, pre + "OperatingIncome")
+                net = _fund_series(rows, pre + "NetIncome")
+                eps = _fund_series(rows, pre + "BasicEPS")
+                dates = sorted(rev or net or op)[-n:]
+                info[key] = [{"date": d, "revenue": rev.get(d),
+                              "op": op.get(d), "net": net.get(d),
+                              "eps": eps.get(d)} for d in dates]
         except Exception:                          # noqa: BLE001
             pass
         return sym, info
@@ -1125,7 +1131,8 @@ def fetch_company_info(tickers):
     with ThreadPoolExecutor(max_workers=8) as ex:
         out = dict(ex.map(one, tickers))
     got = sum(1 for v in out.values() if v.get("quarters"))
-    print(f"[info] 기업 개요·실적 {got}/{len(tickers)}종목")
+    gota = sum(1 for v in out.values() if v.get("annuals"))
+    print(f"[info] 기업 개요·실적 분기 {got}/{len(tickers)}종목 · 연간 {gota}종목")
     return out
 
 
