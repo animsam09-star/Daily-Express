@@ -1052,13 +1052,29 @@ FUNDAMENTALS = ("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/
 # 실측(2026-08-03): quoteSummary 의 분기 손익은 4분기까지만 오고 영업이익이 비지만,
 # fundamentals-timeseries 는 5분기치를 영업이익까지 채워서 준다.
 _FUND_ITEMS = ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS")
-# 분기와 연간을 한 번에 받는다. 같은 엔드포인트에 type 만 더 붙이면 되므로
-# 호출이 늘지 않는다 — 종목당 요청 수는 그대로다.
-FUND_TYPES = ",".join([*("quarterly" + t for t in _FUND_ITEMS),
-                       *("annual" + t for t in _FUND_ITEMS)])
+# 분기와 연간을 한 요청에 섞어 봤더니 연간이 한 줄도 안 왔다(실측: 연간
+# 0/193종목, 조회 기간을 6.2년으로 넓힌 뒤에도 그대로). 야후가 앞쪽
+# 묶음만 돌려주는 것으로 보여 따로 받는다. 종목당 요청이 하나 늘지만
+# 빈 탭을 내보내는 것보다 낫다.
+FUND_TYPES = ",".join("quarterly" + t for t in _FUND_ITEMS)
+FUND_TYPES_YEAR = ",".join("annual" + t for t in _FUND_ITEMS)
+# 야후가 실제로 어떤 항목을 돌려줬는지 모아 둔다 — 또 0건이면 추측 대신
+# 응답에 뭐가 들어 있었는지 보고 고친다.
+FUND_SEEN = set()
 QUARTERS = 5
 ANNUALS = 5              # 연간 실적 표에 싣는 연수
 SUMMARY_MAX = 400        # 개요는 화면에서 읽을 만큼만 — 야후 원문은 2천 자에 이른다
+
+
+def _fund_rows(rows, pre, n):
+    """응답에서 분기/연간 표 한 벌. pre 는 'quarterly' 또는 'annual'."""
+    rev = _fund_series(rows, pre + "TotalRevenue")
+    op = _fund_series(rows, pre + "OperatingIncome")
+    net = _fund_series(rows, pre + "NetIncome")
+    eps = _fund_series(rows, pre + "BasicEPS")
+    return [{"date": d, "revenue": rev.get(d), "op": op.get(d),
+             "net": net.get(d), "eps": eps.get(d)}
+            for d in sorted(rev or net or op)[-n:]]
 
 
 def _fund_series(rows, key):
@@ -1090,11 +1106,12 @@ def fetch_company_info(tickers):
     if not (session and crumb):
         print("[info] crumb 실패 — 기업 개요·실적 생략")
         return {}
-    # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준)
+    # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준).
+    # 연간은 5개년이 필요해 따로 더 멀리 잡는다.
     p2 = int(dt.datetime.now().timestamp())
-    # 분기 5개면 2.2년이면 됐지만 연간 5개년을 함께 받으면서 창을 넓혔다.
-    # 짧게 두면 연간이 2~3줄만 와서 표가 비는데, 0 이 아니라 경고도 안 뜬다.
-    p1 = p2 - int(60 * 60 * 24 * 365 * (ANNUALS + 1.2))
+    yr = 60 * 60 * 24 * 365
+    p1 = p2 - int(yr * 2.2)
+    p1y = p2 - int(yr * (ANNUALS + 1.2))
 
     def one(sym):
         info = {}
@@ -1113,22 +1130,24 @@ def fetch_company_info(tickers):
                 }
         except Exception:                          # noqa: BLE001
             pass
-        try:
+        def fund(types, start):
             r = session.get(FUNDAMENTALS.format(sym=sym),
-                            params={"symbol": sym, "type": FUND_TYPES,
-                                    "merge": "false", "period1": p1, "period2": p2,
-                                    "crumb": crumb}, timeout=TIMEOUT)
-            rows = (r.json().get("timeseries") or {}).get("result") or []
-            for pre, key, n in (("quarterly", "quarters", QUARTERS),
-                                ("annual", "annuals", ANNUALS)):
-                rev = _fund_series(rows, pre + "TotalRevenue")
-                op = _fund_series(rows, pre + "OperatingIncome")
-                net = _fund_series(rows, pre + "NetIncome")
-                eps = _fund_series(rows, pre + "BasicEPS")
-                dates = sorted(rev or net or op)[-n:]
-                info[key] = [{"date": d, "revenue": rev.get(d),
-                              "op": op.get(d), "net": net.get(d),
-                              "eps": eps.get(d)} for d in dates]
+                            params={"symbol": sym, "type": types,
+                                    "merge": "false", "period1": start,
+                                    "period2": p2, "crumb": crumb},
+                            timeout=TIMEOUT)
+            return (r.json().get("timeseries") or {}).get("result") or []
+
+        try:
+            info["quarters"] = _fund_rows(fund(FUND_TYPES, p1), "quarterly", QUARTERS)
+        except Exception:                          # noqa: BLE001
+            pass
+        try:
+            rows = fund(FUND_TYPES_YEAR, p1y)
+            if len(FUND_SEEN) < 12:                # 앞 몇 종목만 모아도 충분하다
+                FUND_SEEN.update(k for row in rows for k in row
+                                 if isinstance(row, dict) and k not in ("meta",))
+            info["annuals"] = _fund_rows(rows, "annual", ANNUALS)
         except Exception:                          # noqa: BLE001
             pass
         return sym, info
@@ -1138,6 +1157,9 @@ def fetch_company_info(tickers):
     got = sum(1 for v in out.values() if v.get("quarters"))
     gota = sum(1 for v in out.values() if v.get("annuals"))
     print(f"[info] 기업 개요·실적 분기 {got}/{len(tickers)}종목 · 연간 {gota}종목")
+    if got and not gota:
+        print("::warning::[info] 연간 실적 0건 — 야후 응답 항목: "
+              + (", ".join(sorted(FUND_SEEN)[:12]) or "(비어 있음)"))
     return out
 
 
