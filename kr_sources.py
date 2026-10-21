@@ -57,6 +57,8 @@ NAVER_HDR = {**UA, "Referer": "https://m.stock.naver.com/",
              "Accept": "application/json, text/plain, */*"}
 BASIC_URL = "https://m.stock.naver.com/api/stock/{code}/basic"
 FIN_URL = "https://m.stock.naver.com/api/stock/{code}/finance/quarter"
+# 연간은 같은 계열의 다른 경로다. 응답 모양이 분기와 같아 파서를 공유한다.
+FIN_YEAR_URL = "https://m.stock.naver.com/api/stock/{code}/finance/annual"
 
 
 def _api_json(url):
@@ -120,6 +122,7 @@ def stock_name(code: str) -> str:
 
 FIN_WANT = {"매출액": "revenue", "영업이익": "op", "당기순이익": "net"}
 KR_QUARTERS = 5
+KR_ANNUALS = 5
 
 
 def _quarters(code):
@@ -135,7 +138,12 @@ def _quarters(code):
     보여주면 안 되므로 버린다. 값 단위는 억원이고, 화면에서 조·억으로
     다시 표기한다.
     """
-    info = _api_json(FIN_URL.format(code=code)).get("financeInfo") or {}
+    return _fin_rows(FIN_URL.format(code=code))[-KR_QUARTERS:]
+
+
+def _fin_rows(url):
+    """실적 표 한 벌. 분기·연간이 같은 응답 모양이라 URL 만 갈아 끼운다."""
+    info = _api_json(url).get("financeInfo") or {}
     titles = [t for t in (info.get("trTitleList") or [])
               if t.get("isConsensus") != "Y" and t.get("key")]
     if not titles:
@@ -155,9 +163,14 @@ def _quarters(code):
                 row[key] = float(v) * 1e8      # 억원 -> 원
             except ValueError:
                 row[key] = None
-        if row.get("revenue") is not None:     # 값이 아직 없는 분기는 버린다
+        if row.get("revenue") is not None:     # 값이 아직 없는 기간은 버린다
             out.append(row)
-    return out[-KR_QUARTERS:]
+    return out
+
+
+def _annuals(code):
+    """최근 5개 연간 실적. 분기와 응답 모양이 같아 _fin_rows 를 함께 쓴다."""
+    return _fin_rows(FIN_YEAR_URL.format(code=code))[-KR_ANNUALS:]
 
 
 
@@ -217,10 +230,11 @@ def fetch_company_info(codes):
     한 번(실적)으로 끝난다.
     """
     def naver(code):
-        info = {"name": code, "profile": {}, "quarters": []}
+        info = {"name": code, "profile": {}, "quarters": [], "annuals": []}
         try:
             info["name"] = stock_name(code)
             info["quarters"] = _quarters(code)
+            info["annuals"] = _annuals(code)
         except Exception:                      # noqa: BLE001
             pass
         return code, info
@@ -236,9 +250,15 @@ def fetch_company_info(codes):
         for code, summary in zip(codes, ex.map(lambda c: _overview(c, deadline), codes)):
             if summary:
                 out[code]["profile"] = {"summary": summary}
+    gota = sum(1 for v in out.values() if v.get("annuals"))
     got = sum(1 for v in out.values() if v.get("quarters"))
     desc = sum(1 for v in out.values() if (v.get("profile") or {}).get("summary"))
-    print(f"[kr] 분기 실적 {got}/{len(codes)}종목, 기업 개요 {desc}/{len(codes)}종목")
+    # 연간 건수를 같이 찍는다. 네이버 연간 경로(finance/annual)는 분기에서
+    # 미뤄 짐작한 것이라, 0 으로 나오면 경로가 틀렸다는 뜻이다.
+    print(f"[kr] 분기 실적 {got}/{len(codes)}종목, 연간 실적 {gota}/{len(codes)}종목, "
+          f"기업 개요 {desc}/{len(codes)}종목")
+    if got and not gota:
+        print("::warning::[kr] 연간 실적이 0건 — FIN_YEAR_URL 경로를 확인해야 한다")
     return out
 
 
@@ -284,7 +304,8 @@ def _row(code, quotes, info, rets, pick=None):
            "chg_52w": q.get("chg_52w"), "vs_200d": q.get("vs_200d"),
            "returns": r.get("returns", {}), "series": r.get("series", []),
            "ohlc": r.get("ohlc", []), "ohlc_m": r.get("ohlc_m", []),
-           "profile": i.get("profile") or {}, "quarters": i.get("quarters") or []}
+           "profile": i.get("profile") or {}, "quarters": i.get("quarters") or [],
+           "annuals": i.get("annuals") or []}
     if pick:
         row["pick"] = pick
     return row

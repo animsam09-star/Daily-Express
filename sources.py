@@ -385,6 +385,9 @@ def _quote_batch(session, crumb, batch, out):
             # 야후가 %로 줄지 비율로 줄지 따질 필요가 없는 값이다.
             "vol_10d": q.get("averageDailyVolume10Day"),
             "vol_3m": q.get("averageDailyVolume3Month"),
+            # 어닝콜 전문 링크가 거래소(nasdaq/nyse)를 주소에 넣는다.
+            # 같은 응답에 있어 공짜다.
+            "exchange": q.get("fullExchangeName") or "",
         }
 
 
@@ -1048,10 +1051,29 @@ FUNDAMENTALS = ("https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/
                 "finance/timeseries/{sym}")
 # 실측(2026-08-03): quoteSummary 의 분기 손익은 4분기까지만 오고 영업이익이 비지만,
 # fundamentals-timeseries 는 5분기치를 영업이익까지 채워서 준다.
-FUND_TYPES = ",".join("quarterly" + t for t in
-                      ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS"))
+_FUND_ITEMS = ("TotalRevenue", "OperatingIncome", "NetIncome", "BasicEPS")
+# 분기와 연간을 한 요청으로 받는다 — type 만 더 붙이면 되므로 호출이 늘지
+# 않는다. 한때 '야후가 섞으면 앞쪽만 준다'고 보고 요청을 나눴는데 오진이었다.
+# 진짜 원인은 받아 온 연간을 종목에 옮겨 붙이지 않은 것이었다(아래 참고).
+FUND_TYPES = ",".join([*("quarterly" + t for t in _FUND_ITEMS),
+                       *("annual" + t for t in _FUND_ITEMS)])
+# 야후가 실제로 어떤 항목을 돌려줬는지 모아 둔다 — 또 0건이면 추측 대신
+# 응답에 뭐가 들어 있었는지 보고 고친다.
+FUND_SEEN = set()
 QUARTERS = 5
+ANNUALS = 5              # 연간 실적 표에 싣는 연수
 SUMMARY_MAX = 400        # 개요는 화면에서 읽을 만큼만 — 야후 원문은 2천 자에 이른다
+
+
+def _fund_rows(rows, pre, n):
+    """응답에서 분기/연간 표 한 벌. pre 는 'quarterly' 또는 'annual'."""
+    rev = _fund_series(rows, pre + "TotalRevenue")
+    op = _fund_series(rows, pre + "OperatingIncome")
+    net = _fund_series(rows, pre + "NetIncome")
+    eps = _fund_series(rows, pre + "BasicEPS")
+    return [{"date": d, "revenue": rev.get(d), "op": op.get(d),
+             "net": net.get(d), "eps": eps.get(d)}
+            for d in sorted(rev or net or op)[-n:]]
 
 
 def _fund_series(rows, key):
@@ -1083,9 +1105,12 @@ def fetch_company_info(tickers):
     if not (session and crumb):
         print("[info] crumb 실패 — 기업 개요·실적 생략")
         return {}
-    # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준)
+    # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준).
+    # 연간은 5개년이 필요해 따로 더 멀리 잡는다.
     p2 = int(dt.datetime.now().timestamp())
-    p1 = p2 - int(60 * 60 * 24 * 365 * 2.2)
+    yr = 60 * 60 * 24 * 365
+    # 연간 5개년에 맞춰 잡는다. 분기는 뒤에서 5개만 쓰므로 더 받아도 무방하다.
+    p1y = p2 - int(yr * (ANNUALS + 1.2))
 
     def one(sym):
         info = {}
@@ -1107,17 +1132,15 @@ def fetch_company_info(tickers):
         try:
             r = session.get(FUNDAMENTALS.format(sym=sym),
                             params={"symbol": sym, "type": FUND_TYPES,
-                                    "merge": "false", "period1": p1, "period2": p2,
-                                    "crumb": crumb}, timeout=TIMEOUT)
+                                    "merge": "false", "period1": p1y,
+                                    "period2": p2, "crumb": crumb},
+                            timeout=TIMEOUT)
             rows = (r.json().get("timeseries") or {}).get("result") or []
-            rev = _fund_series(rows, "quarterlyTotalRevenue")
-            op = _fund_series(rows, "quarterlyOperatingIncome")
-            net = _fund_series(rows, "quarterlyNetIncome")
-            eps = _fund_series(rows, "quarterlyBasicEPS")
-            dates = sorted(rev or net or op)[-QUARTERS:]
-            info["quarters"] = [{"date": d, "revenue": rev.get(d),
-                                 "op": op.get(d), "net": net.get(d),
-                                 "eps": eps.get(d)} for d in dates]
+            if len(FUND_SEEN) < 12:                # 앞 몇 종목만 모아도 충분하다
+                FUND_SEEN.update(k for row in rows if isinstance(row, dict)
+                                 for k in row if k != "meta")
+            info["quarters"] = _fund_rows(rows, "quarterly", QUARTERS)
+            info["annuals"] = _fund_rows(rows, "annual", ANNUALS)
         except Exception:                          # noqa: BLE001
             pass
         return sym, info
@@ -1125,7 +1148,11 @@ def fetch_company_info(tickers):
     with ThreadPoolExecutor(max_workers=8) as ex:
         out = dict(ex.map(one, tickers))
     got = sum(1 for v in out.values() if v.get("quarters"))
-    print(f"[info] 기업 개요·실적 {got}/{len(tickers)}종목")
+    gota = sum(1 for v in out.values() if v.get("annuals"))
+    print(f"[info] 기업 개요·실적 분기 {got}/{len(tickers)}종목 · 연간 {gota}종목")
+    if got and not gota:
+        print("::warning::[info] 연간 실적 0건 — 야후 응답 항목: "
+              + (", ".join(sorted(FUND_SEEN)[:12]) or "(비어 있음)"))
     return out
 
 
@@ -1140,6 +1167,7 @@ def attach_company_info(holdings):
             i = info.get(h["ticker"]) or {}
             h["profile"] = i.get("profile") or {}
             h["quarters"] = i.get("quarters") or []
+            h["annuals"] = i.get("annuals") or []
     return holdings
 
 

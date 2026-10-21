@@ -246,6 +246,12 @@ def main() -> int:
         for h in rows:
             if h.get("pick"):
                 kinds.setdefault(h["pick"], []).append(h["ticker"])
+    # 연간 실적이 실제로 붙었는지. 분기만 있고 연간이 0이면 수집 경로가
+    # 틀린 것인데, 화면을 열어 보기 전에는 모른다.
+    hs = [h for rows in (data.get("holdings") or {}).values() for h in rows]
+    nq = sum(1 for h in hs if h.get("quarters"))
+    na = sum(1 for h in hs if h.get("annuals"))
+    print(f"::notice::[진단] 실적 — 분기 {nq}/{len(hs)}종목 · 연간 {na}/{len(hs)}종목")
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
