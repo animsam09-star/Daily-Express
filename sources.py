@@ -1092,7 +1092,9 @@ def fetch_company_info(tickers):
         return {}
     # 5분기를 받으려면 2년 남짓 거슬러 올라가야 한다(분기 결산일 기준)
     p2 = int(dt.datetime.now().timestamp())
-    p1 = p2 - int(60 * 60 * 24 * 365 * 2.2)
+    # 분기 5개면 2.2년이면 됐지만 연간 5개년을 함께 받으면서 창을 넓혔다.
+    # 짧게 두면 연간이 2~3줄만 와서 표가 비는데, 0 이 아니라 경고도 안 뜬다.
+    p1 = p2 - int(60 * 60 * 24 * 365 * (ANNUALS + 1.2))
 
     def one(sym):
         info = {}
