@@ -14,9 +14,14 @@ import time
 
 import news
 import notify
+import profile
 import render
 import sources
 import webgen
+
+
+# 개요 캐시가 놓이는 곳. 워크플로가 data-us 브랜치에서 받아 두고 다시 올린다.
+OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_us.json")
 
 
 def main() -> int:
@@ -50,15 +55,19 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
 
-    # 야후가 주는 기업 개요는 영문이다. 전 종목을 한 번에 보내 한국어로 옮긴다.
-    # 실패하면 원문(영문)이 그대로 남는다.
-    profiles = {h["ticker"]: (h.get("profile") or {}).get("summary")
-                for hs in (data.get("holdings") or {}).values() for h in hs}
-    for t, ko in news.translate_profiles({k: v for k, v in profiles.items() if v}).items():
-        for hs in (data.get("holdings") or {}).values():
-            for h in hs:
-                if h["ticker"] == t and h.get("profile"):
-                    h["profile"]["summary"] = ko
+    # 기업 개요를 한글로 다시 쓴다. 전에는 news.translate_profiles 로 매일
+    # 번역했는데 두 가지가 아까웠다 — ① 400자로 자른 뒤 번역해서 뒤쪽 사업
+    # 내용이 통째로 사라졌고, ② 캐시가 없어 종목 200개를 날마다 다시 돌렸다
+    # (같은 회사 설명이 날마다 조금씩 달라지기도 했다).
+    # 이제 원문 전체를 재료로 한 번만 쓰고 캐시한다.
+    profs = {h["ticker"]: (h.get("profile") or {})
+             for hs in (data.get("holdings") or {}).values() for h in hs}
+    ko = profile.build(profs, OVERVIEW_CACHE)
+    for hs in (data.get("holdings") or {}).values():
+        for h in hs:
+            text = ko.get(h["ticker"])
+            if text and h.get("profile"):
+                h["profile"]["summary_ko"] = text
 
     # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
     # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)

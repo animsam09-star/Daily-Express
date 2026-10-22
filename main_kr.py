@@ -16,6 +16,7 @@ import time
 import kr_sources as kr
 import news
 import notify
+import profile
 import render
 import sources
 import webgen
@@ -181,6 +182,9 @@ def build_charts(data, outdir):
     return charts
 
 
+OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_kr.json")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -209,6 +213,18 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
     # 종목 메모 + 테마별 등락 종합 코멘트. 미국판과 같은 프롬프트·검증을 쓴다.
+    # 기업 개요를 다시 쓴다. 국내는 FnGuide 원문이 한글이라 번역은 필요
+    # 없지만, 공시체 문장을 그대로 옮긴 거라 읽기 나쁘다. 미국과 같은
+    # 규칙으로 정리하고 같은 방식으로 캐시한다(캐시 파일만 따로 둔다).
+    profs = {h["ticker"]: (h.get("profile") or {})
+             for hs in (data.get("holdings") or {}).values() for h in hs}
+    ko = profile.build(profs, OVERVIEW_CACHE)
+    for hs in (data.get("holdings") or {}).values():
+        for h in hs:
+            text = ko.get(h["ticker"])
+            if text and h.get("profile"):
+                h["profile"]["summary_ko"] = text
+
     data["notes"], data["sector_notes"] = news.build_kr(
         data.get("holdings") or {},
         sectors=data.get("sectors"),

@@ -130,7 +130,9 @@ jobs:
           if git ls-remote --exit-code origin data-kr >/dev/null 2>&1; then
             git fetch origin data-kr --depth=1
             git show FETCH_HEAD:kr_pools.json > data/kr_pools.json 2>/dev/null || true
+            git show FETCH_HEAD:overviews_kr.json > data/overviews_kr.json 2>/dev/null || true
           fi
+          [ -s data/overviews_kr.json ] || rm -f data/overviews_kr.json
           if [ -s data/kr_pools.json ]; then
             echo "캐시 있음($(wc -c < data/kr_pools.json) bytes)"
           else
@@ -151,14 +153,16 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         continue-on-error: true      # 캐시 저장 실패가 브리핑을 막지 않는다
         run: |
-          [ -s data/kr_pools.json ] || { echo "저장할 캐시 없음"; exit 0; }
+          [ -s data/kr_pools.json ] || [ -s data/overviews_kr.json ] \
+            || { echo "저장할 캐시 없음"; exit 0; }
           cd data
           rm -f quotes.json
           git init -q
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -b data-kr
-          git add kr_pools.json
+          git add -- kr_pools.json overviews_kr.json 2>/dev/null || true
+          git add -A
           git commit -q -m "테마 구성 $(date -u '+%Y-%m-%d %H:%M UTC')"
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \

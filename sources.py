@@ -1185,6 +1185,9 @@ def fetch_company_info(tickers):
                  .get("assetProfile") or {})
             if p:
                 info["profile"] = {
+                    # 원문은 한글로 다시 쓸 재료다. 잘라 버리면 되살릴 수 없어
+                    # 따로 들고 간다(화면 payload 에는 싣지 않는다).
+                    "summary_raw": " ".join((p.get("longBusinessSummary") or "").split()),
                     "summary": _trim(p.get("longBusinessSummary")),
                     "industry": p.get("industry") or "",
                     "employees": p.get("fullTimeEmployees"),

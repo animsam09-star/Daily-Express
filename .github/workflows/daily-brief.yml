@@ -22,7 +22,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write           # data-us 브랜치에 기업 개요 캐시를 남긴다
   actions: read             # 중복 발송 가드가 최근 run 목록을 조회한다
 
 jobs:
@@ -133,9 +133,45 @@ jobs:
       # 발송은 여기서 하지 않는다 — 웹이 먼저 갱신되도록 --defer-send 로
       # 본문·차트만 저장해 두고, Cloudflare 배포가 끝난 뒤 아래 단계에서 보낸다.
       # web_only 면 --dry-run 이라 저장도 하지 않아 발송 단계가 조용히 넘어간다.
+      # 기업 개요는 종목마다 한 번만 쓰면 되는데(회사 설명이 날마다 바뀌지
+      # 않는다) 캐시가 없으면 200종목을 매일 다시 쓰게 된다. 마지막 결과를
+      # data-us 브랜치에 둔다. quotes.yml 의 data 브랜치와 따로 둔 이유는
+      # 그쪽이 한 시간마다 force-push 해서 서로 덮어쓰기 때문이다.
+      - name: 기업 개요 캐시 받아두기
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code origin data-us >/dev/null 2>&1; then
+            git fetch origin data-us --depth=1
+            git show FETCH_HEAD:overviews_us.json > data/overviews_us.json 2>/dev/null || true
+          fi
+          if [ -s data/overviews_us.json ]; then
+            echo "캐시 있음($(wc -c < data/overviews_us.json) bytes)"
+          else
+            rm -f data/overviews_us.json
+            echo "캐시 없음 — 이번 실행에서 처음 만든다"
+          fi
+
       - name: 브리핑 생성
         if: steps.guard.outputs.skip != 'true'
         run: python main.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
+
+      - name: 기업 개요 캐시 남기기
+        if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true      # 캐시 저장 실패가 브리핑을 막지 않는다
+        run: |
+          [ -s data/overviews_us.json ] || { echo "저장할 캐시 없음"; exit 0; }
+          cd data
+          rm -f quotes.json
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b data-us
+          git add overviews_us.json
+          git commit -q -m "기업 개요 $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            data-us
 
       # ---- 웹 대시보드 (Cloudflare Pages) ----
       # 각 실행은 자기 시장 페이지만 새로 만들므로, 반대 시장 페이지를

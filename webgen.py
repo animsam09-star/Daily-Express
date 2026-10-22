@@ -123,7 +123,10 @@ def _holding(h, notes):
         "pick": h.get("pick") or "",
         # 종목을 눌렀을 때 보여줄 기업 개요와 분기·연간 실적
         "exchange": h.get("exchange") or "",
-        "profile": h.get("profile") or {},
+        # 원문(summary_raw)은 싣지 않는다 — 화면이 안 쓰는데 종목마다
+        # 2천 자씩이라 페이지가 통째로 무거워진다.
+        "profile": {k: v for k, v in (h.get("profile") or {}).items()
+                    if k != "summary_raw"},
         "quarters": [{k: (round(v, 4) if isinstance(v, float) else v)
                       for k, v in q.items()} for q in (h.get("quarters") or [])],
         "annuals": [{k: (round(v, 4) if isinstance(v, float) else v)
@@ -1271,11 +1274,14 @@ function syncVol(){
 // 매출 증감률을 함께 보여준다(직전 분기 대비는 계절성 탓에 오해를 부른다).
 function aboutHtml(h){
   const p=h.profile||{};
-  if(!p.summary) return '<div class="about"><p>기업 개요가 없습니다.</p></div>';
+  // 한글로 다시 쓴 개요가 있으면 그걸 쓴다. 없으면 원문 요약으로 물러선다
+  // (미국은 그게 영문이라 읽기 나쁘지만, 아예 비는 것보다는 낫다).
+  const body=p.summary_ko || p.summary;
+  if(!body) return '<div class="about"><p>기업 개요가 없습니다.</p></div>';
   const meta=[p.industry, p.employees?`임직원 ${p.employees.toLocaleString()}명`:''
     ].filter(Boolean).join(' · ');
   return `<div class="about"><div class="lb">기업 개요</div>
-    <p>${p.summary}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
+    <p>${body}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
 }
 
 // 실적 표. 분기와 연간이 같은 모양이라 한 함수로 찍는다. 증감률은 분기면
