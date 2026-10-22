@@ -5,12 +5,69 @@ import datetime as dt
 import json
 import os
 import time
+from html import escape
 
 import requests
 
 API = "https://api.telegram.org/bot{token}/{method}"
 ALBUM_MAX = 10          # 텔레그램 sendMediaGroup 상한
 TIMEOUT = 90
+
+
+EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
+
+
+def _money(v):
+    """매출을 읽기 쉬운 단위로. 미국 실적은 억~천억 달러 구간이 흔하다."""
+    if v is None:
+        return ""
+    a = abs(v)
+    if a >= 1e12:
+        return f"{v / 1e12:,.1f}조달러"
+    if a >= 1e8:
+        return f"{v / 1e8:,.0f}억달러"
+    return f"{v / 1e6:,.0f}백만달러"
+
+
+def _surprise(act, est):
+    """컨센서스 대비. 추정치가 0이거나 적자면 % 가 거짓말이 되므로 뺀다."""
+    if act is None or not est or est <= 0:
+        return ""
+    return f"{(act / est - 1) * 100:+.0f}%"
+
+
+def _earnings_lines(data):
+    """실적 발표 블록. 숫자는 캘린더에서, 한 줄 요약은 이미 뽑아 둔 종목
+    메모에서 가져온다 — 메모 쪽이 '실적 발표' 를 사건으로 이미 쓰고 있어서
+    AI 를 한 번 더 부를 일이 없다."""
+    e = data.get("earnings") or {}
+    done, up = e.get("done") or [], e.get("upcoming") or []
+    if not done and not up:
+        return []
+    notes = data.get("notes") or {}
+    out = [""]
+    if done:
+        out.append("□ 실적 발표")
+        for r in done[:EARN_MAX]:
+            bits = []
+            if r.get("rev") is not None:
+                bits.append("매출 " + _money(r["rev"])
+                            + (f"(컨센 {_surprise(r['rev'], r['rev_est'])})"
+                               if _surprise(r["rev"], r["rev_est"]) else ""))
+            if r.get("eps") is not None:
+                sp = _surprise(r["eps"], r["eps_est"])
+                bits.append(f"EPS {r['eps']:,.2f}"
+                            + (f"(컨센 {r['eps_est']:,.2f}, {sp})" if sp else ""))
+            head = f"    · <b>{escape(r['ticker'])}</b>"
+            out.append(head + ("  " + "  ".join(bits) if bits else "  (수치 미공개)"))
+            note = (notes.get(r["ticker"]) or {}).get("note")
+            if note:
+                out.append(f"       ↳ {escape(note)}")
+    if up:
+        nxt = ", ".join(f"{escape(r['ticker'])}" + (f"({r['when']})" if r["when"] else "")
+                        for r in up[:EARN_MAX])
+        out.append("□ 발표 예정: " + nxt)
+    return out
 
 
 def build_message(data) -> str:
@@ -58,6 +115,8 @@ def build_message(data) -> str:
         lines.append(f"□ 회사 AA- 3년 {corp['last']:.2f}%({corp['chg']:+.0f}bp)")
     if spread and spread.get("last") is not None:
         lines.append(f"□ 회사 AA- 3년 Spread {spread['last']:.1f}bp({spread['chg']:+.0f}bp)")
+
+    lines += _earnings_lines(data)
 
     lines.append("")
     lines.append("<i>미국 지표는 전일 종가, 국내 금리는 전영업일 기준입니다.</i>")
