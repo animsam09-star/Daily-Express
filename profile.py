@@ -15,10 +15,17 @@ import json
 import os
 import shutil
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 300
 BATCH = 15               # 한 번에 물어볼 종목 수
+WORKERS = 4              # 묶음을 동시에 몇 개나 물을 것인가
+# 개요 때문에 브리핑이 늦으면 안 된다. 첫 실행은 200종목이라 묶음이 열넷인데,
+# 예산을 넘기면 거기서 멈추고 받은 것만 캐시한다 — 나머지는 다음 실행이
+# 이어서 쓴다. 캐시가 차면 이 단계는 곧 0초가 된다.
+BUDGET = 240             # 초
 VER = 1                  # 프롬프트를 바꾸면 올린다 — 캐시를 통째로 새로 만든다
 RAW_MAX = 1500           # 원문을 이만큼만 넣는다(야후 원문은 2천 자에 이른다)
 
@@ -114,17 +121,29 @@ def build(profiles: dict, path: str) -> dict:
         print(f"[개요] 캐시로 전부 해결({len(cache)}종목)")
         return cache
 
-    done = 0
-    for i in range(0, len(todo), BATCH):
-        chunk = todo[i:i + BATCH]
+    chunks = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
+    deadline = time.monotonic() + BUDGET
+
+    def one(chunk):
+        if time.monotonic() > deadline:
+            return None                            # 예산을 넘겼으면 묻지 않는다
         body = "\n\n".join(f"[{t}]\n{raw[:RAW_MAX]}" for t, raw in chunk)
-        d = _ask(SYSTEM + "\n\n" + body)
-        for it in (d or {}).get("items") or []:
-            tk, text = (it.get("ticker") or "").strip(), (it.get("text") or "").strip()
-            if tk and text:
-                cache[tk] = text
-                done += 1
-    print(f"[개요] 새로 쓴 종목 {done}/{len(todo)} (캐시 합계 {len(cache)})")
+        return _ask(SYSTEM + "\n\n" + body)
+
+    done, skipped = 0, 0
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        for d in ex.map(one, chunks):
+            if d is None:
+                skipped += 1
+                continue
+            for it in d.get("items") or []:
+                tk = (it.get("ticker") or "").strip()
+                text = (it.get("text") or "").strip()
+                if tk and text:
+                    cache[tk] = text
+                    done += 1
+    print(f"[개요] 새로 쓴 종목 {done}/{len(todo)} (캐시 합계 {len(cache)})"
+          + (f" — 예산 {BUDGET}초를 넘겨 {skipped}묶음은 다음 실행으로" if skipped else ""))
     if done:
         save(path, cache)
     return cache
