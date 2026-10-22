@@ -1095,6 +1095,69 @@ def _trim(text, limit=SUMMARY_MAX):
     return (cut[:dot + 1] if dot > limit * 0.5 else cut.rstrip() + "…")
 
 
+# ---------------------------------------------------------- 실적 발표
+# 종목별로 부르지 않고 기간으로 한 번만 부른다. 브리핑에 오르는 종목이
+# 200개 가까워서 개별 호출은 무료 등급 분당 제한에 바로 걸린다.
+EARN_URL = "https://finnhub.io/api/v1/calendar/earnings"
+EARN_BACK = 2            # 며칠 전까지 '나온 실적' 으로 볼 것인가
+EARN_AHEAD = 2           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
+EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
+# 장전(before market open)·장후(after market close)·장중
+EARN_WHEN = {"bmo": "장전", "amc": "장후", "dmh": "장중"}
+
+
+def _finnhub_key():
+    """시크릿 이름을 FINNHUB_API 로 두든 FINNHUB_API_KEY 로 두든 받는다."""
+    for n in ("FINNHUB_API_KEY", "FINNHUB_API", "FINNHUB_TOKEN"):
+        v = (os.environ.get(n) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def fetch_earnings(tickers):
+    """{"done": [...], "upcoming": [...]} — 실적 캘린더에서 우리 종목만 추린다.
+
+    done   은 이미 나온 것(실제치가 있다), upcoming 은 아직 안 나온 것.
+    컨센서스(epsEstimate·revenueEstimate)가 같은 응답에 들어 있어 대비까지
+    한 번에 된다.
+    """
+    key = _finnhub_key()
+    if not key:
+        print("[실적] FINNHUB 키가 없어 생략")
+        return {}
+    want = {t.upper() for t in (tickers or [])}
+    today = dt.date.today()
+    try:
+        r = requests.get(EARN_URL, headers=UA, verify=VERIFY, timeout=TIMEOUT,
+                         params={"token": key,
+                                 "from": (today - dt.timedelta(days=EARN_BACK)).isoformat(),
+                                 "to": (today + dt.timedelta(days=EARN_AHEAD)).isoformat()})
+        if r.status_code != 200:
+            print(f"::warning::[실적] 캘린더 HTTP {r.status_code} — 무료 등급에서 "
+                  f"막혔을 수 있다")
+            return {}
+        rows = (r.json() or {}).get("earningsCalendar") or []
+    except Exception as e:                         # noqa: BLE001
+        print(f"::warning::[실적] 캘린더 실패: {type(e).__name__}")
+        return {}
+
+    done, up = [], []
+    for x in rows:
+        sym = (x.get("symbol") or "").upper()
+        if sym not in want:
+            continue
+        row = {"ticker": sym, "date": x.get("date") or "",
+               "when": EARN_WHEN.get((x.get("hour") or "").lower(), ""),
+               "eps": x.get("epsActual"), "eps_est": x.get("epsEstimate"),
+               "rev": x.get("revenueActual"), "rev_est": x.get("revenueEstimate")}
+        (done if row["eps"] is not None or row["rev"] is not None else up).append(row)
+    done.sort(key=lambda r: r["date"], reverse=True)
+    up.sort(key=lambda r: r["date"])
+    print(f"[실적] 캘린더 {len(rows)}건 중 우리 종목 — 발표 {len(done)} · 예정 {len(up)}")
+    return {"done": done, "upcoming": up}
+
+
 def fetch_company_info(tickers):
     """{티커: {"profile": {...}, "quarters": [...]}} — 기업 개요와 최근 5개 분기 실적.
 
@@ -1413,6 +1476,8 @@ def collect_all():
     run("company_info", lambda: attach_company_info(data.get("holdings")))
     data.pop("company_info", None)
 
+    run("earnings", lambda: fetch_earnings(
+        [h["ticker"] for hs in (data.get("holdings") or {}).values() for h in hs]))
     run("fx", fetch_fx)
     run("oil", fetch_oil)
     run("kr_proxy", fetch_kr_proxy)
