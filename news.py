@@ -193,8 +193,19 @@ SUMMARY_SCHEMA = {
                         "description": "1~5. 이 뉴스가 그 종목에 얼마나 중요한가. "
                                        "메모가 비면 0.",
                     },
+                    "earn": {
+                        "type": "string",
+                        "description": "실적 발표 판정. 헤드라인이 컨센서스 대비를 "
+                                       "말할 때만 '상회'/'하회'/'부합' 중 하나로 "
+                                       "시작하는 한 줄(40자 내외). 아니면 빈 문자열.",
+                    },
+                    "earn_src": {
+                        "type": "integer",
+                        "description": "earn 의 근거 헤드라인 번호. 없으면 -1.",
+                    },
                 },
-                "required": ["ticker", "note", "source", "importance"],
+                "required": ["ticker", "note", "source", "importance",
+                             "earn", "earn_src"],
                 "additionalProperties": False,
             },
         },
@@ -273,7 +284,18 @@ SYSTEM = """너는 한국 증권사 리서치 어시스턴트다. 미국 주식�
    입력의 '[N개 매체 보도]' 표시는 그 종목을 여러 매체가 동시에 다뤘다는 뜻이다.
    같은 사안을 여러 곳이 보도했다면 그만큼 중요하다고 본다.
 
-10. 입력에 '## 섹터' 블록이 있으면, 각 섹터마다 sectors 배열에
+10. earn — 실적 발표 판정. 헤드라인에 그 종목의 분기 실적 발표가 있고
+    컨센서스(추정치·예상치·Street·estimates)와 견준 서술이 있을 때만 적는다.
+    '상회' / '하회' / '부합' 중 하나로 시작하고, 뒤에 무엇이 그랬는지를 붙인다.
+    좋음: "상회 — EPS·매출 모두 컨센 웃돌고 가이던스 상향"
+    좋음: "하회 — 매출은 부합했으나 EPS가 컨센 밑돎"
+    나쁨: "실적 발표" (상회·하회가 없다), "호실적" (컨센 대비가 아니다)
+    EPS 와 매출의 방향이 엇갈리면 엇갈린 대로 적는다 — 한쪽으로 뭉개지 않는다.
+    헤드라인이 실적 발표를 다루지 않거나 컨센서스 언급이 없으면 earn 을 빈
+    문자열, earn_src 를 -1 로 둔다. 숫자를 지어내 판정하지 않는다.
+    earn 은 note 와 별개다 — note 를 비우더라도 earn 은 적을 수 있다.
+
+11. 입력에 '## 섹터' 블록이 있으면, 각 섹터마다 sectors 배열에
     {symbol, comment} 를 만든다.
     - comment 는 그 섹터가 그날 왜 올랐/내렸는지 1~2문장(90자 내외)으로 종합한다.
     - 근거는 그 섹터 구성 종목의 등락·헤드라인과 맨 위 [시장 지표] 뿐이다.
@@ -697,13 +719,17 @@ def _parse(text: str) -> tuple[dict[str, dict], dict[str, str]]:
     out = {}
     for it in data.get("items", []):
         note = (it.get("note") or "").strip()
-        if it.get("ticker") and note:
+        earn = (it.get("earn") or "").strip()
+        # 메모가 비어도 실적 판정이 있으면 들고 간다 — 둘은 별개다.
+        # (판정은 중요도 문턱에도 걸리지 않는다. 실적 발표는 그 자체로 사건이다.)
+        if it.get("ticker") and (note or earn):
             try:
                 imp = int(it.get("importance") or 0)
             except (TypeError, ValueError):
                 imp = 0
             out[it["ticker"]] = {"note": note, "source": it.get("source", -1),
-                                 "importance": imp}
+                                 "importance": imp, "earn": earn,
+                                 "earn_src": it.get("earn_src", -1)}
     secs = {}
     raw = data.get("sectors")
     if isinstance(raw, list):
@@ -809,12 +835,24 @@ def build(holdings: dict, sectors: list[dict] | None = None,
         if s and isinstance(src, int) and 0 <= src < len(s["headlines"]):
             targets.append((tk, s["headlines"][src]["url"]))
 
+    # 실적 판정의 근거 기사도 같이 푼다. 메모와 근거가 다를 수 있어 따로 센다.
+    etargets = []
+    for tk, v in summaries.items():
+        src, s2 = v.get("earn_src", -1), by_ticker.get(tk)
+        if v.get("earn") and s2 and isinstance(src, int) \
+                and 0 <= src < len(s2["headlines"]):
+            etargets.append((tk, s2["headlines"][src]["url"]))
+
     with ThreadPoolExecutor(max_workers=8) as ex:
         short = dict(zip([t for t, _ in targets],
                          ex.map(article_url, [u for _, u in targets])))
+        eshort = dict(zip([t for t, _ in etargets],
+                          ex.map(article_url, [u for _, u in etargets])))
 
+    # 실적 판정은 중요도 문턱을 적용하지 않는다 — 발표 자체가 사건이고,
+    # '컨센 상회/하회' 는 메모가 비어도 화면에 있어야 한다.
     kept = {tk: v for tk, v in summaries.items()
-            if v.get("importance", 0) >= MIN_IMPORTANCE}
+            if v.get("importance", 0) >= MIN_IMPORTANCE or v.get("earn")}
     ok, tried = GNEWS_DECODED
     print(f"[news] 요약 {len(summaries)}건 → 중요도 {MIN_IMPORTANCE} 이상 {len(kept)}건 "
           f"/ 링크 {len(short)}건 / 섹터 코멘트 {len(sector_notes)}건")
@@ -824,8 +862,12 @@ def build(holdings: dict, sectors: list[dict] | None = None,
             print("[news] 구글 뉴스 경유 링크를 하나도 못 풀었다 — "
                   "구글이 방식을 바꿨는지 확인 필요", file=sys.stderr)
     notes = {tk: {"note": v["note"], "url": short.get(tk, ""),
-                  "importance": v.get("importance", 0)}
+                  "importance": v.get("importance", 0),
+                  "earn": v.get("earn", ""), "earn_url": eshort.get(tk, "")}
              for tk, v in kept.items()}
+    ne = sum(1 for v in notes.values() if v["earn"])
+    if ne:
+        print(f"[news] 실적 판정(컨센 대비) {ne}건")
     return notes, sector_notes
 
 

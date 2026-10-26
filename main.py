@@ -12,6 +12,7 @@ import os
 import sys
 import time
 
+import concall
 import news
 import notify
 import profile
@@ -22,6 +23,8 @@ import webgen
 
 # 개요 캐시가 놓이는 곳. 워크플로가 data-us 브랜치에서 받아 두고 다시 올린다.
 OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_us.json")
+# 어닝콜 요약 캐시. 콜은 분기에 한 번뿐이라 캐시가 거의 전부를 해결한다.
+CALL_CACHE = os.environ.get("CALL_CACHE", "data/concalls_us.json")
 
 
 def main() -> int:
@@ -68,6 +71,21 @@ def main() -> int:
             text = ko.get(h["ticker"])
             if text and h.get("profile"):
                 h["profile"]["summary_ko"] = text
+
+    # 어닝콜 전문 요약. 주도주·관심종목(pick 이 붙은 것)만 한다 — 전문이
+    # 5만 자라 종목마다 한 번씩 물어야 하고, 들고 있는 전부를 돌리면
+    # 브리핑 시간에 안 들어온다.
+    try:
+        picks, pnames = set(), {}
+        for hs in (data.get("holdings") or {}).values():
+            for h in hs:
+                if h.get("pick"):
+                    picks.add(h["ticker"])
+                    pnames[h["ticker"]] = h.get("name") or h["ticker"]
+        data["calls"] = concall.build(picks, pnames, CALL_CACHE)
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 어닝콜 요약 실패(계속): {type(e).__name__}: {e}")
+        data["calls"] = {}
 
     # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
     # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)
@@ -133,6 +151,9 @@ def main() -> int:
           + (f" (최근: {', '.join(r['ticker'] for r in ed[:8])})" if ed else "")
           + ("" if (e.get("done") or e.get("upcoming"))
              else " — 캘린더가 비어 있다"))
+    calls = data.get("calls") or {}
+    print(f"::notice::[진단] 어닝콜 요약 {len(calls)}건"
+          + (f" ({', '.join(sorted(calls)[:10])})" if calls else ""))
     if sources.EARLY_REJECT:
         top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
         print("::notice::[진단] 초동 탈락 사유 — "

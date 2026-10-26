@@ -118,6 +118,9 @@ def _holding(h, notes):
         "ohlc_m": _ds_ohlc(h.get("ohlc_m") or [], days=None),
         "note": n.get("note") or "",
         "note_url": n.get("url") or "",
+        # 기사에서 읽은 컨센서스 상회·하회 판정(실적 발표 카드가 쓴다)
+        "earn": n.get("earn") or "",
+        "earn_url": n.get("earn_url") or "",
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
@@ -290,6 +293,8 @@ def build_us(data, path):
                    .isoformat(timespec="seconds"),
         "currency": "$",
         "earnings": earn,
+        # 어닝콜 요약. 주도주·관심종목만 들어 있다(concall.build 가 추린다).
+        "calls": data.get("calls") or {},
         "summary": summary,
         "sectors": sectors,
         "flows": None,
@@ -545,6 +550,17 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
            margin-bottom:6px}
 .about p{margin:0;font-size:13px;line-height:1.6;color:var(--ink2)}
 .about .sub{margin-top:6px;font-size:11.5px;color:var(--muted)}
+/* 어닝콜 요약 — 코멘트는 제목+본문, Q&A 는 문답 한 쌍씩 */
+.call h4{margin:16px 0 8px;font-size:12.5px;letter-spacing:.02em}
+.call h4:first-child{margin-top:0}
+.call .it{margin:0 0 10px}
+.call .it b{display:block;font-size:12.5px;line-height:1.5}
+.call .it p{margin:2px 0 0;font-size:12.5px;line-height:1.6;color:var(--ink2)}
+.call .qa{margin:0 0 10px;font-size:12.5px;line-height:1.6}
+.call .qa .q{font-weight:650}
+.call .qa .a{color:var(--ink2)}
+.call .qa .q:before{content:'Q. ';color:var(--muted)}
+.call .qa .a:before{content:'A. ';color:var(--muted)}
 table.fin th{text-align:left}
 table.fin td{font-variant-numeric:tabular-nums}
 .yoy{margin-left:5px;font-size:11px}
@@ -557,6 +573,7 @@ table.fin th.prov{color:var(--up-t)}
         border-bottom:1px solid var(--grid)}
 tr.stk.extra td:first-child{font-weight:650}
 /* 시총 상위가 아니라 최근 흐름으로 뽑힌 자리라는 표시 */
+.badge.down{color:var(--down-t);background:rgba(42,90,180,.10)}
 .badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:999px;
        font-size:10.5px;font-weight:700;letter-spacing:.02em;vertical-align:1px;
        color:var(--up-t);background:rgba(180,60,40,.10);white-space:nowrap}
@@ -642,6 +659,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     <button data-p="fin">분기 실적</button>
     <button data-p="year">연간 실적</button>
     <button data-p="about">기업 개요</button>
+    <button data-p="call">컨콜</button>
     <button data-p="doc">보고서</button>
   </div>
   <div class="pane on" id="p-chart">
@@ -657,6 +675,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="pane" id="p-fin"></div>
   <div class="pane" id="p-year"></div>
   <div class="pane" id="p-about"></div>
+  <div class="pane" id="p-call"></div>
   <div class="pane" id="p-doc"></div>
 </div></dialog>
 
@@ -1275,6 +1294,18 @@ D.sectors.forEach(s=>{
     const t=new Date(d+'T00:00:00Z');
     return isNaN(t) ? d : `${t.getUTCMonth()+1}/${t.getUTCDate()} (${WD[t.getUTCDay()]})`;
   };
+  // 발표에 대한 반응. 장전 발표면 그날, 장후면 다음 거래일이 반응일이다.
+  // 카드에 '등락' 만 적으면 그게 오늘 등락인지 발표 반응인지 알 수가 없다.
+  const react = (h, r) => {
+    const o = h.ohlc || [];
+    if(!o.length || !r.date) return null;
+    let i = o.findIndex(x => x[0] >= r.date);
+    if(i < 0) return null;                   // 아직 캔들이 안 왔다
+    if(r.when === '장후') i += 1;            // 장 끝난 뒤 발표 -> 다음 날이 반응
+    if(i <= 0 || i >= o.length) return null; // 반응일이 아직 오지 않았다
+    const prev = o[i-1][4], c = o[i][4];
+    return prev ? (c/prev - 1) * 100 : null;
+  };
   // 어닝콜 전문. 보고서 탭과 같은 주소 규칙을 쓴다.
   const call = h => {
     const lo=(h.ticker||'').toLowerCase();
@@ -1289,33 +1320,44 @@ D.sectors.forEach(s=>{
   // 밀어내지 않게 높이를 묶고 안에서 넘긴다.
   div.innerHTML = `<div class="tablewrap" style="max-height:380px;overflow-y:auto">
     <table>
-    <thead><tr><th>종목</th><th>시점</th><th>EPS</th><th>매출</th>
-      <th>등락</th><th>컨콜</th></tr></thead><tbody>${
+    <thead><tr><th>종목</th><th>시점</th><th>매출</th><th>영업이익</th><th>EPS</th>
+      <th title="장전 발표면 그날, 장후 발표면 다음 거래일의 종가 등락"
+      >발표후</th><th>컨콜</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       // 날짜가 바뀔 때마다 구분선. 예정은 하나로 묶는다 — 아직 숫자가 없어
       // 날짜별로 쪼개 봐야 읽을 것이 없다.
       const k = r.kind==='done' ? r.date : 'up';
       const prev = i ? (rows[i-1].kind==='done'?rows[i-1].date:'up') : null;
       const head = k!==prev
-        ? `<tr class="grp"><td colspan="6">${
+        ? `<tr class="grp"><td colspan="7">${
             r.kind==='done' ? day(r.date)+' 발표' : '발표 예정'}</td></tr>` : '';
       const h=r.h;
+      const rx = r.kind==='done' ? react(h, r) : null;
+      // 기사에서 뽑은 컨센 상회/하회 판정. 숫자가 안 와도 이건 뜰 수 있다.
+      // 예정 줄에는 붙이지 않는다 — 아직 발표가 없었으니 판정도 없다.
+      const v = r.kind==='done' ? (h.earn||'').trim() : '';
+      const vk = /^상회/.test(v) ? 'up' : /^하회/.test(v) ? 'down' : '';
       return head+`<tr class="stk" data-t="${h.ticker}">
-        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span></td>
+        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
+          v?`<span class="badge ${vk}">${v.split(/[\s—-]/)[0]}</span>`:''}</td>
         <td style="color:var(--sub);font-size:12px">${
           r.kind==='done' ? (r.when||'') : day(r.date)+(r.when?' '+r.when:'')}</td>
-        <td>${r.eps==null?'–':fmt(r.eps,2)}${vs(r.eps,r.eps_est)}</td>
         <td>${money(r.rev)}${vs(r.rev,r.rev_est)}</td>
-        <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
+        <td style="color:var(--sub)">–</td>
+        <td>${r.eps==null?'–':fmt(r.eps,2)}${vs(r.eps,r.eps_est)}</td>
+        <td class="${cls(rx)}">${rx==null?'–':sgn(rx)+'%'}</td>
         <td style="font-size:12px">${call(h)}</td></tr>`
-        + (r.kind==='done' && h.note
-            ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
-                h.note_url?` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>`:''
-              }</td></tr>` : '');
+        + (r.kind==='done' && (v || h.note)
+            ? `<tr class="note-row"><td colspan="7">↳ ${v || h.note}${
+                (v?h.earn_url:h.note_url)
+                  ? ` <a href="${v?h.earn_url:h.note_url}" target="_blank" rel="noopener">기사</a>`
+                  : ''}</td></tr>` : '');
     }).join('')}</tbody></table></div>
-    <div class="sub" style="padding:8px 10px 2px">옆 수치는 컨센서스 대비.
-      분기 실적 표는 10-Q 제출 뒤에 채워지므로 방금 발표한 분기는 아직
-      비어 있을 수 있다 — 위 숫자가 그 분기다.</div>`;
+    <div class="sub" style="padding:8px 10px 2px">매출·EPS 옆 수치는 컨센서스 대비.
+      '발표후' 는 장전 발표면 그날, 장후 발표면 다음 거래일의 종가 등락이다.
+      영업이익은 실적 캘린더가 주지 않아 비어 있다 — 10-Q 가 올라오면 분기
+      실적 표에 채워진다. 종목 이름 옆 꼬리표와 ↳ 줄은 기사에서 읽은
+      컨센서스 상회·하회 판정이다.</div>`;
   document.getElementById('earnwrap').appendChild(div);
   div.querySelectorAll('tr.stk').forEach(tr=>tr.onclick=()=>{
     const h=find(tr.dataset.t);
@@ -1540,6 +1582,27 @@ function finHtml(rows, annual, prov){
       }</div></div>`;
 }
 
+// 컨콜 탭 — 전문을 받아 미리 요약해 둔 것을 편다(전문 링크는 보고서 탭).
+// 요약이 없는 종목은 왜 없는지 적는다 — 빈 탭만 보이면 고장인 줄 안다.
+function callHtml(h){
+  const c = (D.calls||{})[h.ticker];
+  if(!c) return `<div class="about"><p>어닝콜 요약이 아직 없습니다. 전문이
+    올라오면(보통 콜 다음 날) 다음 브리핑에서 요약합니다.</p>
+    <div class="sub">주도주·관심종목만 요약합니다.</div></div>`;
+  const esc = t => (t||'').replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  const cm = (c.comments||[]).map(x =>
+    `<div class="it"><b>${esc(x.head)}</b>${x.body?`<p>${esc(x.body)}</p>`:''}</div>`).join('');
+  const qa = (c.qa||[]).map(x =>
+    `<div class="qa"><div class="q">${esc(x.q)}</div>`
+    + `<div class="a">${esc(x.a)}</div></div>`).join('');
+  return `<div class="about call">
+    <div class="lb">${esc(c.quarter||'')} 어닝콜 요약</div>
+    ${cm?`<h4>▶️ 주요 코멘트</h4>${cm}`:''}
+    ${qa?`<h4>▶️ 주요 Q&amp;A</h4>${qa}`:''}
+    <div class="sub">${esc(c.date||'')} 전문을 요약한 것이다.
+      <a href="${c.url||'#'}" target="_blank" rel="noopener">전문 보기</a></div></div>`;
+}
+
 // 보고서 탭 — 볼 곳을 한자리에 모아 고르게 한다. 긁어 오는 게 아니라
 // 링크만 만든다(수집도 API 키도 필요 없고, 상대 사이트가 바뀌어도 페이지가
 // 깨지지 않는다). 주소를 지어내지 않으려고 형식이 확실한 것만 넣었다.
@@ -1609,6 +1672,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
     document.getElementById('p-about').innerHTML = aboutHtml(about);
     document.getElementById('p-fin').innerHTML   = fin;
     document.getElementById('p-year').innerHTML  = finHtml(about.annuals, true);
+    document.getElementById('p-call').innerHTML  = callHtml(about);
     document.getElementById('p-doc').innerHTML   = linksHtml(about);
     more.innerHTML = aboutHtml(about) + fin;
   } else { more.innerHTML=''; }
