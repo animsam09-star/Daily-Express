@@ -121,6 +121,18 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    # 실적 발표·컨콜 카드가 실제로 채워졌는지. 캘린더가 막히거나(무료 등급)
+    # 티커가 하나도 안 겹치면 카드가 통째로 안 뜨는데, 페이지를 열어 보기
+    # 전에는 그게 '발표가 없어서' 인지 '못 받아서' 인지 구분이 안 된다.
+    e = data.get("earnings") or {}
+    held = {h["ticker"] for h in hs}
+    ed = [r for r in (e.get("done") or []) if r["ticker"] in held]
+    eu = [r for r in (e.get("upcoming") or []) if r["ticker"] in held]
+    print(f"::notice::[진단] 실적 발표 — 들고 있는 종목 중 발표 {len(ed)}건"
+          f" · 예정 {len(eu)}건"
+          + (f" (최근: {', '.join(r['ticker'] for r in ed[:8])})" if ed else "")
+          + ("" if (e.get("done") or e.get("upcoming"))
+             else " — 캘린더가 비어 있다"))
     if sources.EARLY_REJECT:
         top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
         print("::notice::[진단] 초동 탈락 사유 — "
