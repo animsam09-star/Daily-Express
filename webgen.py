@@ -153,6 +153,42 @@ def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num
 _WATCH_ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
 
 
+def _earn_list(earnings, sectors):
+    """실적 발표·컨콜 카드용 목록. 캘린더 행에 종목명·거래소를 붙인다.
+
+    캘린더는 티커만 주는데 화면에는 한글 종목명이 있어야 하고, 어닝콜 전문
+    링크(Motley Fool)는 거래소가 있어야 주소가 만들어진다 — 둘 다 이미
+    섹터 보유종목에 실려 있으므로 거기서 찾아 붙인다.
+    """
+    e = earnings or {}
+    rows = [dict(r, kind="done") for r in (e.get("done") or [])] \
+         + [dict(r, kind="upcoming") for r in (e.get("upcoming") or [])]
+    if not rows:
+        return []
+    meta = {}
+    for sec in sectors or []:
+        for h in sec.get("holdings") or []:
+            meta.setdefault(h["ticker"], h)
+    out = []
+    for r in rows:
+        h = meta.get(r["ticker"])
+        if not h:                        # 들고 있지 않은 종목은 싣지 않는다
+            continue
+        out.append({**r, "name": h.get("name") or r["ticker"],
+                    "exchange": h.get("exchange") or "",
+                    "chg_pct": h.get("chg_pct"), "pick": h.get("pick") or ""})
+    # 나온 것 먼저(최근 발표가 맨 위), 그다음 예정(가까운 날이 위).
+    def key(r):
+        try:
+            o = dt.date.fromisoformat(r.get("date") or "").toordinal()
+        except ValueError:
+            o = 0
+        return (r["kind"] != "done", -o if r["kind"] == "done" else o)
+
+    out.sort(key=key)
+    return out
+
+
 def _watch_list(sectors):
     """관심종목 카드용 목록. 미국·국내가 같은 카드를 쓴다.
 
@@ -239,6 +275,7 @@ def build_us(data, path):
         })
 
     watch = _watch_list(sectors)
+    earn = _earn_list(data.get("earnings"), sectors)
 
     bench = idx.get("S&P500") or {}
     payload = {
@@ -252,6 +289,7 @@ def build_us(data, path):
         "built": dt.datetime.now(dt.timezone(dt.timedelta(hours=9)))
                    .isoformat(timespec="seconds"),
         "currency": "$",
+        "earnings": earn,
         "summary": summary,
         "sectors": sectors,
         "flows": None,
@@ -509,7 +547,10 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .about .sub{margin-top:6px;font-size:11.5px;color:var(--muted)}
 table.fin th{text-align:left}
 table.fin td{font-variant-numeric:tabular-nums}
-table.fin .yoy{margin-left:5px;font-size:11px}
+.yoy{margin-left:5px;font-size:11px}
+/* 10-Q 제출 전이라 재무 데이터에는 아직 없는, 방금 발표한 분기 */
+table.fin th.prov,table.fin td.prov{background:rgba(180,60,40,.06)}
+table.fin th.prov{color:var(--up-t)}
 /* 표 안의 구분선 — 시총 상위 / 주도주는 뽑은 기준이 달라 섞으면 안 읽힌다 */
 .grp td{text-align:left;font-weight:700;font-size:10.5px;letter-spacing:.04em;
         color:var(--muted);background:var(--plane);padding:5px 8px;
@@ -580,6 +621,9 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     </div>
   </div>
 
+  <h2 id="earn-h" hidden>실적 발표 · 컨콜 <span class="hint"></span></h2>
+  <div id="earnwrap"></div>
+
   <h2 id="watch-h" hidden>관심종목 <span class="hint"></span></h2>
   <div id="watchwrap"></div>
 
@@ -605,6 +649,10 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
     <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
     <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
     <div class="chartbox vol" id="dlg-volbox" hidden><canvas id="dlg-vol"></canvas></div>
+    <!-- 차트 바로 아래에 개요와 분기 실적을 같이 둔다 — 탭을 옮겨 다니지
+         않고도 '이 회사가 뭐 하는 곳이고 실적이 어떤지' 가 한 화면에 든다.
+         탭에도 그대로 남겨 둔다(연간·보고서는 탭에서만 본다). -->
+    <div id="dlg-more"></div>
   </div>
   <div class="pane" id="p-fin"></div>
   <div class="pane" id="p-year"></div>
@@ -1191,6 +1239,94 @@ D.sectors.forEach(s=>{
   });
 });
 
+// ---- 실적 발표·컨콜 — 들고 있는 종목 중 최근에 발표했거나 곧 발표할 것.
+// 숫자는 실적 캘린더(컨센서스 포함), 종목 데이터는 D.sectors 에서 찾아 쓴다.
+// 어닝콜은 별도 일정표가 없다 — 미국 기업은 발표 당일에 콜을 하므로
+// 같은 줄에 전문 링크를 달아 둔다.
+(function(){
+  const E = D.earnings || [];
+  if(!E.length) return;
+  const find = t => {
+    for(const s of D.sectors){
+      const h=(s.holdings||[]).find(x=>x.ticker===t);
+      if(h) return h;
+    }
+    return null;
+  };
+  const rows = E.map(r => ({...r, h:find(r.ticker)})).filter(r => r.h);
+  if(!rows.length) return;
+  document.getElementById('earn-h').hidden = false;
+  const nDone = rows.filter(r=>r.kind==='done').length;
+  document.querySelector('#earn-h .hint').textContent =
+    `— 발표 ${nDone}건 · 예정 ${rows.length-nDone}건`;
+
+  const money = v => {
+    if(v==null) return '–';
+    const a=Math.abs(v);
+    if(a>=1e12) return (v/1e12).toFixed(1)+'조달러';
+    if(a>=1e8)  return Math.round(v/1e8).toLocaleString()+'억달러';
+    return Math.round(v/1e6).toLocaleString()+'백만달러';
+  };
+  // 컨센서스 대비. 추정치가 0이거나 적자면 % 가 거짓말이 되므로 뺀다.
+  const vs = (act,est) => (act==null||!est||est<=0) ? ''
+    : `<span class="yoy ${cls(act/est-1)}">${sgn((act/est-1)*100)}%</span>`;
+  const WD=['일','월','화','수','목','금','토'];
+  const day = d => {
+    const t=new Date(d+'T00:00:00Z');
+    return isNaN(t) ? d : `${t.getUTCMonth()+1}/${t.getUTCDate()} (${WD[t.getUTCDay()]})`;
+  };
+  // 어닝콜 전문. 보고서 탭과 같은 주소 규칙을 쓴다.
+  const call = h => {
+    const lo=(h.ticker||'').toLowerCase();
+    const ex=/nasdaq/i.test(h.exchange||'') ? 'nasdaq' : 'nyse';
+    return `<a href="https://www.fool.com/quote/${ex}/${lo}/" target="_blank"
+      rel="noopener" onclick="event.stopPropagation()">전문</a>`;
+  };
+
+  const div=document.createElement('div');
+  div.className='panel';
+  // 실적 시즌에는 3주 창에 수십 줄이 들어온다 — 카드가 화면을 통째로
+  // 밀어내지 않게 높이를 묶고 안에서 넘긴다.
+  div.innerHTML = `<div class="tablewrap" style="max-height:380px;overflow-y:auto">
+    <table>
+    <thead><tr><th>종목</th><th>시점</th><th>EPS</th><th>매출</th>
+      <th>등락</th><th>컨콜</th></tr></thead><tbody>${
+    rows.map((r,i)=>{
+      // 날짜가 바뀔 때마다 구분선. 예정은 하나로 묶는다 — 아직 숫자가 없어
+      // 날짜별로 쪼개 봐야 읽을 것이 없다.
+      const k = r.kind==='done' ? r.date : 'up';
+      const prev = i ? (rows[i-1].kind==='done'?rows[i-1].date:'up') : null;
+      const head = k!==prev
+        ? `<tr class="grp"><td colspan="6">${
+            r.kind==='done' ? day(r.date)+' 발표' : '발표 예정'}</td></tr>` : '';
+      const h=r.h;
+      return head+`<tr class="stk" data-t="${h.ticker}">
+        <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span></td>
+        <td style="color:var(--sub);font-size:12px">${
+          r.kind==='done' ? (r.when||'') : day(r.date)+(r.when?' '+r.when:'')}</td>
+        <td>${r.eps==null?'–':fmt(r.eps,2)}${vs(r.eps,r.eps_est)}</td>
+        <td>${money(r.rev)}${vs(r.rev,r.rev_est)}</td>
+        <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
+        <td style="font-size:12px">${call(h)}</td></tr>`
+        + (r.kind==='done' && h.note
+            ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
+                h.note_url?` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>`:''
+              }</td></tr>` : '');
+    }).join('')}</tbody></table></div>
+    <div class="sub" style="padding:8px 10px 2px">옆 수치는 컨센서스 대비.
+      분기 실적 표는 10-Q 제출 뒤에 채워지므로 방금 발표한 분기는 아직
+      비어 있을 수 있다 — 위 숫자가 그 분기다.</div>`;
+  document.getElementById('earnwrap').appendChild(div);
+  div.querySelectorAll('tr.stk').forEach(tr=>tr.onclick=()=>{
+    const h=find(tr.dataset.t);
+    if(!h) return;
+    const meta=[h.price!=null?'$'+fmt(h.price):null,
+                capF(h.market_cap,D.currency)].filter(Boolean).join(' · ');
+    openDlg(`${h.name} (${h.ticker})`, `${sgn(h.chg_pct)}%  ·  ${meta}`,
+            h.returns, null, '', h.note?`↳ ${h.note}`:'', h.ohlc, h, h.ohlc_m);
+  });
+})();
+
 // ---- 관심종목 — 섹터 시총 상위 규칙에 안 걸리는 종목을 한곳에 모은다.
 // 종목 데이터는 D.sectors 안에 이미 있으므로 티커로 찾아 쓴다(중복 저장 X).
 (function(){
@@ -1270,6 +1406,63 @@ function syncVol(){
   dlgVol.options.scales.x.max = dlgChart.options.scales.x.max;
   dlgVol.update('none');
 }
+
+// 드래그로 좌우 이동. 줌 플러그인의 pan 은 Hammer.js 가 함께 로드돼야 도는데
+// 동봉본에는 없어서 pan:{enabled:true} 를 켜 둬도 드래그가 먹지 않았다
+// (실측: 200px 를 끌어도 x 축 min/max 가 그대로였다). 의존성을 하나 더
+// 늘리는 대신, 휠 줌이 하는 일과 같게 x 축 범위만 직접 옮긴다.
+function enablePan(chart, limit, after){
+  const cv=chart.canvas;
+  cv.style.cursor='grab';
+  let from=null;
+  const grab=(cx)=>{
+    const sc=chart.scales.x;
+    if(!sc) return;
+    from={x:cx, min:sc.min, max:sc.max,
+          // 1px 를 끌 때 몇 봉이 움직이는가 — 확대할수록 조금씩 움직인다
+          per:(sc.max-sc.min)/Math.max(1, sc.width)};
+    cv.style.cursor='grabbing';
+  };
+  const drag=(cx)=>{
+    if(!from) return;
+    const d=(cx-from.x)*from.per;            // 오른쪽으로 끌면 과거로 간다
+    let lo=from.min-d, hi=from.max-d;
+    const span=hi-lo;
+    if(lo<0){ lo=0; hi=span; }               // 양 끝에서는 더 안 밀린다
+    if(hi>limit){ hi=limit; lo=limit-span; }
+    chart.options.scales.x.min=lo; chart.options.scales.x.max=hi;
+    chart.update('none');
+    if(after) after();
+  };
+  const drop=()=>{ if(!from) return; from=null; cv.style.cursor='grab'; };
+
+  const onDown=e=>{ if(e.button===0){ grab(e.clientX); e.preventDefault(); } };
+  const onMove=e=>drag(e.clientX);
+  const onTouchStart=e=>{ if(e.touches.length===1) grab(e.touches[0].clientX); };
+  const onTouchMove=e=>{
+    if(!from || e.touches.length!==1) return;
+    // 세로로 긁는 건 페이지 스크롤로 넘긴다 — 차트가 스크롤을 잡아먹으면
+    // 휴대폰에서 페이지가 막힌다.
+    e.preventDefault();
+    drag(e.touches[0].clientX);
+  };
+  cv.addEventListener('mousedown', onDown);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', drop);
+  cv.addEventListener('touchstart', onTouchStart, {passive:true});
+  cv.addEventListener('touchmove', onTouchMove, {passive:false});
+  window.addEventListener('touchend', drop);
+  // 캔버스는 모달을 다시 열어도 같은 것을 재사용한다. 차트를 새로 그릴 때
+  // 이전 핸들러를 떼지 않으면 겹쳐 쌓여 한 번 끌 때 여러 번 움직인다.
+  chart.__offPan=()=>{
+    cv.removeEventListener('mousedown', onDown);
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', drop);
+    cv.removeEventListener('touchstart', onTouchStart);
+    cv.removeEventListener('touchmove', onTouchMove);
+    window.removeEventListener('touchend', drop);
+  };
+}
 // 분기 실적 표 — 매출·영업이익·순이익을 조/억 단위로. 전년 동기가 있으면
 // 매출 증감률을 함께 보여준다(직전 분기 대비는 계절성 탓에 오해를 부른다).
 function aboutHtml(h){
@@ -1287,8 +1480,35 @@ function aboutHtml(h){
 // 실적 표. 분기와 연간이 같은 모양이라 한 함수로 찍는다. 증감률은 분기면
 // 4칸 전(전년 동기), 연간이면 1칸 전과 견준다 — 분기를 직전 분기와 견주면
 // 계절성 탓에 오해를 부른다.
-function finHtml(rows, annual){
+// 방금 발표했지만 아직 재무 데이터에 안 들어온 분기.
+// 야후 fundamentals 는 10-Q 가 올라온 뒤에 갱신되는데, 실적 발표와 제출
+// 사이가 보통 2~4주라 실적 시즌에는 표가 한 분기 늦게 보인다. 그 칸을
+// 실적 캘린더의 발표치(매출·EPS)로 미리 채운다 — 영업이익·순이익은
+// 캘린더에 없어 비운다.
+function provQuarter(h){
+  const e=(D.earnings||[]).find(r=>r.ticker===h.ticker && r.kind==='done'
+                                   && (r.rev!=null || r.eps!=null));
+  if(!e) return null;
+  const qs=h.quarters||[];
+  if(!qs.length) return null;
+  const last=qs[qs.length-1].date;
+  // 발표일이 마지막 분기말보다 35일 넘게 뒤여야 '아직 안 들어온 분기' 다
+  // (그만큼 안 지났으면 캘린더가 가리키는 분기가 이미 표에 있는 것이다).
+  // 130일을 넘으면 표가 두 분기 이상 밀린 것이라 어느 분기인지 못 맞힌다 —
+  // 그때는 칸을 지어내지 않고 비워 둔다.
+  const gap=(new Date(e.date+'T00:00:00Z') - new Date(last+'T00:00:00Z'))/86400000;
+  if(!(gap>35 && gap<130)) return null;
+  const d=new Date(last+'T00:00:00Z'), day=d.getUTCDate();
+  d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth()+3);
+  const lastDay=new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, lastDay));           // 분기말이 월말이 아닌 회사도 있다
+  return {date:d.toISOString().slice(0,10), revenue:e.rev, op:null, net:null,
+          eps:e.eps, prov:true, announced:e.date};
+}
+
+function finHtml(rows, annual, prov){
   const cur=D.currency;
+  if(prov && !annual) rows=(rows||[]).concat([prov]);
   if(!rows||!rows.length)
     return `<div class="about"><p>${annual?'연간':'분기'} 실적이 없습니다.</p></div>`;
   const back=annual?1:4;
@@ -1300,19 +1520,24 @@ function finHtml(rows, annual){
   const U=finUnit(rows.flatMap(q=>[q.revenue,q.op,q.net]),cur);
   const cells=k=>rows.map((q,i)=>{
     const v=q[k], g=yoy(i,k);
-    return `<td>${v==null?'–':fmt(v/U.d,U.p)}${
+    return `<td${q.prov?' class="prov"':''}>${v==null?'–':fmt(v/U.d,U.p)}${
       g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
   return `<div class="about"><div class="lb">최근 ${rows.length}개 ${
       annual?'연간':'분기'} 실적 <span
       style="color:var(--muted);font-weight:400">(단위: ${U.u})</span></div>
     <div class="tablewrap"><table class="fin">
-      <thead><tr><th>항목</th>${rows.map(q=>`<th>${q.date}</th>`).join('')}</tr></thead>
+      <thead><tr><th>항목</th>${rows.map(q=>
+        `<th${q.prov?' class="prov"':''}>${q.date}${q.prov?'<br>잠정':''}</th>`
+        ).join('')}</tr></thead>
       <tbody>
         <tr><th>매출</th>${cells('revenue')}</tr>
         <tr><th>영업이익</th>${cells('op')}</tr>
         <tr><th>순이익</th>${cells('net')}</tr>
       </tbody></table></div>
-    <div class="sub">옆 수치는 ${annual?'전년':'전년 동기(4분기 전)'} 대비 증감률</div></div>`;
+    <div class="sub">옆 수치는 ${annual?'전년':'전년 동기(4분기 전)'} 대비 증감률${
+      prov&&!annual?` · '잠정' 칸은 ${prov.announced} 발표치다 — 10-Q 가 올라오기
+      전이라 재무 데이터에는 아직 없고, 영업이익·순이익은 발표문에서 받지 못한다`:''
+      }</div></div>`;
 }
 
 // 보고서 탭 — 볼 곳을 한자리에 모아 고르게 한다. 긁어 오는 게 아니라
@@ -1377,12 +1602,16 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
   // 종목이면 탭을 쓰고, 지수·환율처럼 상세가 없으면 차트만 남긴다.
   document.getElementById('dlg-tabs').hidden = !about;
+  const more=document.getElementById('dlg-more');
   if(about){
+    const prov=provQuarter(about);
+    const fin=finHtml(about.quarters, false, prov);
     document.getElementById('p-about').innerHTML = aboutHtml(about);
-    document.getElementById('p-fin').innerHTML   = finHtml(about.quarters, false);
+    document.getElementById('p-fin').innerHTML   = fin;
     document.getElementById('p-year').innerHTML  = finHtml(about.annuals, true);
     document.getElementById('p-doc').innerHTML   = linksHtml(about);
-  }
+    more.innerHTML = aboutHtml(about) + fin;
+  } else { more.innerHTML=''; }
   showPane('chart');
   document.getElementById('dlg-rets').innerHTML=rets?
     ['m1','m3','m6','m12'].map((k,i)=>rets[k]==null?'':
@@ -1405,7 +1634,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
     // 주봉·월봉은 전체를 보는 것이 그 단위를 쓰는 이유다.
     const SPAN={d:126, w:0, m:0};
     const draw=tf=>{
-      if(dlgChart){dlgChart.destroy();dlgChart=null;}
+      if(dlgChart){if(dlgChart.__offPan)dlgChart.__offPan();dlgChart.destroy();dlgChart=null;}
       if(dlgVol){dlgVol.destroy();dlgVol=null;}
       const rows=bars[tf]||[];
       dlgChart=candleChart(cv, rows, {unit, span:SPAN[tf]||null, tf});
@@ -1414,6 +1643,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
                                    dlgChart.options.scales.x.min,
                                    dlgChart.options.scales.x.max) : null;
       volBox.hidden = !dlgVol;
+      if(dlgChart) enablePan(dlgChart, dlgChart.data.labels.length-1, syncVol);
       segs.querySelectorAll('button').forEach(b=>
         b.classList.toggle('on', b.dataset.tf===tf));
     };

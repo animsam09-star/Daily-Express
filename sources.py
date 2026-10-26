@@ -1099,8 +1099,12 @@ def _trim(text, limit=SUMMARY_MAX):
 # 종목별로 부르지 않고 기간으로 한 번만 부른다. 브리핑에 오르는 종목이
 # 200개 가까워서 개별 호출은 무료 등급 분당 제한에 바로 걸린다.
 EARN_URL = "https://finnhub.io/api/v1/calendar/earnings"
-EARN_BACK = 2            # 며칠 전까지 '나온 실적' 으로 볼 것인가
-EARN_AHEAD = 2           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
+# 웹 '실적 발표·컨콜' 카드가 보는 창. 실적 시즌에는 3주면 들고 있는 종목
+# 대부분이 한 번씩 지나간다. 텔레그램 브리핑은 이 중 최근 이틀치만 쓴다
+# (notify.EARN_NEAR) — 캘린더는 기간 단위로 한 번만 부르므로 창을 넓혀도
+# 호출 수는 그대로다.
+EARN_BACK = 21           # 며칠 전까지 '나온 실적' 으로 볼 것인가
+EARN_AHEAD = 7           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
 EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
 # 장전(before market open)·장후(after market close)·장중
 EARN_WHEN = {"bmo": "장전", "amc": "장후", "dmh": "장중"}

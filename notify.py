@@ -15,6 +15,9 @@ TIMEOUT = 90
 
 
 EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
+# 캘린더는 웹 카드 때문에 3주치를 받아 오지만, 브리핑에 적는 것은 어제·오늘
+# 발표분뿐이다 — 지난주 실적을 매일 다시 알리면 알림이 아니다.
+EARN_NEAR = 2            # 며칠 전 발표까지 브리핑에 적을 것인가
 
 
 def _money(v):
@@ -41,7 +44,11 @@ def _earnings_lines(data):
     메모에서 가져온다 — 메모 쪽이 '실적 발표' 를 사건으로 이미 쓰고 있어서
     AI 를 한 번 더 부를 일이 없다."""
     e = data.get("earnings") or {}
-    done, up = e.get("done") or [], e.get("upcoming") or []
+    today = dt.date.today()
+    near = (today - dt.timedelta(days=EARN_NEAR)).isoformat()
+    soon = (today + dt.timedelta(days=EARN_NEAR)).isoformat()
+    done = [r for r in (e.get("done") or []) if (r.get("date") or "") >= near]
+    up = [r for r in (e.get("upcoming") or []) if (r.get("date") or "") <= soon]
     if not done and not up:
         return []
     notes = data.get("notes") or {}
