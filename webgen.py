@@ -574,6 +574,10 @@ table.fin td{font-variant-numeric:tabular-nums}
 /* 10-Q 제출 전이라 재무 데이터에는 아직 없는, 방금 발표한 분기 */
 table.fin th.prov,table.fin td.prov{background:rgba(180,60,40,.06)}
 table.fin th.prov{color:var(--up-t)}
+/* 표 머리글의 기준 표기 — '등락' 만 적어 두면 무엇 대비인지 알 수가 없다.
+   말풍선(title)으로 뒀더니 마우스를 올리지 않으면 안 보였다. */
+th .unit{display:block;font-weight:400;font-size:10px;color:var(--muted);
+         letter-spacing:0;margin-top:1px}
 /* 표 안의 구분선 — 시총 상위 / 주도주는 뽑은 기준이 달라 섞으면 안 읽힌다 */
 .grp td{text-align:left;font-weight:700;font-size:10.5px;letter-spacing:.04em;
         color:var(--muted);background:var(--plane);padding:5px 8px;
@@ -1247,7 +1251,9 @@ D.sectors.forEach(s=>{
       (s.note||'').replace(/"/g,'&quot;')}">${s.note?'💬 '+s.note:''}</div>
     <div class="chartbox mini">${s.series.length?`<canvas id="c-${s.symbol}"></canvas>`:''}</div>
     <div class="tablewrap"><table>
-      <thead><tr><th>종목</th><th>등락</th><th>주가</th><th>시총</th><th>기간수익률</th></tr></thead>
+      <thead><tr><th>종목</th><th>등락<span class="unit">전일비</span></th>
+        <th>주가</th><th>시총</th>
+        <th>기간수익률<span class="unit">1·3·6·12개월 전 대비</span></th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   secWrap.appendChild(div);
   // 텔레그램 섹터 차트와 같은 구성: 종가 + 이동평균 + 구름대 + 지수 대비 상대강도
@@ -1327,9 +1333,11 @@ D.sectors.forEach(s=>{
   // 밀어내지 않게 높이를 묶고 안에서 넘긴다.
   div.innerHTML = `<div class="tablewrap" style="max-height:380px;overflow-y:auto">
     <table>
-    <thead><tr><th>종목</th><th>시점</th><th>매출</th><th>EPS</th>
-      <th title="장전 발표면 그날, 장후 발표면 다음 거래일의 종가 등락"
-      >발표후</th><th>컨콜</th></tr></thead><tbody>${
+    <thead><tr><th>종목</th><th>시점</th>
+      <th>매출<span class="unit">컨센서스 대비</span></th>
+      <th>EPS<span class="unit">컨센서스 대비</span></th>
+      <th>발표후<span class="unit">발표 직후 거래일 등락</span></th>
+      <th>컨콜</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       // 날짜가 바뀔 때마다 구분선. 예정은 하나로 묶는다 — 아직 숫자가 없어
       // 날짜별로 쪼개 봐야 읽을 것이 없다.
@@ -1412,8 +1420,9 @@ D.sectors.forEach(s=>{
     rebound:'1년 등락률이 마이너스라 아직 200일선 아래인데, 50일선을 되찾고 그 50일선이 상승 전환했으며 최근 거래량까지 늘어난 종목'};
   const BADGE = {early:'초동', trend:'추세', rebound:'반등'};
   div.innerHTML = `<div class="tablewrap"><table>
-      <thead><tr><th>종목</th><th>섹터</th><th>등락</th><th>주가</th><th>시총</th>
-      <th>기간수익률</th></tr></thead><tbody>${
+      <thead><tr><th>종목</th><th>섹터</th><th>등락<span class="unit">전일비</span></th>
+      <th>주가</th><th>시총</th>
+      <th>기간수익률<span class="unit">1·3·6·12개월 전 대비</span></th></tr></thead><tbody>${
       found.map(({h, sector, kind}, i) => {
         // 셋은 고른 기준이 아예 다르다. 구분선 없이 붙여 놓으면 고정 목록에
         // 오늘 뽑힌 종목이 슬쩍 섞인 것처럼 읽힌다.

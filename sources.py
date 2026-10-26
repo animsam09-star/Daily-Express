@@ -1155,10 +1155,17 @@ def fetch_earnings(tickers):
                "when": EARN_WHEN.get((x.get("hour") or "").lower(), ""),
                "eps": x.get("epsActual"), "eps_est": x.get("epsEstimate"),
                "rev": x.get("revenueActual"), "rev_est": x.get("revenueEstimate")}
-        (done if row["eps"] is not None or row["rev"] is not None else up).append(row)
+        # 수치가 왔으면 당연히 '발표', 안 왔어도 날짜가 지났으면 '발표' 다.
+        # 캘린더가 실제치를 늦게(또는 끝내) 못 채우는 종목이 있는데, 그걸
+        # '예정' 에 두면 지난 날짜가 발표 예정 목록에 남는다 — GD 가
+        # 10/22 에 발표했는데 10/27 예정 틈에 끼어 있었다.
+        said = row["eps"] is not None or row["rev"] is not None
+        (done if (said or row["date"] < today.isoformat()) else up).append(row)
     done.sort(key=lambda r: r["date"], reverse=True)
     up.sort(key=lambda r: r["date"])
-    print(f"[실적] 캘린더 {len(rows)}건 중 우리 종목 — 발표 {len(done)} · 예정 {len(up)}")
+    noval = sum(1 for r in done if r["eps"] is None and r["rev"] is None)
+    print(f"[실적] 캘린더 {len(rows)}건 중 우리 종목 — 발표 {len(done)} "
+          f"(수치 미수신 {noval}) · 예정 {len(up)}")
     return {"done": done, "upcoming": up}
 
 
