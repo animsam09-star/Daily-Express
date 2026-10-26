@@ -1327,7 +1327,7 @@ D.sectors.forEach(s=>{
   // 밀어내지 않게 높이를 묶고 안에서 넘긴다.
   div.innerHTML = `<div class="tablewrap" style="max-height:380px;overflow-y:auto">
     <table>
-    <thead><tr><th>종목</th><th>시점</th><th>매출</th><th>영업이익</th><th>EPS</th>
+    <thead><tr><th>종목</th><th>시점</th><th>매출</th><th>EPS</th>
       <th title="장전 발표면 그날, 장후 발표면 다음 거래일의 종가 등락"
       >발표후</th><th>컨콜</th></tr></thead><tbody>${
     rows.map((r,i)=>{
@@ -1336,7 +1336,7 @@ D.sectors.forEach(s=>{
       const k = r.kind==='done' ? r.date : 'up';
       const prev = i ? (rows[i-1].kind==='done'?rows[i-1].date:'up') : null;
       const head = k!==prev
-        ? `<tr class="grp"><td colspan="7">${
+        ? `<tr class="grp"><td colspan="6">${
             r.kind==='done' ? day(r.date)+' 발표' : '발표 예정'}</td></tr>` : '';
       const h=r.h;
       const rx = r.kind==='done' ? react(h, r) : null;
@@ -1350,21 +1350,19 @@ D.sectors.forEach(s=>{
         <td style="color:var(--sub);font-size:12px">${
           r.kind==='done' ? (r.when||'') : day(r.date)+(r.when?' '+r.when:'')}</td>
         <td>${money(r.rev)}${vs(r.rev,r.rev_est)}</td>
-        <td style="color:var(--sub)">–</td>
         <td>${r.eps==null?'–':fmt(r.eps,2)}${vs(r.eps,r.eps_est)}</td>
         <td class="${cls(rx)}">${rx==null?'–':sgn(rx)+'%'}</td>
         <td style="font-size:12px">${call(h)}</td></tr>`
         + (r.kind==='done' && (v || h.note)
-            ? `<tr class="note-row"><td colspan="7">↳ ${v || h.note}${
+            ? `<tr class="note-row"><td colspan="6">↳ ${v || h.note}${
                 (v?h.earn_url:h.note_url)
                   ? ` <a href="${v?h.earn_url:h.note_url}" target="_blank" rel="noopener">기사</a>`
                   : ''}</td></tr>` : '');
     }).join('')}</tbody></table></div>
     <div class="sub" style="padding:8px 10px 2px">매출·EPS 옆 수치는 컨센서스 대비.
       '발표후' 는 장전 발표면 그날, 장후 발표면 다음 거래일의 종가 등락이다.
-      영업이익은 실적 캘린더가 주지 않아 비어 있다 — 10-Q 가 올라오면 분기
-      실적 표에 채워진다. 종목 이름 옆 꼬리표와 ↳ 줄은 기사에서 읽은
-      컨센서스 상회·하회 판정이다.</div>`;
+      종목 이름 옆 꼬리표와 ↳ 줄은 기사에서 읽은 컨센서스 상회·하회 판정이다.
+      영업이익·순이익은 종목을 눌러 분기 실적 표에서 본다.</div>`;
   document.getElementById('earnwrap').appendChild(div);
   div.querySelectorAll('tr.stk').forEach(tr=>tr.onclick=()=>{
     const h=find(tr.dataset.t);
