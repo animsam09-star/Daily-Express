@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import re
@@ -24,7 +25,9 @@ import requests
 
 INDEX = "https://www.fool.com/earnings-call-transcripts/"
 PAGE = INDEX + "page/{n}/"
-PAGES = 8                # 목록을 몇 쪽까지 볼 것인가(한 쪽 40건 ≒ 하루치)
+MAX_PAGES = 90           # 목록 상한. 한 쪽에 전문 20건이고 실적 시즌에는
+                         # 하루 백 건씩 올라온다 — 3주치가 대략 이만큼이다.
+IDX_WORKERS = 6          # 목록은 여러 쪽을 동시에 받는다
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       "Accept-Language": "en-US,en;q=0.9"}
@@ -41,6 +44,7 @@ BUDGET = 240             # 초. 넘기면 받은 것만 캐시하고 다음 실�
                          # (개요와 같은 예산 — 06:05 브리핑이 06:30 까지 나가야 한다)
 VER = 1                  # 프롬프트를 바꾸면 올린다
 BODY_MAX = 60000         # 전문 글자 상한(사이트가 길어져도 요청이 터지지 않게)
+SINCE_DAYS = 21          # 며칠 전 콜까지 찾을 것인가(실적 발표 카드와 같은 창)
 
 SYSTEM = """\
 너는 증권사 애널리스트다. 아래 어닝콜 전문을 읽고 한국어 메모로 요약한다.
@@ -75,26 +79,58 @@ def _get(url):
     return r.text
 
 
-def index(pages: int = PAGES) -> dict:
-    """{티커: {"url","date","quarter"}} — 최근 올라온 전문 목록.
+def _safe_get(url):
+    """목록 한 쪽이 실패해도 나머지 쪽은 계속 읽는다."""
+    try:
+        return _get(url)
+    except Exception as e:                         # noqa: BLE001
+        print(f"[컨콜] 목록 실패({type(e).__name__}) {url[-24:]}")
+        return ""
 
-    같은 티커가 여러 번 나오면 최신 것만 남긴다.
+
+def index(want, since, max_pages: int = MAX_PAGES) -> dict:
+    """{티커: {"url","date","quarter"}} — want 에 든 종목의 최근 전문.
+
+    목록은 날짜 내림차순이라 앞쪽부터 읽다가 since 보다 오래된 쪽이 나오면
+    멈춘다. 찾을 종목을 다 찾아도 멈춘다 — 실적 시즌에는 하루에 백 건씩
+    올라와서 3주치를 다 읽으면 백 쪽이 넘는다.
+
+    종목 페이지(/quote/...)에 전문 링크가 있으면 티커로 바로 갈 수 있었을
+    텐데, 실측해 보니 0개였다(클라이언트에서 그린다). 그래서 목록뿐이다.
     """
-    out = {}
-    for n in range(1, pages + 1):
-        try:
-            html = _get(INDEX if n == 1 else PAGE.format(n=n))
-        except Exception as e:                     # noqa: BLE001
-            print(f"[컨콜] 목록 {n}쪽 실패: {type(e).__name__}")
-            break
-        for href, y, mo, d, slug, q, fy in LINK.findall(html):
-            tk = slug.split("-")[-1].upper()
-            date = f"{y}-{mo}-{d}"
-            cur = out.get(tk)
-            if cur and cur["date"] >= date:
-                continue
-            out[tk] = {"url": "https://www.fool.com" + href, "date": date,
-                       "quarter": f"Q{q} {fy}"}
+    want = {t.upper() for t in want}
+    out, n, pages_read = {}, 1, 0
+    with ThreadPoolExecutor(max_workers=IDX_WORKERS) as ex:
+        while n <= max_pages and len(out) < len(want):
+            nums = list(range(n, min(n + IDX_WORKERS, max_pages + 1)))
+            if not nums:
+                break
+            htmls = list(ex.map(_safe_get,
+                                [INDEX if i == 1 else PAGE.format(n=i) for i in nums]))
+            oldest = None
+            for html in htmls:
+                if not html:
+                    continue
+                pages_read += 1
+                for href, y, mo, d, slug, q, fy in LINK.findall(html):
+                    date = f"{y}-{mo}-{d}"
+                    if oldest is None or date < oldest:
+                        oldest = date
+                    tk = slug.split("-")[-1].upper()
+                    if tk not in want:
+                        continue
+                    cur = out.get(tk)
+                    if cur and cur["date"] >= date:
+                        continue
+                    out[tk] = {"url": "https://www.fool.com" + href, "date": date,
+                               "quarter": f"Q{q} {fy}"}
+            # 이 묶음에서 아무것도 못 읽었으면 더 가 봐야 소용없다
+            if oldest is None:
+                break
+            if oldest < since:
+                break
+            n += IDX_WORKERS
+    print(f"[컨콜] 목록 {pages_read}쪽 읽어 우리 종목 {len(out)}/{len(want)}건")
     return out
 
 
@@ -204,14 +240,16 @@ def build(tickers, names, path: str) -> dict:
     if not want:
         return {}
     cache = load(path)
+    # 실적 발표 카드가 보는 창과 같은 3주. 그보다 오래된 콜은 다음 분기가
+    # 코앞이라 굳이 새로 쓰지 않는다(이미 쓴 것은 캐시에 남아 있다).
+    since = (dt.date.today() - dt.timedelta(days=SINCE_DAYS)).isoformat()
     try:
-        idx = index()
+        hit = index(want, since)
     except Exception as e:                         # noqa: BLE001
         print(f"::warning::[컨콜] 목록 수집 실패: {type(e).__name__}")
-        idx = {}
-    hit = {t: v for t, v in idx.items() if t in want}
+        hit = {}
     todo = [(t, v) for t, v in hit.items() if f"{t}|{v['quarter']}" not in cache]
-    print(f"[컨콜] 목록 {len(idx)}건 중 우리 종목 {len(hit)}건 · 새로 쓸 것 {len(todo)}건")
+    print(f"[컨콜] 전문 있는 종목 {len(hit)}건 · 새로 쓸 것 {len(todo)}건")
 
     deadline = time.monotonic() + BUDGET
     skipped = 0

@@ -156,6 +156,9 @@ def _summary_item(label, value, chg, unit="", chg_unit="", series=None, fmt="num
 _WATCH_ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
 
 
+EARN_UPCOMING = 15       # 카드에 싣는 '발표 예정' 줄 수
+
+
 def _earn_list(earnings, sectors):
     """실적 발표·컨콜 카드용 목록. 캘린더 행에 종목명·거래소를 붙인다.
 
@@ -189,7 +192,11 @@ def _earn_list(earnings, sectors):
         return (r["kind"] != "done", -o if r["kind"] == "done" else o)
 
     out.sort(key=key)
-    return out
+    # 발표분은 다 싣고(지난 3주), 예정은 가까운 것만. 실적 시즌에는 예정이
+    # 60건씩 쌓이는데 그건 카드가 아니라 명부가 된다.
+    done = [r for r in out if r["kind"] == "done"]
+    up = [r for r in out if r["kind"] != "done"][:EARN_UPCOMING]
+    return done + up
 
 
 def _watch_list(sectors):

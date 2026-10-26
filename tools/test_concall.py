@@ -45,14 +45,29 @@ def main():
                [("VZ", "Q3 2026"), ("BFST", "Q3 2026"), ("KOF", "Q3 2026"),
                 ("VZ", "Q2 2026")])
 
-    # 같은 티커가 두 번 나오면 최신 날짜만 남는다
-    saved, concall._get = concall._get, lambda u: IDX_HTML
+    # 같은 티커가 두 번 나오면 최신 날짜만 남고, 안 찾는 종목은 안 담는다
+    saved, concall._safe_get = concall._safe_get, lambda u: IDX_HTML
     try:
-        idx = concall.index(pages=1)
+        idx = concall.index({"VZ", "KOF", "NVDA"}, "2026-10-01", max_pages=1)
     finally:
-        concall._get = saved
+        concall._safe_get = saved
     ok &= check("최신 분기만 남긴다", idx["VZ"]["quarter"], "Q3 2026")
-    ok &= check("목록 종목 수", sorted(idx), ["BFST", "KOF", "VZ"])
+    ok &= check("찾는 종목만 담는다", sorted(idx), ["KOF", "VZ"])
+
+    # 목록이 찾는 기간보다 오래되면 더 읽지 않는다
+    pages = []
+
+    def paged(url):
+        pages.append(url)
+        return IDX_HTML
+
+    saved, concall._safe_get = concall._safe_get, paged
+    try:
+        concall.index({"NVDA"}, "2026-11-01", max_pages=30)
+    finally:
+        concall._safe_get = saved
+    ok &= check("오래된 쪽이 나오면 멈춘다(한 묶음만)", len(pages),
+                concall.IDX_WORKERS)
 
     saved, concall._get = concall._get, lambda u: TX_HTML
     try:
