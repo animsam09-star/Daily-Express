@@ -249,7 +249,8 @@ def build(tickers, names, path: str) -> dict:
         print(f"::warning::[컨콜] 목록 수집 실패: {type(e).__name__}")
         hit = {}
     todo = [(t, v) for t, v in hit.items() if f"{t}|{v['quarter']}" not in cache]
-    print(f"[컨콜] 전문 있는 종목 {len(hit)}건 · 새로 쓸 것 {len(todo)}건")
+    print(f"::notice::[컨콜] 주도주·관심종목 {len(want)}종 중 전문 있는 것 "
+          f"{len(hit)}건 · 새로 쓸 것 {len(todo)}건")
 
     deadline = time.monotonic() + BUDGET
     skipped = 0
