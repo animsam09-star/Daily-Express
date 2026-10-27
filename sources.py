@@ -1105,6 +1105,8 @@ EARN_URL = "https://finnhub.io/api/v1/calendar/earnings"
 # 호출 수는 그대로다.
 EARN_BACK = 21           # 며칠 전까지 '나온 실적' 으로 볼 것인가
 EARN_AHEAD = 7           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
+EARN_STEP = 3            # 며칠씩 끊어 받을 것인가(응답 상한을 피한다)
+EARN_CAP = 1500          # 실측한 응답 행 상한 — 여기 닿으면 그 구간은 잘린다
 EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
 # 장전(before market open)·장후(after market close)·장중
 EARN_WHEN = {"bmo": "장전", "amc": "장후", "dmh": "장중"}
@@ -1132,18 +1134,43 @@ def fetch_earnings(tickers):
         return {}
     want = {t.upper() for t in (tickers or [])}
     today = dt.date.today()
-    try:
-        r = requests.get(EARN_URL, headers=UA, verify=VERIFY, timeout=TIMEOUT,
-                         params={"token": key,
-                                 "from": (today - dt.timedelta(days=EARN_BACK)).isoformat(),
-                                 "to": (today + dt.timedelta(days=EARN_AHEAD)).isoformat()})
-        if r.status_code != 200:
-            print(f"::warning::[실적] 캘린더 HTTP {r.status_code} — 무료 등급에서 "
-                  f"막혔을 수 있다")
-            return {}
-        rows = (r.json() or {}).get("earningsCalendar") or []
-    except Exception as e:                         # noqa: BLE001
-        print(f"::warning::[실적] 캘린더 실패: {type(e).__name__}")
+    start = today - dt.timedelta(days=EARN_BACK)
+    end = today + dt.timedelta(days=EARN_AHEAD)
+
+    # 한 번에 4주를 달라고 하면 응답이 1500행에서 잘린다 — 실측에서
+    # 2026-10-06~11-03 을 요청했는데 10-22~11-03 만 왔다(1500행 정각).
+    # 앞쪽(오래된 쪽)이 통째로 날아가 '발표' 가 35건에서 8건으로 줄었다.
+    # 그래서 며칠씩 끊어 받아 합친다. 무료 등급은 분당 60회라 열 번쯤은
+    # 문제가 없다.
+    rows, seen = [], set()
+    cut = start
+    while cut <= end:
+        last = min(cut + dt.timedelta(days=EARN_STEP - 1), end)
+        try:
+            r = requests.get(EARN_URL, headers=UA, verify=VERIFY, timeout=TIMEOUT,
+                             params={"token": key, "from": cut.isoformat(),
+                                     "to": last.isoformat()})
+            if r.status_code != 200:
+                print(f"::warning::[실적] 캘린더 HTTP {r.status_code} "
+                      f"({cut}~{last}) — 무료 등급에서 막혔을 수 있다")
+                cut = last + dt.timedelta(days=1)
+                continue
+            got = (r.json() or {}).get("earningsCalendar") or []
+        except Exception as e:                     # noqa: BLE001
+            print(f"::warning::[실적] 캘린더 실패({cut}~{last}): {type(e).__name__}")
+            cut = last + dt.timedelta(days=1)
+            continue
+        if len(got) >= EARN_CAP:
+            print(f"::warning::[실적] {cut}~{last} 가 {len(got)}행 — 상한에 닿았다. "
+                  f"이 구간은 잘렸을 수 있다(EARN_STEP 을 줄여야 한다)")
+        for x in got:
+            k = ((x.get("symbol") or ""), (x.get("date") or ""))
+            if k in seen:
+                continue
+            seen.add(k)
+            rows.append(x)
+        cut = last + dt.timedelta(days=1)
+    if not rows:
         return {}
 
     done, up = [], []
