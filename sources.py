@@ -1164,7 +1164,11 @@ def fetch_earnings(tickers):
     done.sort(key=lambda r: r["date"], reverse=True)
     up.sort(key=lambda r: r["date"])
     noval = sum(1 for r in done if r["eps"] is None and r["rev"] is None)
-    print(f"[실적] 캘린더 {len(rows)}건 중 우리 종목 — 발표 {len(done)} "
+    dates = sorted({(x.get("date") or "") for x in rows if x.get("date")})
+    past = sum(1 for x in rows if (x.get("date") or "") < today.isoformat())
+    print(f"::notice::[실적] 캘린더 {len(rows)}건"
+          f"({dates[0] if dates else '?'}~{dates[-1] if dates else '?'}, "
+          f"오늘 이전 {past}건) 중 우리 종목 — 발표 {len(done)}"
           f"(수치 미수신 {noval}) · 예정 {len(up)}")
     return {"done": done, "upcoming": up}
 
