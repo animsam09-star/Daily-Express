@@ -557,6 +557,12 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
            margin-bottom:6px}
 .about p{margin:0;font-size:13px;line-height:1.6;color:var(--ink2)}
 .about .sub{margin-top:6px;font-size:11.5px;color:var(--muted)}
+/* 개요를 줄별로 끊어 보여준다 — 줄머리 기호는 여기서 붙인다 */
+.blist{margin:0;padding:0;list-style:none}
+.blist li{position:relative;padding-left:13px;margin:0 0 5px;
+          font-size:13px;line-height:1.6;color:var(--ink2)}
+.blist li:last-child{margin-bottom:0}
+.blist li:before{content:'–';position:absolute;left:0;color:var(--muted)}
 /* 어닝콜 요약 — 코멘트는 제목+본문, Q&A 는 문답 한 쌍씩 */
 .call h4{margin:16px 0 8px;font-size:12.5px;letter-spacing:.02em}
 .call h4:first-child{margin-top:0}
@@ -1529,8 +1535,15 @@ function aboutHtml(h){
   if(!body) return '<div class="about"><p>기업 개요가 없습니다.</p></div>';
   const meta=[p.industry, p.employees?`임직원 ${p.employees.toLocaleString()}명`:''
     ].filter(Boolean).join(' · ');
+  // 개요는 줄바꿈으로 끊어 온다(무엇을 파는가 / 부문 / 고객 / 본사·설립).
+  // 한 덩어리로 붙여 놓으면 어디까지가 한 얘기인지 읽히지 않는다.
+  // 아직 새로 안 쓴 종목은 한 줄로 오므로 그때는 문단 하나가 된다.
+  const lines = body.split('\n').map(x=>x.trim()).filter(Boolean);
+  const inner = lines.length > 1
+    ? `<ul class="blist">${lines.map(x=>`<li>${x}</li>`).join('')}</ul>`
+    : `<p>${body}</p>`;
   return `<div class="about"><div class="lb">기업 개요</div>
-    <p>${body}</p>${meta?`<div class="sub">${meta}</div>`:''}</div>`;
+    ${inner}${meta?`<div class="sub">${meta}</div>`:''}</div>`;
 }
 
 // 실적 표. 분기와 연간이 같은 모양이라 한 함수로 찍는다. 증감률은 분기면

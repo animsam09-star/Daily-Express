@@ -72,16 +72,22 @@ def main() -> int:
             if text and h.get("profile"):
                 h["profile"]["summary_ko"] = text
 
-    # 어닝콜 전문 요약. 주도주·관심종목(pick 이 붙은 것)만 한다 — 전문이
-    # 5만 자라 종목마다 한 번씩 물어야 하고, 들고 있는 전부를 돌리면
-    # 브리핑 시간에 안 들어온다.
+    # 어닝콜 전문 요약. 주도주·관심종목에 더해, 최근 실적을 발표한 종목도
+    # 넣는다 — 실적 발표 카드에서 눌러 들어온 종목의 컨콜 탭이 비어 있으면
+    # (VLO 가 그랬다) 카드가 가리키는 것과 탭이 담는 것이 어긋난다.
+    # 전문이 5만 자라 종목마다 한 번씩 물어야 하므로 그 둘로 끊는다.
     try:
         picks, pnames = set(), {}
         for hs in (data.get("holdings") or {}).values():
             for h in hs:
+                pnames[h["ticker"]] = h.get("name") or h["ticker"]
                 if h.get("pick"):
                     picks.add(h["ticker"])
-                    pnames[h["ticker"]] = h.get("name") or h["ticker"]
+        held = {h["ticker"] for hs in (data.get("holdings") or {}).values()
+                for h in hs}
+        for r in ((data.get("earnings") or {}).get("done") or []):
+            if r.get("ticker") in held:
+                picks.add(r["ticker"])
         data["calls"] = concall.build(picks, pnames, CALL_CACHE)
     except Exception as e:                     # noqa: BLE001
         print(f"    ! 어닝콜 요약 실패(계속): {type(e).__name__}: {e}")
