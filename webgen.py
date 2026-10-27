@@ -333,7 +333,8 @@ def build_kr(data, path):
                                      round(fx.get("chg", 0), 1), "원", "원",
                                      fx.get("series"), ohlc=fx.get("ohlc"), ohlc_m=fx.get("ohlc_m"),
                                      sym="KRW=X"))
-    for key, label in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
+    for key, label in (("govt_3y", "국고채 3년"), ("govt_10y", "국고채 10년"),
+                       ("cd_91", "CD 91일"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "AA- 3년 Spread")):
         d = dom.get(key) or {}
         if d.get("last") is not None:

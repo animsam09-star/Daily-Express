@@ -57,6 +57,10 @@ def build_message(data) -> str:
         lines.append(f"□ 국고채 3년 {govt['last']:.2f}%({govt['chg']:+.0f}bp)")
     if corp and corp.get("last") is not None:
         lines.append(f"□ 회사채 AA- 3년 {corp['last']:.2f}%({corp['chg']:+.0f}bp)")
+    for key, label in (("govt_10y", "국고채 10년"), ("cd_91", "CD 91일")):
+        d = dom.get(key)
+        if d and d.get("last") is not None:
+            lines.append(f"□ {label} {d['last']:.2f}%({d['chg']:+.0f}bp)")
 
     flows = data.get("flows") or {}
     for mkt in ("코스피", "코스닥"):
@@ -141,7 +145,7 @@ def build_charts(data, outdir):
     for key, title in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "회사채 AA- 3년 스프레드")):
         d = dom.get(key)
-        if d and d.get("last") is not None:
+        if d and d.get("last") is not None and d.get("series"):
             unit = "bp" if key == "spread" else "%"
             add(render.line_chart(os.path.join(outdir, f"{key}.png"),
                                   f"{title} 2년 추이", d["series"],
@@ -271,6 +275,11 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    dom = data.get("domestic") or {}
+    got = {k: v.get("last") for k, v in dom.items() if v.get("last") is not None}
+    print("::notice::[진단] 국내 금리 — "
+          + (", ".join(f"{k} {v}" for k, v in got.items()) if got
+             else "한 건도 못 받았다"))
     if sources.EARLY_REJECT:
         top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
         print("::notice::[진단] 초동 탈락 사유 — "
