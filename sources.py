@@ -1099,8 +1099,14 @@ def _trim(text, limit=SUMMARY_MAX):
 # 종목별로 부르지 않고 기간으로 한 번만 부른다. 브리핑에 오르는 종목이
 # 200개 가까워서 개별 호출은 무료 등급 분당 제한에 바로 걸린다.
 EARN_URL = "https://finnhub.io/api/v1/calendar/earnings"
-EARN_BACK = 2            # 며칠 전까지 '나온 실적' 으로 볼 것인가
-EARN_AHEAD = 2           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
+# 웹 '실적 발표·컨콜' 카드가 보는 창. 실적 시즌에는 3주면 들고 있는 종목
+# 대부분이 한 번씩 지나간다. 텔레그램 브리핑은 이 중 최근 이틀치만 쓴다
+# (notify.EARN_NEAR) — 캘린더는 기간 단위로 한 번만 부르므로 창을 넓혀도
+# 호출 수는 그대로다.
+EARN_BACK = 21           # 며칠 전까지 '나온 실적' 으로 볼 것인가
+EARN_AHEAD = 7           # 며칠 뒤까지 '예정' 으로 보여줄 것인가
+EARN_STEP = 3            # 며칠씩 끊어 받을 것인가(응답 상한을 피한다)
+EARN_CAP = 1500          # 실측한 응답 행 상한 — 여기 닿으면 그 구간은 잘린다
 EARN_MAX = 6             # 메시지에 싣는 줄 수(나온 것·예정 각각)
 # 장전(before market open)·장후(after market close)·장중
 EARN_WHEN = {"bmo": "장전", "amc": "장후", "dmh": "장중"}
@@ -1128,18 +1134,43 @@ def fetch_earnings(tickers):
         return {}
     want = {t.upper() for t in (tickers or [])}
     today = dt.date.today()
-    try:
-        r = requests.get(EARN_URL, headers=UA, verify=VERIFY, timeout=TIMEOUT,
-                         params={"token": key,
-                                 "from": (today - dt.timedelta(days=EARN_BACK)).isoformat(),
-                                 "to": (today + dt.timedelta(days=EARN_AHEAD)).isoformat()})
-        if r.status_code != 200:
-            print(f"::warning::[실적] 캘린더 HTTP {r.status_code} — 무료 등급에서 "
-                  f"막혔을 수 있다")
-            return {}
-        rows = (r.json() or {}).get("earningsCalendar") or []
-    except Exception as e:                         # noqa: BLE001
-        print(f"::warning::[실적] 캘린더 실패: {type(e).__name__}")
+    start = today - dt.timedelta(days=EARN_BACK)
+    end = today + dt.timedelta(days=EARN_AHEAD)
+
+    # 한 번에 4주를 달라고 하면 응답이 1500행에서 잘린다 — 실측에서
+    # 2026-10-06~11-03 을 요청했는데 10-22~11-03 만 왔다(1500행 정각).
+    # 앞쪽(오래된 쪽)이 통째로 날아가 '발표' 가 35건에서 8건으로 줄었다.
+    # 그래서 며칠씩 끊어 받아 합친다. 무료 등급은 분당 60회라 열 번쯤은
+    # 문제가 없다.
+    rows, seen = [], set()
+    cut = start
+    while cut <= end:
+        last = min(cut + dt.timedelta(days=EARN_STEP - 1), end)
+        try:
+            r = requests.get(EARN_URL, headers=UA, verify=VERIFY, timeout=TIMEOUT,
+                             params={"token": key, "from": cut.isoformat(),
+                                     "to": last.isoformat()})
+            if r.status_code != 200:
+                print(f"::warning::[실적] 캘린더 HTTP {r.status_code} "
+                      f"({cut}~{last}) — 무료 등급에서 막혔을 수 있다")
+                cut = last + dt.timedelta(days=1)
+                continue
+            got = (r.json() or {}).get("earningsCalendar") or []
+        except Exception as e:                     # noqa: BLE001
+            print(f"::warning::[실적] 캘린더 실패({cut}~{last}): {type(e).__name__}")
+            cut = last + dt.timedelta(days=1)
+            continue
+        if len(got) >= EARN_CAP:
+            print(f"::warning::[실적] {cut}~{last} 가 {len(got)}행 — 상한에 닿았다. "
+                  f"이 구간은 잘렸을 수 있다(EARN_STEP 을 줄여야 한다)")
+        for x in got:
+            k = ((x.get("symbol") or ""), (x.get("date") or ""))
+            if k in seen:
+                continue
+            seen.add(k)
+            rows.append(x)
+        cut = last + dt.timedelta(days=1)
+    if not rows:
         return {}
 
     done, up = [], []
@@ -1151,10 +1182,21 @@ def fetch_earnings(tickers):
                "when": EARN_WHEN.get((x.get("hour") or "").lower(), ""),
                "eps": x.get("epsActual"), "eps_est": x.get("epsEstimate"),
                "rev": x.get("revenueActual"), "rev_est": x.get("revenueEstimate")}
-        (done if row["eps"] is not None or row["rev"] is not None else up).append(row)
+        # 수치가 왔으면 당연히 '발표', 안 왔어도 날짜가 지났으면 '발표' 다.
+        # 캘린더가 실제치를 늦게(또는 끝내) 못 채우는 종목이 있는데, 그걸
+        # '예정' 에 두면 지난 날짜가 발표 예정 목록에 남는다 — GD 가
+        # 10/22 에 발표했는데 10/27 예정 틈에 끼어 있었다.
+        said = row["eps"] is not None or row["rev"] is not None
+        (done if (said or row["date"] < today.isoformat()) else up).append(row)
     done.sort(key=lambda r: r["date"], reverse=True)
     up.sort(key=lambda r: r["date"])
-    print(f"[실적] 캘린더 {len(rows)}건 중 우리 종목 — 발표 {len(done)} · 예정 {len(up)}")
+    noval = sum(1 for r in done if r["eps"] is None and r["rev"] is None)
+    dates = sorted({(x.get("date") or "") for x in rows if x.get("date")})
+    past = sum(1 for x in rows if (x.get("date") or "") < today.isoformat())
+    print(f"::notice::[실적] 캘린더 {len(rows)}건"
+          f"({dates[0] if dates else '?'}~{dates[-1] if dates else '?'}, "
+          f"오늘 이전 {past}건) 중 우리 종목 — 발표 {len(done)}"
+          f"(수치 미수신 {noval}) · 예정 {len(up)}")
     return {"done": done, "upcoming": up}
 
 
@@ -1185,6 +1227,9 @@ def fetch_company_info(tickers):
                  .get("assetProfile") or {})
             if p:
                 info["profile"] = {
+                    # 원문은 한글로 다시 쓸 재료다. 잘라 버리면 되살릴 수 없어
+                    # 따로 들고 간다(화면 payload 에는 싣지 않는다).
+                    "summary_raw": " ".join((p.get("longBusinessSummary") or "").split()),
                     "summary": _trim(p.get("longBusinessSummary")),
                     "industry": p.get("industry") or "",
                     "employees": p.get("fullTimeEmployees"),
@@ -1386,59 +1431,144 @@ def fetch_treasury_history():
 
 
 # --------------------------------------------------------------- 국내 금리
-NAVER_URL = "https://finance.naver.com/marketindex/interestDailyQuote.naver?marketindexCd={code}&page={page}"
-NAVER_HDR = {**UA, "Referer": "https://finance.naver.com/"}
-ROW_RE = re.compile(r"(\d{4}\.\d{2}\.\d{2})[\s\S]{0,200}?<td[^>]*>\s*([\d.]+)\s*</td>")
+# ---- 국내 금리 -------------------------------------------------------
+# 쓰던 네이버 일별시세(finance.naver.com/marketindex/interestDailyQuote.naver)가
+# 410 Gone 이 됐다. 네이버는 시장지표에서 금리를 통째로 걷어냈다(실측: 그
+# 페이지에 IRR_ 참조가 0개). 그래서 두 경로로 바꾼다.
+#
+#   ① 한국은행 ECOS — 공식 통계. 국고채 3년과 회사채 AA- 3년을 일별
+#      시계열로 준다. 무료지만 키를 등록해야 한다(샘플 키는 10건 제한 —
+#      실측에서 ERROR-301 로 거절당했다).
+#   ② 한경 데이터센터 — 키가 없을 때. 현재가와 전일비는 HTML 에 박혀 오지만
+#      시계열이 없고 회사채 AA- 도 없다(실측: 34종 중 AA 0회).
+#
+# 둘 다 비면 경고를 남긴다. 네이버가 페이지를 없앤 것을 아무도 몰랐던 이유가
+# '값이 없으면 카드를 조용히 건너뛴다' 였다.
+ECOS_BASE = "https://ecos.bok.or.kr/api"
+ECOS_STAT = "817Y002"            # 1.3.2.1. 시장금리(일별)
+ECOS_YEARS = 2
+HK_RATES = "https://datacenter.hankyung.com/rates-bonds"
+HK_ROW = re.compile(r'<span class="txt-en">([A-Z0-9]+)</span>'
+                    r'[\s\S]{0,300}?data-value="(-?[\d.]+)"'
+                    r'[\s\S]{0,200}?data-value="(-?[\d.]+)"')
 
 
-def _naver_page(code: str, page: int):
-    r = requests.get(
-        NAVER_URL.format(code=code, page=page),
-        headers=NAVER_HDR, verify=VERIFY, timeout=TIMEOUT,
-    )
-    r.encoding = "euc-kr"
-    out = []
-    for ds, vs in ROW_RE.findall(r.text):
-        try:
-            out.append((dt.datetime.strptime(ds, "%Y.%m.%d").date(), float(vs)))
-        except ValueError:
-            pass
+def _ecos_key():
+    for n in ("ECOS_API_KEY", "ECOS_KEY", "BOK_API_KEY"):
+        v = (os.environ.get(n) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _ecos_items(key):
+    """{'govt_3y': 코드, 'corp_aa3y': 코드} — 항목 코드를 이름으로 찾는다.
+
+    코드를 박아 두지 않는 이유는 한국은행이 항목을 다시 매길 수 있어서다.
+    이름으로 찾으면 그때도 따라간다.
+    """
+    try:
+        r = requests.get(f"{ECOS_BASE}/StatisticItemList/{key}/json/kr/1/200/"
+                         f"{ECOS_STAT}", timeout=TIMEOUT)
+        pairs = re.findall(r'"ITEM_CODE":"([^"]+)","ITEM_NAME":"([^"]+)"', r.text)
+    except Exception as e:                         # noqa: BLE001
+        print(f"::warning::[금리] ECOS 항목목록 실패: {type(e).__name__}")
+        return {}
+    out = {}
+    for code, name in pairs:
+        n = name.replace(" ", "")
+        if "국고채" in n and "3년" in n and "govt_3y" not in out:
+            out["govt_3y"] = code
+        if "회사채" in n and "AA-" in n and "3년" in n and "corp_aa3y" not in out:
+            out["corp_aa3y"] = code
+    if not out:
+        print(f"::warning::[금리] ECOS 항목 {len(pairs)}개에서 국고채·회사채를 "
+              f"못 찾았다")
     return out
 
 
-def naver_series(code: str, pages: int = 76):
-    """네이버 일별시세(페이지당 7행)를 긁어 2개년 시계열을 만든다."""
-    rows = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for chunk in ex.map(lambda p: _naver_page(code, p), range(1, pages + 1)):
-            rows.extend(chunk)
-    rows = sorted(set(rows))
-    cutoff = dt.date.today() - dt.timedelta(days=730)
-    return [(d, v) for d, v in rows if d >= cutoff]
+def _ecos_series(key, item):
+    """[(날짜, 값)] — 2년치 일별."""
+    today = dt.date.today()
+    start = (today - dt.timedelta(days=365 * ECOS_YEARS + 10)).strftime("%Y%m%d")
+    try:
+        r = requests.get(f"{ECOS_BASE}/StatisticSearch/{key}/json/kr/1/2000/"
+                         f"{ECOS_STAT}/D/{start}/{today:%Y%m%d}/{item}",
+                         timeout=TIMEOUT)
+        rows = re.findall(r'"TIME":"(\d{8})","DATA_VALUE":"([^"]*)"', r.text)
+    except Exception as e:                         # noqa: BLE001
+        print(f"::warning::[금리] ECOS 조회 실패({item}): {type(e).__name__}")
+        return []
+    out = []
+    for ts, v in rows:
+        try:
+            out.append((dt.datetime.strptime(ts, "%Y%m%d").date(), float(v)))
+        except ValueError:
+            pass
+    return sorted(out)
+
+
+def _hankyung_rates():
+    """{심볼: (값, 전일비)} — 키가 없을 때 쓰는 현재가. 시계열은 없다."""
+    try:
+        r = requests.get(HK_RATES, headers=UA, timeout=TIMEOUT)
+        if r.status_code != 200:
+            print(f"::warning::[금리] 한경 HTTP {r.status_code}")
+            return {}
+    except Exception as e:                         # noqa: BLE001
+        print(f"::warning::[금리] 한경 실패: {type(e).__name__}")
+        return {}
+    out = {}
+    for sym, val, chg in HK_ROW.findall(r.text):
+        if sym not in out:
+            try:
+                out[sym] = (float(val), float(chg))
+            except ValueError:
+                pass
+    return out
+
+
+def _snap(series, scale=100.0):
+    if not series:
+        return {"series": [], "last": None, "chg": None}
+    last = series[-1][1]
+    chg = (last - series[-2][1]) * scale if len(series) > 1 else 0.0
+    return {"series": series, "last": last, "chg": chg}
 
 
 def fetch_domestic():
-    """회사채 AA- 3년, 국고채 3년, 그리고 그 스프레드."""
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_corp = ex.submit(naver_series, "IRR_CORP03Y")
-        f_govt = ex.submit(naver_series, "IRR_GOVT03Y")
-    corp, govt = f_corp.result(), f_govt.result()
+    """국고채 3년, 회사채 AA- 3년, 그리고 그 스프레드."""
+    key = _ecos_key()
+    if key:
+        items = _ecos_items(key)
+        govt = _ecos_series(key, items["govt_3y"]) if items.get("govt_3y") else []
+        corp = _ecos_series(key, items["corp_aa3y"]) if items.get("corp_aa3y") else []
+        if govt or corp:
+            gmap = dict(govt)
+            spread = [(d, (v - gmap[d]) * 100.0) for d, v in corp if d in gmap]
+            print(f"[금리] ECOS — 국고채 {len(govt)}일 · 회사채 {len(corp)}일")
+            return {"govt_3y": _snap(govt), "corp_aa3y": _snap(corp),
+                    "spread": {**_snap(spread, scale=1.0), "unit": "bp"}}
+        print("::warning::[금리] ECOS 키는 있는데 받은 값이 없다")
 
-    gmap = dict(govt)
-    spread = [(d, (v - gmap[d]) * 100.0) for d, v in corp if d in gmap]  # bp
+    # 키가 없거나 ECOS 가 비면 현재가만이라도 띄운다
+    hk = _hankyung_rates()
+    if not hk:
+        print("::warning::[금리] 국내 금리를 한 곳에서도 못 받았다 — 카드가 빈다")
+        return {}
+    note = ("ECOS_API_KEY 가 없어 현재가만 싣는다(한경). 2년 추이와 회사채 AA- 는 "
+            "ecos.bok.or.kr 무료 키를 넣으면 살아난다")
+    print(f"::warning::[금리] {note}")
 
-    def snap(series, scale=100.0):
-        if not series:
-            return {"series": series, "last": None, "chg": None}
-        last = series[-1][1]
-        chg = (last - series[-2][1]) * scale if len(series) > 1 else 0.0
-        return {"series": series, "last": last, "chg": chg}
+    def one(sym):
+        v = hk.get(sym)
+        return ({"series": [], "last": v[0], "chg": v[1], "source": "한경"}
+                if v else {"series": [], "last": None, "chg": None})
 
-    return {
-        "corp_aa3y": snap(corp),          # chg 단위: bp
-        "govt_3y": snap(govt),
-        "spread": {**snap(spread, scale=1.0), "unit": "bp"},
-    }
+    out = {"govt_3y": one("KR3Y"), "govt_10y": one("KR10Y"), "cd_91": one("CD91")}
+    print(f"[금리] 한경 — 국고3년 {out['govt_3y']['last']} · "
+          f"국고10년 {out['govt_10y']['last']} · CD91 {out['cd_91']['last']}")
+    return out
 
 
 # ------------------------------------------------------------------ 전체

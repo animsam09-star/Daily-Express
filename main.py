@@ -12,11 +12,19 @@ import os
 import sys
 import time
 
+import concall
 import news
 import notify
+import profile
 import render
 import sources
 import webgen
+
+
+# 개요 캐시가 놓이는 곳. 워크플로가 data-us 브랜치에서 받아 두고 다시 올린다.
+OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_us.json")
+# 어닝콜 요약 캐시. 콜은 분기에 한 번뿐이라 캐시가 거의 전부를 해결한다.
+CALL_CACHE = os.environ.get("CALL_CACHE", "data/concalls_us.json")
 
 
 def main() -> int:
@@ -50,15 +58,40 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
 
-    # 야후가 주는 기업 개요는 영문이다. 전 종목을 한 번에 보내 한국어로 옮긴다.
-    # 실패하면 원문(영문)이 그대로 남는다.
-    profiles = {h["ticker"]: (h.get("profile") or {}).get("summary")
-                for hs in (data.get("holdings") or {}).values() for h in hs}
-    for t, ko in news.translate_profiles({k: v for k, v in profiles.items() if v}).items():
+    # 기업 개요를 한글로 다시 쓴다. 전에는 news.translate_profiles 로 매일
+    # 번역했는데 두 가지가 아까웠다 — ① 400자로 자른 뒤 번역해서 뒤쪽 사업
+    # 내용이 통째로 사라졌고, ② 캐시가 없어 종목 200개를 날마다 다시 돌렸다
+    # (같은 회사 설명이 날마다 조금씩 달라지기도 했다).
+    # 이제 원문 전체를 재료로 한 번만 쓰고 캐시한다.
+    profs = {h["ticker"]: (h.get("profile") or {})
+             for hs in (data.get("holdings") or {}).values() for h in hs}
+    ko = profile.build(profs, OVERVIEW_CACHE)
+    for hs in (data.get("holdings") or {}).values():
+        for h in hs:
+            text = ko.get(h["ticker"])
+            if text and h.get("profile"):
+                h["profile"]["summary_ko"] = text
+
+    # 어닝콜 전문 요약. 주도주·관심종목에 더해, 최근 실적을 발표한 종목도
+    # 넣는다 — 실적 발표 카드에서 눌러 들어온 종목의 컨콜 탭이 비어 있으면
+    # (VLO 가 그랬다) 카드가 가리키는 것과 탭이 담는 것이 어긋난다.
+    # 전문이 5만 자라 종목마다 한 번씩 물어야 하므로 그 둘로 끊는다.
+    try:
+        picks, pnames = set(), {}
         for hs in (data.get("holdings") or {}).values():
             for h in hs:
-                if h["ticker"] == t and h.get("profile"):
-                    h["profile"]["summary"] = ko
+                pnames[h["ticker"]] = h.get("name") or h["ticker"]
+                if h.get("pick"):
+                    picks.add(h["ticker"])
+        held = {h["ticker"] for hs in (data.get("holdings") or {}).values()
+                for h in hs}
+        for r in ((data.get("earnings") or {}).get("done") or []):
+            if r.get("ticker") in held:
+                picks.add(r["ticker"])
+        data["calls"] = concall.build(picks, pnames, CALL_CACHE)
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 어닝콜 요약 실패(계속): {type(e).__name__}: {e}")
+        data["calls"] = {}
 
     # 급등락 종목의 관련 뉴스 → Claude 요약 + 섹터별 등락 종합 코멘트.
     # 실패해도 발송은 계속된다. (sources 를 import 하므로 순환을 피해 여기서 붙인다)
@@ -112,6 +145,21 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    # 실적 발표·컨콜 카드가 실제로 채워졌는지. 캘린더가 막히거나(무료 등급)
+    # 티커가 하나도 안 겹치면 카드가 통째로 안 뜨는데, 페이지를 열어 보기
+    # 전에는 그게 '발표가 없어서' 인지 '못 받아서' 인지 구분이 안 된다.
+    e = data.get("earnings") or {}
+    held = {h["ticker"] for h in hs}
+    ed = [r for r in (e.get("done") or []) if r["ticker"] in held]
+    eu = [r for r in (e.get("upcoming") or []) if r["ticker"] in held]
+    print(f"::notice::[진단] 실적 발표 — 들고 있는 종목 중 발표 {len(ed)}건"
+          f" · 예정 {len(eu)}건"
+          + (f" (최근: {', '.join(r['ticker'] for r in ed[:8])})" if ed else "")
+          + ("" if (e.get("done") or e.get("upcoming"))
+             else " — 캘린더가 비어 있다"))
+    calls = data.get("calls") or {}
+    print(f"::notice::[진단] 어닝콜 요약 {len(calls)}건"
+          + (f" ({', '.join(sorted(calls)[:10])})" if calls else ""))
     if sources.EARLY_REJECT:
         top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
         print("::notice::[진단] 초동 탈락 사유 — "

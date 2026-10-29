@@ -1,0 +1,22 @@
+name: 탐색(수동)
+
+# 수집 코드를 쓰기 전에 바깥 주소를 러너에서 한 번 찔러 보는 자리.
+# 세션 컨테이너는 바깥이 막혀 있어 여기서만 실측이 된다.
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: '돌릴 tools/ 스크립트'
+        type: string
+        default: 'tools/probe_transcripts.py'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python "${{ inputs.script }}"

@@ -16,6 +16,7 @@ import time
 import kr_sources as kr
 import news
 import notify
+import profile
 import render
 import sources
 import webgen
@@ -56,6 +57,10 @@ def build_message(data) -> str:
         lines.append(f"□ 국고채 3년 {govt['last']:.2f}%({govt['chg']:+.0f}bp)")
     if corp and corp.get("last") is not None:
         lines.append(f"□ 회사채 AA- 3년 {corp['last']:.2f}%({corp['chg']:+.0f}bp)")
+    for key, label in (("govt_10y", "국고채 10년"), ("cd_91", "CD 91일")):
+        d = dom.get(key)
+        if d and d.get("last") is not None:
+            lines.append(f"□ {label} {d['last']:.2f}%({d['chg']:+.0f}bp)")
 
     flows = data.get("flows") or {}
     for mkt in ("코스피", "코스닥"):
@@ -140,7 +145,7 @@ def build_charts(data, outdir):
     for key, title in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "회사채 AA- 3년 스프레드")):
         d = dom.get(key)
-        if d and d.get("last") is not None:
+        if d and d.get("last") is not None and d.get("series"):
             unit = "bp" if key == "spread" else "%"
             add(render.line_chart(os.path.join(outdir, f"{key}.png"),
                                   f"{title} 2년 추이", d["series"],
@@ -181,6 +186,9 @@ def build_charts(data, outdir):
     return charts
 
 
+OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_kr.json")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
@@ -209,6 +217,18 @@ def main() -> int:
     for e in data.get("errors") or []:
         print(f"    ! {e}")
     # 종목 메모 + 테마별 등락 종합 코멘트. 미국판과 같은 프롬프트·검증을 쓴다.
+    # 기업 개요를 다시 쓴다. 국내는 FnGuide 원문이 한글이라 번역은 필요
+    # 없지만, 공시체 문장을 그대로 옮긴 거라 읽기 나쁘다. 미국과 같은
+    # 규칙으로 정리하고 같은 방식으로 캐시한다(캐시 파일만 따로 둔다).
+    profs = {h["ticker"]: (h.get("profile") or {})
+             for hs in (data.get("holdings") or {}).values() for h in hs}
+    ko = profile.build(profs, OVERVIEW_CACHE)
+    for hs in (data.get("holdings") or {}).values():
+        for h in hs:
+            text = ko.get(h["ticker"])
+            if text and h.get("profile"):
+                h["profile"]["summary_ko"] = text
+
     data["notes"], data["sector_notes"] = news.build_kr(
         data.get("holdings") or {},
         sectors=data.get("sectors"),
@@ -255,6 +275,11 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    dom = data.get("domestic") or {}
+    got = {k: v.get("last") for k, v in dom.items() if v.get("last") is not None}
+    print("::notice::[진단] 국내 금리 — "
+          + (", ".join(f"{k} {v}" for k, v in got.items()) if got
+             else "한 건도 못 받았다"))
     if sources.EARLY_REJECT:
         top = sorted(sources.EARLY_REJECT.items(), key=lambda kv: -kv[1])
         print("::notice::[진단] 초동 탈락 사유 — "
