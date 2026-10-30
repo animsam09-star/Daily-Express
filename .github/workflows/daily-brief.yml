@@ -41,7 +41,17 @@ jobs:
       FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
       # 한국은행 ECOS — 국고채·회사채 금리(일별). 없으면 한경에서 현재가만
       # 받는다(시계열·회사채 AA- 없음). 무료 키: ecos.bok.or.kr
+      # 어느 이름으로 등록해 뒀는지 모를 수 있어 흔한 이름을 다 넘긴다.
+      # 없는 시크릿은 빈 문자열이 되므로 이렇게 둬도 무해하다.
       ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+      ECOS_KEY: ${{ secrets.ECOS_KEY }}
+      ECOS_TOKEN: ${{ secrets.ECOS_TOKEN }}
+      ECOS: ${{ secrets.ECOS }}
+      BOK_API_KEY: ${{ secrets.BOK_API_KEY }}
+      BOK_KEY: ${{ secrets.BOK_KEY }}
+      BOK_ECOS_KEY: ${{ secrets.BOK_ECOS_KEY }}
+      KOREA_BANK_API_KEY: ${{ secrets.KOREA_BANK_API_KEY }}
+      HANKOOK_BANK_API_KEY: ${{ secrets.HANKOOK_BANK_API_KEY }}
       # 웹 대시보드 배포용 (없으면 배포만 생략)
       CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
