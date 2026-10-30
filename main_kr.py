@@ -275,6 +275,14 @@ def main() -> int:
     print("::notice::[진단] 선정 — " + (" / ".join(
         f"{k} {len(v)}건({', '.join(v[:8])}{'…' if len(v) > 8 else ''})"
         for k, v in sorted(kinds.items())) or "없음"))
+    # 키를 어느 이름으로 등록해 뒀는지 밖에서는 조회가 안 된다(시크릿 API 가
+    # 막혀 있다). 그래서 이름만 찍어 둔다 — 값은 절대 찍지 않는다.
+    have = [n for n in sources.ECOS_KEY_NAMES if (os.environ.get(n) or "").strip()]
+    print("::notice::[진단] ECOS 키 — "
+          + (", ".join(have) + " 에 들어 있다" if have
+             else "찾아본 이름(" + ", ".join(sources.ECOS_KEY_NAMES)
+                  + ") 중 아무것도 없다"))
+
     dom = data.get("domestic") or {}
     got = {k: v.get("last") for k, v in dom.items() if v.get("last") is not None}
     print("::notice::[진단] 국내 금리 — "
