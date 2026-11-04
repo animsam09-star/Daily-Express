@@ -22,6 +22,7 @@ import os
 
 # 종목명 축약은 텔레그램 캡션과 같은 규칙을 쓴다 — 'Palantir Technologies Inc.
 # Class A Common Stock' 같은 원문을 그대로 두면 표에서 이름이 수치를 밀어낸다.
+import sources
 from render import _short_name
 
 # 최근 6개월은 일별, 그 이전은 주별로 다운샘플해 페이지 크기를 줄인다.
@@ -124,6 +125,10 @@ def _holding(h, notes):
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
+        # 손으로 고정한 종목인가. pick 과 따로 두는 이유는, 고정 종목이 시총
+        # 상위에도 들면 pick 이 안 붙어(이미 표에 있으니 관심 후보에서 빠진다)
+        # 표시도 없고 관심종목 카드에도 안 뜨기 때문이다 — 팔란티어가 그랬다.
+        "pin": bool(h.get("pick") == "watch" or h["ticker"] in sources.WATCHLIST),
         # 종목을 눌렀을 때 보여줄 기업 개요와 분기·연간 실적
         "exchange": h.get("exchange") or "",
         # 원문(summary_raw)은 싣지 않는다 — 화면이 안 쓰는데 종목마다
@@ -208,9 +213,11 @@ def _watch_list(sectors):
     out = []
     for sec in sectors:
         for h in sec["holdings"]:
-            if h.get("pick") in _WATCH_ORDER:
+            kind = h.get("pick") if h.get("pick") in _WATCH_ORDER else (
+                "watch" if h.get("pin") else None)
+            if kind:
                 out.append({"ticker": h["ticker"], "symbol": sec["symbol"],
-                            "sector": sec["name"], "kind": h["pick"],
+                            "sector": sec["name"], "kind": kind,
                             "cap": h.get("market_cap") or 0})
     out.sort(key=lambda w: (_WATCH_ORDER.get(w["kind"], 9), -w["cap"]))
     return out
@@ -1240,12 +1247,13 @@ D.sectors.forEach(s=>{
     if(h.pick&&!opened){opened=true; head=grp('주도주 · 최근 3개월 상승률 상위');}
     const note=h.note?`<tr class="note-row"><td colspan="5">↳ ${h.note}
       ${h.note_url?` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>`:''}</td></tr>`:'';
+    const tag = h.pick==='momentum'
+      ? {t:'시총 상위는 아니지만 최근 3개월 상승률이 높고 최근 한 달도 꺾이지 않은 종목',
+         s:(h.returns.m3!=null?`3M ${sgn(h.returns.m3)}`:'주도주')}
+      : (h.pick||h.pin) ? {t:'항상 표시하도록 지정한 종목', s:'관심'} : null;
     return head+`<tr class="stk${h.pick?' extra':''}" data-t="${h.ticker}">
       <td>${h.name} <span style="color:var(--sub);font-weight:400">${h.ticker}</span>${
-        h.pick?`<span class="badge" title="${h.pick==='momentum'
-          ?'시총 상위는 아니지만 최근 3개월 상승률이 높고 최근 한 달도 꺾이지 않은 종목'
-          :'항상 표시하도록 지정한 종목'}">${h.pick==='momentum'
-          ?(h.returns.m3!=null?`3M ${sgn(h.returns.m3)}`:'주도주') :'관심'}</span>`:''}</td>
+        tag?`<span class="badge" title="${tag.t}">${tag.s}</span>`:''}</td>
       <td class="${cls(h.chg_pct)}">${sgn(h.chg_pct)}%</td>
       <td>${h.price==null?'–':(D.currency==='₩'?Math.round(h.price).toLocaleString()+'원':'$'+fmt(h.price))}</td>
       <td>${capF(h.market_cap,D.currency)}</td>

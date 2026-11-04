@@ -1453,10 +1453,18 @@ HK_ROW = re.compile(r'<span class="txt-en">([A-Z0-9]+)</span>'
                     r'[\s\S]{0,200}?data-value="(-?[\d.]+)"')
 
 
+# 키를 어느 이름으로 등록해 뒀는지 모를 때가 있다. 그 이름을 밖에서
+# 조회할 방법이 없으므로(시크릿 API 가 막혀 있다) 흔한 이름을 다 받아 본다.
+ECOS_KEY_NAMES = ("ECOS_API_KEY", "ECOS_KEY", "ECOS_TOKEN", "ECOS",
+                  "BOK_API_KEY", "BOK_KEY", "BOK_ECOS_KEY",
+                  "KOREA_BANK_API_KEY", "HANKOOK_BANK_API_KEY")
+
+
 def _ecos_key():
-    for n in ("ECOS_API_KEY", "ECOS_KEY", "BOK_API_KEY"):
+    for n in ECOS_KEY_NAMES:
         v = (os.environ.get(n) or "").strip()
         if v:
+            print(f"[금리] ECOS 키를 {n} 에서 찾았다")
             return v
     return ""
 
