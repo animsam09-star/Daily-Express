@@ -16,6 +16,20 @@ def note(s):
     print("::notice::[PLTR] " + str(s).replace("\n", " ")[:900])
 
 
+def product_path():
+    """제품이 실제로 쓰는 경로 그대로 돌려 PLTR 이 끝까지 남는지 본다."""
+    uni = S.fetch_market_universe()
+    caps = {r["ticker"]: r["market_cap"] for rows in uni.values() for r in rows}
+    hold = S.fetch_sector_holdings(["XLK"], caps=caps)
+    rows = hold.get("XLK") or []
+    note(f"fetch_sector_holdings(XLK) -> {len(rows)}종: "
+         f"{[h['ticker'] for h in rows]}")
+    me = next((h for h in rows if h["ticker"] == T), None)
+    note("PLTR " + (f"남아 있다 — 주가 {me.get('price')} · 시총 {me.get('market_cap')} "
+                    f"· 등락 {me.get('chg_pct')} · 시계열 {len(me.get('ohlc') or [])}봉"
+                    if me else "여기서 사라졌다"))
+
+
 def main():
     note(f"WATCHLIST={S.WATCHLIST.get(T)} · CURATED_SECTOR={S.CURATED_SECTOR.get(T)} "
          f"· EXCLUDE_FROM_OTHERS 포함? {T in S.EXCLUDE_FROM_OTHERS} "
@@ -52,17 +66,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-def product_path():
-    """제품이 실제로 쓰는 경로 그대로 돌려 PLTR 이 끝까지 남는지 본다."""
-    uni = S.fetch_market_universe()
-    caps = {r["ticker"]: r["market_cap"] for rows in uni.values() for r in rows}
-    hold = S.fetch_sector_holdings(["XLK"], caps=caps)
-    rows = hold.get("XLK") or []
-    note(f"fetch_sector_holdings(XLK) -> {len(rows)}종: "
-         f"{[h['ticker'] for h in rows]}")
-    me = next((h for h in rows if h["ticker"] == T), None)
-    note("PLTR " + (f"남아 있다 — 주가 {me.get('price')} · 시총 {me.get('market_cap')} "
-                    f"· 등락 {me.get('chg_pct')} · 시계열 {len(me.get('ohlc') or [])}봉"
-                    if me else "여기서 사라졌다"))
