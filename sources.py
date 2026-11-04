@@ -1447,6 +1447,11 @@ def fetch_treasury_history():
 ECOS_BASE = "https://ecos.bok.or.kr/api"
 ECOS_STAT = "817Y002"            # 1.3.2.1. 시장금리(일별)
 ECOS_YEARS = 2
+# 키가 없을 때는 ECOS 가 공개해 둔 체험 키를 쓴다. 한 번에 10건까지라
+# 2년 추이는 못 그리지만 최근 값·전일비와 회사채 AA-·스프레드는 나온다
+# — 한경에는 회사채 AA- 가 없었다.
+ECOS_SAMPLE = "sample"
+ECOS_SAMPLE_MAX = 10
 HK_RATES = "https://datacenter.hankyung.com/rates-bonds"
 HK_ROW = re.compile(r'<span class="txt-en">([A-Z0-9]+)</span>'
                     r'[\s\S]{0,300}?data-value="(-?[\d.]+)"'
@@ -1470,37 +1475,61 @@ def _ecos_key():
 
 
 def _ecos_items(key):
-    """{'govt_3y': 코드, 'corp_aa3y': 코드} — 항목 코드를 이름으로 찾는다.
+    """{'govt_3y'·'govt_10y'·'corp_aa3y': 코드} — 항목 코드를 이름으로 찾는다.
 
     코드를 박아 두지 않는 이유는 한국은행이 항목을 다시 매길 수 있어서다.
-    이름으로 찾으면 그때도 따라간다.
+    이름으로 찾으면 그때도 따라간다. 체험 키(sample)는 한 번에 10건까지만
+    주므로 10건씩 넘겨 가며 찾는다.
     """
-    try:
-        r = requests.get(f"{ECOS_BASE}/StatisticItemList/{key}/json/kr/1/200/"
-                         f"{ECOS_STAT}", timeout=TIMEOUT)
-        pairs = re.findall(r'"ITEM_CODE":"([^"]+)","ITEM_NAME":"([^"]+)"', r.text)
-    except Exception as e:                         # noqa: BLE001
-        print(f"::warning::[금리] ECOS 항목목록 실패: {type(e).__name__}")
-        return {}
-    out = {}
-    for code, name in pairs:
-        n = name.replace(" ", "")
-        if "국고채" in n and "3년" in n and "govt_3y" not in out:
-            out["govt_3y"] = code
-        if "회사채" in n and "AA-" in n and "3년" in n and "corp_aa3y" not in out:
-            out["corp_aa3y"] = code
+    step = ECOS_SAMPLE_MAX if key == ECOS_SAMPLE else 200
+    pairs = []
+    for start in range(1, 1 + step * (10 if key == ECOS_SAMPLE else 1), step):
+        try:
+            r = requests.get(f"{ECOS_BASE}/StatisticItemList/{key}/json/kr/"
+                             f"{start}/{start + step - 1}/{ECOS_STAT}", timeout=TIMEOUT)
+            got = re.findall(r'"ITEM_CODE":"([^"]+)","ITEM_NAME":"([^"]+)"', r.text)
+        except Exception as e:                     # noqa: BLE001
+            print(f"::warning::[금리] ECOS 항목목록 실패: {type(e).__name__}")
+            break
+        pairs += got
+        out = _match_items(pairs)
+        if not got or len(out) == 3:
+            break
+    out = _match_items(pairs)
     if not out:
         print(f"::warning::[금리] ECOS 항목 {len(pairs)}개에서 국고채·회사채를 "
               f"못 찾았다")
     return out
 
 
+def _match_items(pairs):
+    out = {}
+    for code, name in pairs:
+        n = name.replace(" ", "")
+        if "국고채" in n and "(3년" in n and "govt_3y" not in out:
+            out["govt_3y"] = code
+        if "국고채" in n and "(10년" in n and "govt_10y" not in out:
+            out["govt_10y"] = code
+        if "회사채" in n and "AA-" in n and "3년" in n and "corp_aa3y" not in out:
+            out["corp_aa3y"] = code
+    return out
+
+
 def _ecos_series(key, item):
-    """[(날짜, 값)] — 2년치 일별."""
+    """[(날짜, 값)] — 2년치 일별. 체험 키면 최근 10영업일만.
+
+    체험 키는 조회건수가 10을 넘으면 거절한다(ERROR-301). 건수를 10으로
+    두면 기간 안의 '앞쪽' 10건이 오므로, 기간 자체를 13일로 줄여 그 안에
+    영업일이 10일을 넘지 않게 한다 — 그래야 가장 최근 값이 잘리지 않는다.
+    """
     today = dt.date.today()
-    start = (today - dt.timedelta(days=365 * ECOS_YEARS + 10)).strftime("%Y%m%d")
+    if key == ECOS_SAMPLE:
+        start, n = (today - dt.timedelta(days=12)).strftime("%Y%m%d"), ECOS_SAMPLE_MAX
+    else:
+        start = (today - dt.timedelta(days=365 * ECOS_YEARS + 10)).strftime("%Y%m%d")
+        n = 2000
     try:
-        r = requests.get(f"{ECOS_BASE}/StatisticSearch/{key}/json/kr/1/2000/"
+        r = requests.get(f"{ECOS_BASE}/StatisticSearch/{key}/json/kr/1/{n}/"
                          f"{ECOS_STAT}/D/{start}/{today:%Y%m%d}/{item}",
                          timeout=TIMEOUT)
         rows = re.findall(r'"TIME":"(\d{8})","DATA_VALUE":"([^"]*)"', r.text)
@@ -1546,27 +1575,31 @@ def _snap(series, scale=100.0):
 
 def fetch_domestic():
     """국고채 3년, 회사채 AA- 3년, 그리고 그 스프레드."""
-    key = _ecos_key()
-    if key:
-        items = _ecos_items(key)
-        govt = _ecos_series(key, items["govt_3y"]) if items.get("govt_3y") else []
-        corp = _ecos_series(key, items["corp_aa3y"]) if items.get("corp_aa3y") else []
-        if govt or corp:
-            gmap = dict(govt)
-            spread = [(d, (v - gmap[d]) * 100.0) for d, v in corp if d in gmap]
-            print(f"[금리] ECOS — 국고채 {len(govt)}일 · 회사채 {len(corp)}일")
-            return {"govt_3y": _snap(govt), "corp_aa3y": _snap(corp),
-                    "spread": {**_snap(spread, scale=1.0), "unit": "bp"}}
-        print("::warning::[금리] ECOS 키는 있는데 받은 값이 없다")
+    key = _ecos_key() or ECOS_SAMPLE
+    items = _ecos_items(key)
+    ser = {k: _ecos_series(key, c) for k, c in items.items()}
+    govt, corp = ser.get("govt_3y") or [], ser.get("corp_aa3y") or []
+    if govt or corp:
+        gmap = dict(govt)
+        spread = [(d, (v - gmap[d]) * 100.0) for d, v in corp if d in gmap]
+        print(f"[금리] ECOS({'체험 키' if key == ECOS_SAMPLE else '등록 키'}) — "
+              f"국고채 {len(govt)}일 · 회사채 {len(corp)}일")
+        if key == ECOS_SAMPLE:
+            print("::warning::[금리] ECOS 체험 키(sample)로 최근 10영업일만 받았다 — "
+                  "2년 추이는 ecos.bok.or.kr 무료 키를 ECOS_API_KEY 로 넣으면 그려진다")
+        out = {"govt_3y": _snap(govt), "corp_aa3y": _snap(corp),
+               "spread": {**_snap(spread, scale=1.0), "unit": "bp"}}
+        if ser.get("govt_10y"):
+            out["govt_10y"] = _snap(ser["govt_10y"])
+        return out
+    print("::warning::[금리] ECOS 에서 받은 값이 없다 — 한경으로 넘어간다")
 
-    # 키가 없거나 ECOS 가 비면 현재가만이라도 띄운다
+    # ECOS 가 비면 현재가만이라도 띄운다
     hk = _hankyung_rates()
     if not hk:
         print("::warning::[금리] 국내 금리를 한 곳에서도 못 받았다 — 카드가 빈다")
         return {}
-    note = ("ECOS_API_KEY 가 없어 현재가만 싣는다(한경). 2년 추이와 회사채 AA- 는 "
-            "ecos.bok.or.kr 무료 키를 넣으면 살아난다")
-    print(f"::warning::[금리] {note}")
+    print("::warning::[금리] 한경 현재가만 싣는다(회사채 AA-·추이 없음)")
 
     def one(sym):
         v = hk.get(sym)
