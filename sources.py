@@ -678,6 +678,8 @@ EARLY_PRESELECT = 70
 WATCHLIST = {
     "PLTR": "XLK",      # 팔란티어 — XLK 시총 12위라 상위 5 규칙에 늘 잘린다
     "BE": "XLI",        # 블룸에너지 — 지수 미편입. GICS 기준 산업재(전기장비)
+    "SPCX": "ARKX",     # 스페이스X — 우주 카드 1위지만 그 카드가 페이지 중간이라
+                        # 찾기 어렵다. 관심종목 카드에도 띄운다
 
     # 반도체·장비
     "QCOM": "XLK", "TXN": "XLK", "ADI": "XLK", "MRVL": "XLK",
