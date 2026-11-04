@@ -20,6 +20,10 @@ on:
         description: '텔레그램 발송 없이 웹 대시보드만 갱신·배포'
         type: boolean
         default: false
+      concall_budget:
+        description: '어닝콜 요약에 쓸 시간(초). 밀린 것을 한 번에 몰아 쓸 때만 늘린다'
+        required: false
+        default: '240'
 
 permissions:
   contents: write           # data-us 브랜치에 기업 개요 캐시를 남긴다
@@ -28,7 +32,7 @@ permissions:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 80        # 평소 10분 안팎. 어닝콜을 몰아 쓰는 수동 실행만 길다
     # step 의 if 조건에서는 secrets 를 직접 못 쓴다(env 만 참조 가능).
     # 그래서 job 단위 env 로 한 번 받아둔다.
     env:
@@ -171,6 +175,8 @@ jobs:
 
       - name: 브리핑 생성
         if: steps.guard.outputs.skip != 'true'
+        env:
+          CONCALL_BUDGET: ${{ inputs.concall_budget || '240' }}
         run: python main.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
 
       - name: 기업 개요·어닝콜 캐시 남기기
