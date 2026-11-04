@@ -130,8 +130,10 @@ def main() -> int:
     kinds, dead = {}, []
     for rows in (data.get("holdings") or {}).values():
         for h in rows:
-            if h.get("pick"):
-                kinds.setdefault(h["pick"], []).append(h["ticker"])
+            kind = h.get("pick") or ("watch" if h["ticker"] in sources.WATCHLIST
+                                     else "")
+            if kind:
+                kinds.setdefault(kind, []).append(h["ticker"])
             if h.get("price") is None:
                 dead.append(h["ticker"])
     # ::notice:: 로 띄우면 작업 로그 전체를 받지 않고 주석 API 로만 꺼낼 수
