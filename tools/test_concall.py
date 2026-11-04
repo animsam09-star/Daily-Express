@@ -80,6 +80,35 @@ def main():
     ok &= check("본문은 들어온다", "Postpaid Phone Net Additions" in txt, True)
     ok &= check("HTML 엔티티를 푼다", "It's Dan" in txt, True)
 
+    # 새 양식(배경·용어·해석 칸)을 읽는다
+    out = concall._parse("""앞말 {"intro":{"what":"정유사다.","drivers":["정제마진"]},
+      "comments":[{"head":"정제 이익 급증 — $8.8B","body":"전년 $1.6B.","context":"마진이 튀었다."}],
+      "qa":[{"who":"Neil Mehta (Goldman Sachs)","q":"마진 지속?","a":"봅니다.","context":"직전 보도.","note":""}],
+      "terms":[{"t":"크랙 스프레드","d":"원유와 제품 값 차이."}],
+      "unverified":[]} 뒷말""")
+    ok &= check("새 양식: 배경 칸", out["comments"][0]["context"], "마진이 튀었다.")
+    ok &= check("새 양식: 질문자", out["qa"][0]["who"], "Neil Mehta (Goldman Sachs)")
+    ok &= check("새 양식: 용어", out["terms"][0]["t"], "크랙 스프레드")
+    ok &= check("새 양식: 회사 소개", out["intro"]["drivers"], ["정제마진"])
+    ok &= check("코멘트·문답이 다 비면 버린다",
+                concall._parse('{"comments":[],"qa":[],"terms":[{"t":"x"}]}'), None)
+
+    # 버전이 바뀌어도 지난 글을 다시 쓸 때까지 남긴다 — 두 실행에 걸쳐서도
+    import json, os, tempfile
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "c.json")
+    json.dump({"ver": concall.VER - 1, "items": {"A|Q3 2026": {"ticker": "A"},
+                                                "B|Q3 2026": {"ticker": "B"}}},
+              open(path, "w"))
+    cache, stale = concall.load(path)
+    ok &= check("버전이 바뀌면 지난 글은 stale 로", (cache, sorted(stale)),
+                ({}, ["A|Q3 2026", "B|Q3 2026"]))
+    cache["A|Q3 2026"] = {"ticker": "A", "new": True}
+    concall.save(path, cache, stale)
+    cache, stale = concall.load(path)
+    ok &= check("다음 실행에도 못 쓴 것은 남는다", sorted(stale), ["B|Q3 2026"])
+    ok &= check("다시 쓴 것은 새 글로", cache["A|Q3 2026"].get("new"), True)
+
     print("\n통과" if ok else "\n실패")
     return 0 if ok else 1
 

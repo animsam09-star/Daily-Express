@@ -88,7 +88,11 @@ def main() -> int:
         for r in ((data.get("earnings") or {}).get("done") or []):
             if r.get("ticker") in held:
                 picks.add(r["ticker"])
-        data["calls"] = concall.build(picks, pnames, CALL_CACHE)
+        # 한글로 다시 쓴 개요를 같이 넘긴다 — '무슨 회사인지' 부터 깔아야
+        # 회사를 따라가지 않는 사람도 컨콜이 읽힌다
+        about = {h["ticker"]: (h.get("profile") or {}).get("summary_ko") or ""
+                 for hs in (data.get("holdings") or {}).values() for h in hs}
+        data["calls"] = concall.build(picks, pnames, CALL_CACHE, about)
     except Exception as e:                     # noqa: BLE001
         print(f"    ! 어닝콜 요약 실패(계속): {type(e).__name__}: {e}")
         data["calls"] = {}

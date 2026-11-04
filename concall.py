@@ -39,37 +39,64 @@ LINK = re.compile(r'href="(/earnings/call-transcripts/'
 
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 420
-WORKERS = 3
+WORKERS = 4
 BUDGET = 240             # 초. 넘기면 받은 것만 캐시하고 다음 실행으로 넘긴다
                          # (개요와 같은 예산 — 06:05 브리핑이 06:30 까지 나가야 한다)
-VER = 1                  # 프롬프트를 바꾸면 올린다
+VER = 2                  # 프롬프트를 바꾸면 올린다(2: 배경·용어·해석 칸)
 BODY_MAX = 60000         # 전문 글자 상한(사이트가 길어져도 요청이 터지지 않게)
 SINCE_DAYS = 21          # 며칠 전 콜까지 찾을 것인가(실적 발표 카드와 같은 창)
 
 SYSTEM = """\
-너는 증권사 애널리스트다. 아래 어닝콜 전문을 읽고 한국어 메모로 요약한다.
-읽는 사람은 콜을 듣지 못한 투자자다. 숫자와 그 숫자가 왜 그런지가 남아야 한다.
+너는 증권사 애널리스트다. 아래 어닝콜 전문을 읽고 한국어 해설 메모를 쓴다.
 
-[주요 코멘트] 6~8개
-- 각 항목은 '제목'과 '본문' 으로 나눈다.
-- 제목은 결론과 핵심 수치를 같이 적는다.
-  예: "SI 부문 최대 성장동력 — 매출 $7.6B"
-  예: "Compute 병목은 GPU보다 Power·Cooling — 2027년 최소 13GW 목표"
-- 본문은 한두 문장. 증감률·비교 시점·가이던스를 전문에 있는 대로 적는다.
-- 전문에 없는 숫자·전망을 지어내지 않는다. 회사 표현이 모호하면 모호한 대로 적는다.
+읽는 사람은 이 회사를 평소에 따라가지 않는 투자자다. 숫자만 나열하면
+"그래서 그게 왜 중요한데?" 를 알 수 없다. 그래서 사실(전문에 있는 것),
+배경(왜 그 얘기가 나왔는가), 해석(그래서 무슨 뜻인가)을 칸을 나눠 적는다.
 
-[주요 Q&A] 5~8개
-- 애널리스트 질문을 한 문장으로 줄이고(Q), 경영진 답변의 알맹이를 적는다(A).
-- 인사말·감사 표현은 버린다. 답을 피한 질문은 피했다고 적는다.
-- A 에도 숫자가 있으면 반드시 남긴다.
+[들어가기 전에] intro
+- what: 무슨 회사인지 두세 문장. 사업부가 있으면 부문마다 '무엇을 하는
+  곳인지' 를 쉬운 말로 붙인다. 예: "Well Construction(유정 건설) —
+  시추와 측정. 땅에 구멍을 뚫는 일". 아래 [회사 개요] 를 참고한다.
+- drivers: 이 회사 실적을 움직이는 변수 2~4개. 예: "정제마진(원유를 사서
+  휘발유·경유로 팔 때 남는 값)".
 
-공통
-- 평서문 종결(-한다/-이다). 영문 고유명사·부문명·제품명은 그대로 둔다.
-- 금액 단위는 전문 표기를 그대로 쓴다($14.6B 등).
+[주요 코멘트] comments 6~8개 — 사전 발표에서
+- head: 결론과 핵심 수치. 예: "SI 부문 최대 성장동력 — 매출 $7.6B"
+- body: 한두 문장. 증감률·비교 시점·가이던스를 전문에 있는 대로.
+- context: 이게 왜 중요한지, 무슨 일이 있었는지 2~3문장.
+  사건을 인과 순서로 쓴다(A 때문에 B 가 생겼고 그래서 C).
+
+[질의응답] qa — 전문의 질문을 빠짐없이 전부. 하나도 버리지 않는다.
+- who: 질문자와 소속. 예: "Neil Mehta (Goldman Sachs)". 모르면 빈 문자열.
+- q: 질문을 한두 문장으로.
+- a: 답변을 화자가 말한 그대로의 어투로 옮긴다. "~라고 설명했다" 같은
+  보고 말투를 쓰지 않는다. 숫자는 반드시 남긴다. 답을 피했으면 피한 대로.
+- context: 왜 이 시점에 이 질문이 나왔는가, 질문이 가리키는 사건이 무엇인가
+  2~3문장. 전문 안(사전 발표·다른 문답)에서 근거를 찾는다. 한 문장으로
+  끝나면 배경이 아니라 단어 설명이다.
+- note: 이 답변에서 따라 나오는 해석 한 문장. 없으면 빈 문자열.
+
+[용어] terms — 처음 보는 사람이 막힐 전문용어·약어·고유명사 4~8개.
+- t: 용어(정식 명칭은 괄호), d: 쉬운 말 풀이 한 문장.
+
+[미확인] unverified — 전문만으로 확인되지 않거나 산술이 맞지 않는 수치.
+  없으면 빈 배열. 경영진을 비난하지 않는다(전사 오류일 수 있다).
+
+지켜야 할 것
+- 판단·평가는 note 안에서만. head·body·a·context 에 '가장 설득력 있는',
+  '전략적', '약한 고리' 같은 평가 표현을 쓰지 않는다.
+- 전문에 없는 숫자·전망을 지어내지 않는다. 회사 표현이 모호하면 모호한 대로.
+- 한국어로 쓰고, 전문용어는 쉬운 말을 먼저 쓰고 정식 명칭을 괄호에 붙인다.
+- 문장을 짧게 끊는다. 평서문 종결(-한다/-이다).
+- 금액은 전문 표기를 따른다($14.6B 등). 연도는 '26년 꼴.
 - 마케팅 수사('선도적','혁신적')는 걷어낸다.
 
 JSON 만 출력한다. 설명도 코드펜스도 없이 객체 하나만.
-형식: {"comments":[{"head":"제목","body":"본문"}],"qa":[{"q":"질문","a":"답변"}]}
+형식: {"intro":{"what":"","drivers":[""]},
+ "comments":[{"head":"","body":"","context":""}],
+ "qa":[{"who":"","q":"","a":"","context":"","note":""}],
+ "terms":[{"t":"","d":""}],
+ "unverified":[""]}
 """
 
 
@@ -202,35 +229,58 @@ def _parse(out: str) -> dict | None:
         return None
     if not isinstance(d, dict):
         return None
-    cm = [c for c in (d.get("comments") or [])
-          if isinstance(c, dict) and (c.get("head") or c.get("body"))]
-    qa = [c for c in (d.get("qa") or [])
-          if isinstance(c, dict) and (c.get("q") or c.get("a"))]
-    return {"comments": cm, "qa": qa} if (cm or qa) else None
+
+    def rows(key, need):
+        return [c for c in (d.get(key) or [])
+                if isinstance(c, dict) and any(c.get(k) for k in need)]
+
+    cm = rows("comments", ("head", "body"))
+    qa = rows("qa", ("q", "a"))
+    if not (cm or qa):
+        return None
+    intro = d.get("intro") if isinstance(d.get("intro"), dict) else {}
+    return {"intro": {"what": str(intro.get("what") or ""),
+                      "drivers": [str(x) for x in (intro.get("drivers") or []) if x]},
+            "comments": cm, "qa": qa,
+            "terms": rows("terms", ("t",)),
+            "unverified": [str(x) for x in (d.get("unverified") or []) if x]}
 
 
-def load(path: str) -> dict:
+def load(path: str) -> tuple[dict, dict]:
+    """(이번 버전 캐시, 아직 다시 쓰지 못한 지난 버전 캐시).
+
+    프롬프트를 바꾸면 전부 다시 써야 하는데, 한 실행에 열 건 남짓밖에 못
+    쓴다(시간 예산). 그 사이 컨콜 탭이 비지 않게 지난 글을 깔아 두고,
+    파일에도 prev 로 남긴다 — 안 남기면 다음 실행이 '버전이 맞다' 고 보고
+    빈손으로 시작한다(profile.py 와 같은 구멍).
+    """
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
     except Exception:                              # noqa: BLE001
-        return {}
+        return {}, {}
+    items, prev = d.get("items") or {}, d.get("prev") or {}
     if d.get("ver") != VER:
-        print(f"[컨콜] 캐시 버전이 달라 버린다({d.get('ver')} != {VER})")
-        return {}
-    return d.get("items") or {}
+        print(f"[컨콜] 캐시 버전이 달라 다시 쓴다({d.get('ver')} != {VER}) — "
+              f"다시 쓰기 전까지 지난 글 {len(items) + len(prev)}건을 쓴다")
+        return {}, {**prev, **items}
+    return items, prev
 
 
-def save(path: str, items: dict) -> None:
+def save(path: str, items: dict, prev: dict | None = None) -> None:
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        body = {"ver": VER, "items": items}
+        left = {k: v for k, v in (prev or {}).items() if k not in items}
+        if left:
+            body["prev"] = left
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"ver": VER, "items": items}, f, ensure_ascii=False, indent=1)
+            json.dump(body, f, ensure_ascii=False, indent=1)
     except Exception as e:                         # noqa: BLE001
         print(f"[컨콜] 캐시 저장 실패: {type(e).__name__}")
 
 
-def build(tickers, names, path: str) -> dict:
+def build(tickers, names, path: str, about: dict | None = None) -> dict:
     """{티커: {quarter, date, url, comments, qa}}.
 
     캐시 키는 '티커|분기' 다 — 같은 분기를 두 번 쓰지 않고, 다음 분기 콜이
@@ -239,7 +289,8 @@ def build(tickers, names, path: str) -> dict:
     want = {t.upper() for t in (tickers or [])}
     if not want:
         return {}
-    cache = load(path)
+    cache, stale = load(path)
+    about = about or {}
     # 실적 발표 카드가 보는 창과 같은 3주. 그보다 오래된 콜은 다음 분기가
     # 코앞이라 굳이 새로 쓰지 않는다(이미 쓴 것은 캐시에 남아 있다).
     since = (dt.date.today() - dt.timedelta(days=SINCE_DAYS)).isoformat()
@@ -248,7 +299,10 @@ def build(tickers, names, path: str) -> dict:
     except Exception as e:                         # noqa: BLE001
         print(f"::warning::[컨콜] 목록 수집 실패: {type(e).__name__}")
         hit = {}
-    todo = [(t, v) for t, v in hit.items() if f"{t}|{v['quarter']}" not in cache]
+    # 최근 콜부터 쓴다 — 예산에 걸려 다음 실행으로 넘어가는 것은 오래된 쪽이다
+    todo = sorted(((t, v) for t, v in hit.items()
+                   if f"{t}|{v['quarter']}" not in cache),
+                  key=lambda tv: tv[1]["date"], reverse=True)
     print(f"::notice::[컨콜] 주도주·관심종목 {len(want)}종 중 전문 있는 것 "
           f"{len(hit)}건 · 새로 쓸 것 {len(todo)}건")
 
@@ -263,7 +317,8 @@ def build(tickers, names, path: str) -> dict:
         if len(text) < 2000:                       # 본문을 못 떼어낸 것이다
             print(f"[컨콜] {t} 본문 {len(text)}자 — 건너뜀")
             return t, v, None
-        head = (f"[{t}] {names.get(t, t)} — {v['quarter']} 어닝콜 전문\n\n")
+        head = (f"[회사 개요]\n{about.get(t) or '(없음)'}\n\n"
+                f"[{t}] {names.get(t, t)} — {v['quarter']} 어닝콜 전문\n\n")
         return t, v, _ask(SYSTEM + "\n\n" + head + text)
 
     done = 0
@@ -278,16 +333,16 @@ def build(tickers, names, path: str) -> dict:
                     "url": v["url"], **d}
                 done += 1
         if done:
-            save(path, cache)
+            save(path, cache, stale)
     print(f"[컨콜] 새로 쓴 콜 {done}건 (캐시 합계 {len(cache)})"
           + (f" — {skipped}건은 다음 실행으로" if skipped else ""))
 
     # 종목별로 가장 최근 분기 하나만 화면에 넘긴다
     out = {}
-    for v in cache.values():
+    for v in list(stale.values()) + list(cache.values()):   # 새 글이 덮어쓴다
         t = v.get("ticker")
         if t not in want:
             continue
-        if t not in out or v.get("date", "") > out[t].get("date", ""):
+        if t not in out or v.get("date", "") >= out[t].get("date", ""):
             out[t] = v
     return out
