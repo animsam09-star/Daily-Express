@@ -580,8 +580,21 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .call .qa{margin:0 0 10px;font-size:12.5px;line-height:1.6}
 .call .qa .q{font-weight:650}
 .call .qa .a{color:var(--ink2)}
-.call .qa .q:before{content:'Q. ';color:var(--muted)}
 .call .qa .a:before{content:'A. ';color:var(--muted)}
+.call .qa .no{color:var(--muted);margin-right:6px;font-weight:700}
+.call .qa .who{color:var(--muted);font-weight:400;font-size:11.5px}
+.call .lead{margin:0 0 8px;font-size:12.5px;line-height:1.65;color:var(--ink2)}
+/* 배경·해석은 본문과 섞이지 않게 왼쪽 줄로 갈라 둔다 */
+.call .ctx{margin:5px 0 0;padding:4px 0 4px 10px;border-left:2px solid var(--grid);
+           font-size:12px;line-height:1.6;color:var(--ink2)}
+.call .ctx.note{border-left-color:rgba(180,60,40,.35)}
+.call .lab{display:inline-block;margin-right:6px;font-size:10.5px;font-weight:700;
+           color:var(--muted);letter-spacing:.02em}
+.call .drv ul,.call .unv{margin:4px 0 0;padding-left:18px;font-size:12px;line-height:1.6}
+.call .terms{display:grid;grid-template-columns:max-content 1fr;gap:4px 12px;
+             margin:0;font-size:12px;line-height:1.55}
+.call .terms dt{font-weight:650}
+.call .terms dd{margin:0;color:var(--ink2)}
 table.fin th{text-align:left}
 table.fin td{font-variant-numeric:tabular-nums}
 .yoy{margin-left:5px;font-size:11px}
@@ -1624,18 +1637,37 @@ function callHtml(h){
   const c = (D.calls||{})[h.ticker];
   if(!c) return `<div class="about"><p>어닝콜 요약이 아직 없습니다. 전문이
     올라오면(보통 콜 다음 날) 다음 브리핑에서 요약합니다.</p>
-    <div class="sub">주도주·관심종목만 요약합니다.</div></div>`;
+    <div class="sub">주도주·관심종목과 최근 실적을 발표한 종목을 요약합니다.</div></div>`;
   const esc = t => (t||'').replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  // 사실·배경·해석을 칸으로 나눈다 — 회사를 따라가지 않던 사람도 '그게 왜
+  // 중요한지' 가 읽히게. 지난 양식(제목+본문, 문+답)으로 쓴 글도 그대로 편다.
+  const tag = (label, txt, cls='') => txt
+    ? `<div class="ctx ${cls}"><span class="lab">${label}</span>${esc(txt)}</div>` : '';
+  const it = c.intro || {};
+  const intro = (it.what || (it.drivers||[]).length)
+    ? `<h4>들어가기 전에</h4>${it.what?`<p class="lead">${esc(it.what)}</p>`:''}${
+        (it.drivers||[]).length?`<div class="drv"><span class="lab">실적을 움직이는 변수</span><ul>${
+          it.drivers.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>`:''}` : '';
   const cm = (c.comments||[]).map(x =>
-    `<div class="it"><b>${esc(x.head)}</b>${x.body?`<p>${esc(x.body)}</p>`:''}</div>`).join('');
-  const qa = (c.qa||[]).map(x =>
-    `<div class="qa"><div class="q">${esc(x.q)}</div>`
-    + `<div class="a">${esc(x.a)}</div></div>`).join('');
+    `<div class="it"><b>${esc(x.head)}</b>${x.body?`<p>${esc(x.body)}</p>`:''}${
+      tag('배경', x.context)}</div>`).join('');
+  const qa = (c.qa||[]).map((x,i) =>
+    `<div class="qa"><div class="q"><span class="no">Q${i+1}</span>${esc(x.q)}${
+      x.who?` <span class="who">— ${esc(x.who)}</span>`:''}</div>`
+    + `<div class="a">${esc(x.a)}</div>${tag('배경', x.context)}${tag('해석', x.note, 'note')}</div>`).join('');
+  const terms = (c.terms||[]).length
+    ? `<h4>용어</h4><dl class="terms">${c.terms.map(x=>
+        `<dt>${esc(x.t)}</dt><dd>${esc(x.d)}</dd>`).join('')}</dl>` : '';
+  const unv = (c.unverified||[]).length
+    ? `<h4>확인 안 된 것</h4><ul class="unv">${c.unverified.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>` : '';
   return `<div class="about call">
     <div class="lb">${esc(c.quarter||'')} 어닝콜 요약</div>
+    ${intro}
     ${cm?`<h4>▶️ 주요 코멘트</h4>${cm}`:''}
-    ${qa?`<h4>▶️ 주요 Q&amp;A</h4>${qa}`:''}
-    <div class="sub">${esc(c.date||'')} 전문을 요약한 것이다.
+    ${qa?`<h4>▶️ 주요 Q&amp;A ${(c.qa||[]).length}문항</h4>${qa}`:''}
+    ${terms}${unv}
+    <div class="sub">${esc(c.date||'')} 전문을 요약한 것이다. 배경은 콜 안의 발언에서
+      찾은 것이고, 해석은 요약자의 판단이다.
       <a href="${c.url||'#'}" target="_blank" rel="noopener">전문 보기</a></div></div>`;
 }
 
