@@ -145,7 +145,8 @@ def build_charts(data, outdir):
     for key, title in (("govt_3y", "국고채 3년"), ("corp_aa3y", "회사채 AA- 3년"),
                        ("spread", "회사채 AA- 3년 스프레드")):
         d = dom.get(key)
-        if d and d.get("last") is not None and d.get("series"):
+        # '2년 추이' 차트라 체험 키로 받은 10영업일로는 그리지 않는다
+        if d and d.get("last") is not None and len(d.get("series") or []) >= 60:
             unit = "bp" if key == "spread" else "%"
             add(render.line_chart(os.path.join(outdir, f"{key}.png"),
                                   f"{title} 2년 추이", d["series"],

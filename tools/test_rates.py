@@ -65,6 +65,8 @@ def main():
             return R(search(g))
         if "/010320000" in url:
             return R(search(c))
+        if "/010210000" in url:
+            return R(search([("20261026", "4.10"), ("20261027", "4.06")]))
         return R(HK)
 
     saved_get, saved_key = sources.requests.get, sources._ecos_key
@@ -86,18 +88,46 @@ def main():
     ok &= check("스프레드(회사채-국고채, bp)",
                 round(out["spread"]["last"], 0), 43.0)
 
-    # --- 한경 폴백(키 없음)
+    # --- 키가 없으면 ECOS 체험 키(sample) — 10건 이하로만 부르는가
+    urls = []
+
+    def fake2(url, **kw):
+        urls.append(url)
+        return fake(url, **kw)
+
+    sources.requests.get = fake2
+    sources._ecos_key = lambda: ""
+    try:
+        out = sources.fetch_domestic()
+    finally:
+        sources._ecos_key = saved_key
+    ok &= check("키가 없으면 sample 로 부른다",
+                all("/sample/" in u for u in urls if "ecos" in u), True)
+    big = [u for u in urls if "ecos" in u
+           and int(u.split("/json/kr/")[1].split("/")[1])
+           - int(u.split("/json/kr/")[1].split("/")[0]) + 1 > 10]
+    ok &= check("sample 은 한 번에 10건 이하로만 요청", big, [])
+    ok &= check("sample 로도 회사채 AA- 가 나온다", out["corp_aa3y"]["last"], 4.22)
+    ok &= check("sample 로도 스프레드가 나온다",
+                round(out["spread"]["last"], 0), 43.0)
+    ok &= check("국고 10년도 이름으로 찾는다", "govt_10y" in out, True)
+
+    # --- ECOS 가 비면 한경 폴백
+    def fake3(url, **kw):
+        if "ecos" in url:
+            return R("{}")
+        return R(HK)
+
+    sources.requests.get = fake3
     sources._ecos_key = lambda: ""
     try:
         out = sources.fetch_domestic()
     finally:
         sources._ecos_key = saved_key
         sources.requests.get = saved_get
-    ok &= check("키가 없으면 한경 현재가", out["govt_3y"]["last"], 3.79)
+    ok &= check("ECOS 가 비면 한경 현재가", out["govt_3y"]["last"], 3.79)
     ok &= check("한경 전일비", out["govt_3y"]["chg"], -8.01)
     ok &= check("한경에는 시계열이 없다", out["govt_3y"]["series"], [])
-    ok &= check("국고 10년·CD91 도 받는다",
-                (out["govt_10y"]["last"], out["cd_91"]["last"]), (4.06, 3.26))
     ok &= check("한경에는 회사채 AA- 가 없다", "corp_aa3y" in out, False)
 
     print("\n통과" if ok else "\n실패")
