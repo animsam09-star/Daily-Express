@@ -40,7 +40,8 @@ LINK = re.compile(r'href="(/earnings/call-transcripts/'
 MODEL = "claude-opus-5"
 CLI_TIMEOUT = 420
 WORKERS = 4
-BUDGET = 240             # 초. 넘기면 받은 것만 캐시하고 다음 실행으로 넘긴다
+BUDGET = int(os.environ.get("CONCALL_BUDGET") or 240)  # 초. 넘기면 받은 것만 캐시하고 다음 실행으로 넘긴다
+# 밀린 것을 한 번에 몰아 쓸 때는 워크플로 입력 concall_budget 으로 늘린다
                          # (개요와 같은 예산 — 06:05 브리핑이 06:30 까지 나가야 한다)
 VER = 2                  # 프롬프트를 바꾸면 올린다(2: 배경·용어·해석 칸)
 BODY_MAX = 60000         # 전문 글자 상한(사이트가 길어져도 요청이 터지지 않게)
