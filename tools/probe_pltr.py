@@ -46,8 +46,23 @@ def main():
     rank = next((i + 1 for i, h in enumerate(kept) if h["ticker"] == T), None)
     note(f"PLTR 의 XLK 내 시총 순위 {rank} (시총 {caps.get(T, 0)/1e9:.0f}B) — "
          f"상위 {S.WEB_TOP_N} 안에 {'있다' if T in top else '없다'}")
+    product_path()
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def product_path():
+    """제품이 실제로 쓰는 경로 그대로 돌려 PLTR 이 끝까지 남는지 본다."""
+    uni = S.fetch_market_universe()
+    caps = {r["ticker"]: r["market_cap"] for rows in uni.values() for r in rows}
+    hold = S.fetch_sector_holdings(["XLK"], caps=caps)
+    rows = hold.get("XLK") or []
+    note(f"fetch_sector_holdings(XLK) -> {len(rows)}종: "
+         f"{[h['ticker'] for h in rows]}")
+    me = next((h for h in rows if h["ticker"] == T), None)
+    note("PLTR " + (f"남아 있다 — 주가 {me.get('price')} · 시총 {me.get('market_cap')} "
+                    f"· 등락 {me.get('chg_pct')} · 시계열 {len(me.get('ohlc') or [])}봉"
+                    if me else "여기서 사라졌다"))
