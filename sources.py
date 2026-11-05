@@ -227,6 +227,46 @@ def yahoo_candles(symbol: str, rng: str = "2y", interval: str = "1d"):
     return out
 
 
+# 야후가 액면분할을 늦게 반영하는 일이 있다. 2026-11-05 ITA 는 3:1 로 쪼개졌는데
+# 그날 종가만 68달러, 전날까지는 212달러로 남고 splits 이벤트도 비어 있어
+# 섹터 카드에 -68% 가 찍혔다. 하루 사이 값이 정수배(2·3·4·5·10…)로 뛰거나
+# 떨어지면 분할로 보고 그 이전 가격을 같은 배수로 나눈다. ETF 는 하루에
+# 반토막이 날 수 없으니 섹터 ETF 에만 건다 — 개별 종목은 실제 폭락일 수 있다.
+SPLIT_RATIOS = (2, 3, 4, 5, 8, 10, 20)
+SPLIT_TOL = 0.08          # 분할 당일 실제 등락은 이 안쪽이라고 본다
+
+
+def _split_ratio(prev: float, cur: float):
+    """prev→cur 가 분할(또는 병합)로 보이면 prev/cur 에 해당하는 배수, 아니면 None."""
+    if not prev or not cur:
+        return None
+    r = prev / cur
+    for n in SPLIT_RATIOS:
+        for k in (n, 1.0 / n):
+            if abs(r / k - 1.0) < SPLIT_TOL:
+                return k
+    return None
+
+
+def fix_unreported_splits(rows, price_cols):
+    """rows(날짜 오름차순 튜플) 에서 분할로 보이는 날 이전 가격을 나눠 맞춘다.
+
+    price_cols 는 가격 칸 위치(종가는 마지막 칸이어야 한다). 거래량 칸은 건드리지
+    않는다 — 차트에서 거래량은 상대 높이만 보면 된다.
+    """
+    rows = [list(r) for r in rows]
+    ci = price_cols[-1]
+    for i in range(len(rows) - 1, 0, -1):
+        k = _split_ratio(rows[i - 1][ci], rows[i][ci])
+        if k is None:
+            continue
+        print(f"[분할 보정] {rows[i][0]} 이전 가격을 {k:g} 로 나눈다")
+        for r in rows[:i]:
+            for c in price_cols:
+                r[c] = r[c] / k
+    return [tuple(r) for r in rows]
+
+
 def pct_change(series):
     """직전 거래일 대비 등락률(%)."""
     if len(series) < 2:
@@ -261,7 +301,7 @@ def fetch_sectors():
     with ThreadPoolExecutor(max_workers=len(SECTORS)) as ex:
         futs = {ex.submit(yahoo_ohlc, sym): (sym, name) for sym, name in SECTORS}
         for f, (sym, name) in futs.items():
-            o = f.result()
+            o = fix_unreported_splits(f.result(), (1, 2, 3))
             s = [(d, c) for d, _, _, c in o]
             out.append({"symbol": sym, "name": name, "ohlc": o,
                         "chg_pct": pct_change(s), "series": s,
