@@ -125,7 +125,9 @@ def collect(market: str) -> dict | None:
         if not q or q.get("price") is None:
             continue
         row = {"price": q["price"]}
-        if q.get("chg_pct") is not None:
+        # 분할 당일 야후 등락률은 분할 전 종가와 비교돼 -68% 같은 값이 나온다
+        # (2026-11-05 ITA 3:1). 하루 ±40% 를 넘으면 받지 않고 페이지 값을 둔다.
+        if q.get("chg_pct") is not None and abs(q["chg_pct"]) <= 40:
             row["chg_pct"] = round(q["chg_pct"], 2)
         if q.get("market_cap"):
             row["market_cap"] = q["market_cap"]
