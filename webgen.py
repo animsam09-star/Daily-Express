@@ -139,6 +139,8 @@ def _holding(h, notes):
                       for k, v in q.items()} for q in (h.get("quarters") or [])],
         "annuals": [{k: (round(v, 4) if isinstance(v, float) else v)
                      for k, v in q.items()} for q in (h.get("annuals") or [])],
+        # 야후 표에 아직 없는 최근 분기의 발표문 숫자(조정·GAAP 둘 다)
+        "prov_adj": h.get("prov_adj"),
     }
 
 
@@ -560,6 +562,11 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .dlinks .ic{flex:none;width:18px;text-align:center}
 .dlinks .sub2{margin-left:auto;color:var(--muted);font-size:11.5px;text-align:right}
 .about{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid)}
+.basis{float:right;display:inline-flex;gap:2px;font-weight:400}
+.basis button{font:inherit;font-size:11.5px;padding:2px 8px;border:1px solid var(--grid);
+  background:transparent;color:var(--sub);border-radius:6px;cursor:pointer}
+.basis button.on{background:var(--ink,#1a1a1a);color:#fff;border-color:transparent}
+.gmark{font-size:9px;color:var(--muted);margin-left:2px;font-weight:600}
 .about+.about{margin-top:10px}
 .about .lb{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);
            margin-bottom:6px}
@@ -1579,10 +1586,19 @@ function aboutHtml(h){
 // 실적 캘린더의 발표치(매출·EPS)로 미리 채운다 — 영업이익·순이익은
 // 캘린더에 없어 비운다.
 function provQuarter(h){
+  const qs=h.quarters||[];
+  // SEC 실적 보도자료에서 읽은 최근 분기가 있으면 그게 가장 정확하다 —
+  // 매출뿐 아니라 영업이익·순이익(GAAP·조정)까지 다 있다.
+  const pa=h.prov_adj;
+  if(pa && pa.end && (!qs.length || pa.end > qs[qs.length-1].date)){
+    const ann=(D.earnings||[]).find(r=>r.ticker===h.ticker && r.kind==='done');
+    return {date:pa.end, revenue:pa.revenue, op:pa.op_gaap, net:pa.net_gaap,
+            op_adj:pa.op_adj, net_adj:pa.net_adj, eps_adj:pa.eps_adj,
+            prov:true, announced:ann?ann.date:'', src:'sec'};
+  }
   const e=(D.earnings||[]).find(r=>r.ticker===h.ticker && r.kind==='done'
                                    && (r.rev!=null || r.eps!=null));
   if(!e) return null;
-  const qs=h.quarters||[];
   if(!qs.length) return null;
   const last=qs[qs.length-1].date;
   // 발표일이 마지막 분기말보다 35일 넘게 뒤여야 '아직 안 들어온 분기' 다
@@ -1599,37 +1615,71 @@ function provQuarter(h){
           eps:e.eps, prov:true, announced:e.date};
 }
 
+// 영업이익·순이익을 조정(Non-GAAP)으로 볼지 GAAP 으로 볼지. 미국 시장은
+// 조정치로 이야기하므로 기본은 조정이다. 회사가 조정치를 내지 않은 칸(애플·
+// 은행처럼 GAAP 만 쓰는 곳, 6-K 를 내는 외국 회사)은 GAAP 값을 쓰고 'G' 를 단다.
+let FIN_BASIS='adj';
 function finHtml(rows, annual, prov){
   const cur=D.currency;
   if(prov && !annual) rows=(rows||[]).concat([prov]);
   if(!rows||!rows.length)
     return `<div class="about"><p>${annual?'연간':'분기'} 실적이 없습니다.</p></div>`;
   const back=annual?1:4;
+  const hasAdj=!annual && D.market!=='kr'
+    && rows.some(q=>q.op_adj!=null || q.net_adj!=null);
+  const adj=hasAdj && FIN_BASIS==='adj';
+  // 칸 값과 그 값의 기준. 조정 보기인데 조정치가 없으면 GAAP 로 물러선다.
+  const pick=(q,k)=>{
+    if(adj && (k==='op'||k==='net')){
+      const a=q[k+'_adj'];
+      if(a!=null) return {v:a, b:'adj'};
+      return {v:q[k], b:'gaap'};
+    }
+    return {v:q[k], b:'gaap'};
+  };
   // 기준 값이 적자면 증감률이 거짓말이 된다(-100 -> +50 이 '-150%' 로 찍힌다).
-  // 원래 매출에만 증감률을 붙였던 이유가 이것으로 보인다 — 영업이익·순이익
-  // 에도 붙이되 기준이 흑자일 때만 센다.
-  const yoy=(i,k)=>{const q=rows[i-back];
-    return q&&q[k]>0&&rows[i][k]!=null ? (rows[i][k]/q[k]-1)*100 : null;};
-  const U=finUnit(rows.flatMap(q=>[q.revenue,q.op,q.net]),cur);
+  // 기준이 흑자이고, 두 칸이 같은 기준(조정끼리·GAAP 끼리)일 때만 센다.
+  const yoy=(i,k)=>{const q=rows[i-back]; if(!q) return null;
+    const a=pick(rows[i],k), b=pick(q,k);
+    return a.b===b.b && b.v>0 && a.v!=null ? (a.v/b.v-1)*100 : null;};
+  const U=finUnit(rows.flatMap(q=>[q.revenue,pick(q,'op').v,pick(q,'net').v]),cur);
   const cells=k=>rows.map((q,i)=>{
-    const v=q[k], g=yoy(i,k);
-    return `<td${q.prov?' class="prov"':''}>${v==null?'–':fmt(v/U.d,U.p)}${
+    const {v,b}=pick(q,k), g=yoy(i,k);
+    const mark = adj && (k==='op'||k==='net') && b==='gaap' && v!=null
+      ? '<sup class="gmark" title="회사가 조정치를 내지 않아 GAAP 값">G</sup>' : '';
+    return `<td${q.prov?' class="prov"':''}>${v==null?'–':fmt(v/U.d,U.p)}${mark}${
       g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
-  return `<div class="about"><div class="lb">최근 ${rows.length}개 ${
+  const lab = annual || D.market==='kr' ? ''
+    : adj ? '<span class="unit">조정(Non-GAAP)</span>' : '<span class="unit">GAAP</span>';
+  const toggle = hasAdj ? `<span class="basis">${
+      [['adj','조정'],['gaap','GAAP']].map(([k,n])=>
+        `<button data-basis="${k}" class="${FIN_BASIS===k?'on':''}">${n}</button>`).join('')}</span>` : '';
+  const epsRow = adj && rows.some(q=>q.eps_adj!=null)
+    ? `<tr><th>EPS<span class="unit">조정</span></th>${rows.map(q=>
+        `<td${q.prov?' class="prov"':''}>${q.eps_adj==null?'–':fmt(q.eps_adj,2)}</td>`).join('')}</tr>` : '';
+  const note = annual
+    ? (D.market==='kr' ? '' : ' · 연간은 GAAP 기준')
+    : hasAdj
+      ? (adj ? ' · 영업이익·순이익은 회사 실적 발표문의 조정(Non-GAAP) 수치, G 는 조정치가 없어 GAAP 값'
+             : ' · 회계 기준(GAAP) 수치 — 인수 무형자산 상각·구조조정비 등이 포함된다')
+      : (D.market==='kr' ? '' : ' · GAAP 기준(회사가 조정치를 내지 않거나 발표문을 받지 못함)');
+  return `<div class="about finbox"><div class="lb">최근 ${rows.length}개 ${
       annual?'연간':'분기'} 실적 <span
-      style="color:var(--muted);font-weight:400">(단위: ${U.u})</span></div>
+      style="color:var(--muted);font-weight:400">(단위: ${U.u})</span>${toggle}</div>
     <div class="tablewrap"><table class="fin">
       <thead><tr><th>항목</th>${rows.map(q=>
         `<th${q.prov?' class="prov"':''}>${q.date}${q.prov?'<br>잠정':''}</th>`
         ).join('')}</tr></thead>
       <tbody>
         <tr><th>매출</th>${cells('revenue')}</tr>
-        <tr><th>영업이익</th>${cells('op')}</tr>
-        <tr><th>순이익</th>${cells('net')}</tr>
+        <tr><th>영업이익${lab}</th>${cells('op')}</tr>
+        <tr><th>순이익${lab}</th>${cells('net')}</tr>
+        ${epsRow}
       </tbody></table></div>
-    <div class="sub">옆 수치는 ${annual?'전년':'전년 동기(4분기 전)'} 대비 증감률${
-      prov&&!annual?` · '잠정' 칸은 ${prov.announced} 발표치다 — 10-Q 가 올라오기
-      전이라 재무 데이터에는 아직 없고, 영업이익·순이익은 발표문에서 받지 못한다`:''
+    <div class="sub">옆 수치는 ${annual?'전년':'전년 동기(4분기 전)'} 대비 증감률${note}${
+      prov&&!annual&&prov.src!=='sec'?` · '잠정' 칸은 ${prov.announced} 발표치다 — 10-Q 가 올라오기
+      전이라 재무 데이터에는 아직 없고, 영업이익·순이익은 발표문에서 받지 못한다`:''}${
+      prov&&!annual&&prov.src==='sec'?` · '잠정' 칸은 SEC 에 올라온 실적 보도자료 수치다(10-Q 전)`:''
       }</div></div>`;
 }
 
@@ -1730,6 +1780,15 @@ function showPane(p){
 document.querySelectorAll('#dlg-tabs button').forEach(b=>
   b.onclick=()=>showPane(b.dataset.p));
 
+// 실적 표의 조정/GAAP 전환. 대화상자 안 어디서 눌러도 지금 열린 종목 표를 다시 그린다.
+let FIN_DRAW=null;
+document.addEventListener('click', ev=>{
+  const b=ev.target.closest && ev.target.closest('.basis button');
+  if(!b) return;
+  FIN_BASIS=b.dataset.basis;
+  if(FIN_DRAW) FIN_DRAW();
+});
+
 function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=null, ohlcM=null){
   document.getElementById('dlg-title').textContent=title;
   document.getElementById('dlg-meta').textContent=meta+(sub?'  '+sub:'');
@@ -1738,13 +1797,17 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
   const more=document.getElementById('dlg-more');
   if(about){
     const prov=provQuarter(about);
-    const fin=finHtml(about.quarters, false, prov);
+    const drawFin=()=>{
+      const fin=finHtml(about.quarters, false, prov);
+      document.getElementById('p-fin').innerHTML = fin;
+      more.innerHTML = aboutHtml(about) + fin;
+    };
+    FIN_DRAW=drawFin;
     document.getElementById('p-about').innerHTML = aboutHtml(about);
-    document.getElementById('p-fin').innerHTML   = fin;
     document.getElementById('p-year').innerHTML  = finHtml(about.annuals, true);
     document.getElementById('p-call').innerHTML  = callHtml(about);
     document.getElementById('p-doc').innerHTML   = linksHtml(about);
-    more.innerHTML = aboutHtml(about) + fin;
+    drawFin();
   } else { more.innerHTML=''; }
   showPane('chart');
   document.getElementById('dlg-rets').innerHTML=rets?
