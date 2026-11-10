@@ -1,4 +1,4 @@
-"""차트 생성 — 지표별 2개년 추이 + 이동평균선(20/60/120일), 섹터 등락 막대."""
+"""차트 생성 — 지표별 2개년 추이 + 이동평균선(20/60/120/224일), 섹터 등락 막대."""
 from __future__ import annotations
 
 import datetime as dt
@@ -17,7 +17,7 @@ import biz                                   # noqa: E402
 # 상승 빨강 / 하락 파랑 (국내 관행)
 UP, DOWN = "#d32f2f", "#1565c0"
 LINE, GRID, TEXT = "#1a1a1a", "#e6e6e6", "#333333"
-MA_STYLE = [(20, "#e6a23c"), (60, "#67c23a"), (120, "#909399")]
+MA_STYLE = [(20, "#e6a23c"), (60, "#67c23a"), (120, "#909399"), (224, "#8a6d3b")]
 
 
 def setup_font() -> str:

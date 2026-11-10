@@ -779,12 +779,14 @@ async function applyQuotes(D){
 }
 await applyQuotes(D);
 const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
-const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7']];  // 검증된 categorical 슬롯
+const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7'],[224,'#8a6d3b']];  // 검증된 categorical 슬롯
 // 봉 단위(일/주/월)별 이동평균. 어느 단위에서나 '한 달 남짓 / 반년 / 1~2년'을
 // 보도록 창을 맞췄다. 색은 위 MA 와 같은 슬롯을 그대로 쓴다.
-const MA_TF={d:[[20,'20일'],[60,'60일'],[120,'120일']],
-             w:[[13,'13주'],[26,'26주'],[52,'52주']],
-             m:[[6,'6개월'],[12,'12개월'],[24,'24개월']]};
+// 224일선(약 11개월)은 주봉 45주, 월봉 11개월로 옮겼다. 셋째 칸은 MA 색 슬롯 —
+// 224일 상당 선은 단위가 바뀌어도 같은 색(갈색)으로 보이게 한다.
+const MA_TF={d:[[20,'20일',0],[60,'60일',1],[120,'120일',2],[224,'224일',3]],
+             w:[[13,'13주',0],[26,'26주',1],[45,'45주',3],[52,'52주',2]],
+             m:[[6,'6개월',0],[11,'11개월',3],[12,'12개월',1],[24,'24개월',2]]};
 const TF_NAME={d:'일봉', w:'주봉', m:'월봉'};
 
 // 일봉을 주봉/월봉으로 묶는다. 시가는 구간 첫 봉, 종가는 마지막 봉,
@@ -960,8 +962,8 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
     }
   }
   const closes=ohlc.map(r=>r[4]);
-  (MA_TF[tf]||MA_TF.d).forEach(([w,name],i)=>{ if(closes.length>w)
-    ds.push({type:'line', label:name, data:ma(closes,w), borderColor:MA[i][1],
+  (MA_TF[tf]||MA_TF.d).forEach(([w,name,slot])=>{ if(closes.length>w)
+    ds.push({type:'line', label:name, data:ma(closes,w), borderColor:MA[slot][1],
              borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0}); });
   // 2년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
