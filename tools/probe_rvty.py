@@ -9,7 +9,9 @@ for form, acc, date, items in zip(r["form"], r["accessionNumber"], r["filingDate
         continue
     base = f"https://www.sec.gov/Archives/edgar/data/31791/{acc.replace('-','')}/"
     idx = requests.get(base + "index.json", headers=UA, timeout=30).json()
-    ex = [f["name"] for f in idx["directory"]["item"] if re.search(r"ex.?99.?1|exhibit99", f["name"], re.I) and f["name"].endswith((".htm", ".html"))]
+    hs = [f for f in idx["directory"]["item"] if f["name"].endswith((".htm", ".html")) and "index" not in f["name"]]
+    print(date, [f["name"] for f in hs])
+    ex = [f["name"] for f in sorted(hs, key=lambda f: -int(f.get("size") or 0))][:1]
     if not ex:
         continue
     t = requests.get(base + ex[0], headers=UA, timeout=30).text
@@ -20,5 +22,5 @@ for form, acc, date, items in zip(r["form"], r["accessionNumber"], r["filingDate
             print("|", t[m.start():m.start()+260].replace("\n", " "))
     print("::endgroup::")
     seen += 1
-    if seen >= 1:
+    if seen >= 2:
         break
