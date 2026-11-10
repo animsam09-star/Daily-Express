@@ -24,6 +24,10 @@ on:
         description: '어닝콜 요약에 쓸 시간(초). 밀린 것을 한 번에 몰아 쓸 때만 늘린다'
         required: false
         default: '240'
+      nongaap_budget:
+        description: '조정(Non-GAAP) 실적 읽기에 쓸 시간(초). 처음 채울 때만 늘린다'
+        required: false
+        default: '240'
 
 permissions:
   contents: write           # data-us 브랜치에 기업 개요 캐시를 남긴다
@@ -160,11 +164,11 @@ jobs:
           mkdir -p data
           if git ls-remote --exit-code origin data-us >/dev/null 2>&1; then
             git fetch origin data-us --depth=1
-            for f in overviews_us.json concalls_us.json; do
+            for f in overviews_us.json concalls_us.json nongaap_us.json; do
               git show "FETCH_HEAD:$f" > "data/$f" 2>/dev/null || true
             done
           fi
-          for f in overviews_us.json concalls_us.json; do
+          for f in overviews_us.json concalls_us.json nongaap_us.json; do
             if [ -s "data/$f" ]; then
               echo "$f 캐시 있음($(wc -c < "data/$f") bytes)"
             else
@@ -177,13 +181,14 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         env:
           CONCALL_BUDGET: ${{ inputs.concall_budget || '240' }}
+          NONGAAP_BUDGET: ${{ inputs.nongaap_budget || '240' }}
         run: python main.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
 
       - name: 기업 개요·어닝콜 캐시 남기기
         if: steps.guard.outputs.skip != 'true'
         continue-on-error: true      # 캐시 저장 실패가 브리핑을 막지 않는다
         run: |
-          [ -s data/overviews_us.json ] || [ -s data/concalls_us.json ] \
+          [ -s data/overviews_us.json ] || [ -s data/concalls_us.json ] || [ -s data/nongaap_us.json ] \
             || { echo "저장할 캐시 없음"; exit 0; }
           cd data
           rm -f quotes.json
@@ -191,7 +196,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -q -b data-us
-          for f in overviews_us.json concalls_us.json; do
+          for f in overviews_us.json concalls_us.json nongaap_us.json; do
             [ -s "$f" ] && git add "$f"
           done
           git commit -q -m "기업 개요·어닝콜 $(date -u '+%Y-%m-%d %H:%M UTC')"

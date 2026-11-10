@@ -13,6 +13,7 @@ import sys
 import time
 
 import concall
+import nongaap
 import news
 import notify
 import profile
@@ -25,6 +26,7 @@ import webgen
 OVERVIEW_CACHE = os.environ.get("OVERVIEW_CACHE", "data/overviews_us.json")
 # 어닝콜 요약 캐시. 콜은 분기에 한 번뿐이라 캐시가 거의 전부를 해결한다.
 CALL_CACHE = os.environ.get("CALL_CACHE", "data/concalls_us.json")
+NONGAAP_CACHE = os.environ.get("NONGAAP_CACHE", "data/nongaap_us.json")
 
 
 def main() -> int:
@@ -71,6 +73,20 @@ def main() -> int:
             text = ko.get(h["ticker"])
             if text and h.get("profile"):
                 h["profile"]["summary_ko"] = text
+
+    # 분기 실적을 회사 발표 조정(Non-GAAP) 기준으로. 야후는 GAAP 만 주는데
+    # 미국 시장은 조정치로 이야기한다(레비티 2분기: GAAP 12% vs 조정 29%).
+    # 실패해도 GAAP 표는 그대로 나간다.
+    try:
+        allh = [h for hs in (data.get("holdings") or {}).values() for h in hs]
+        adj = nongaap.build([h["ticker"] for h in allh], NONGAAP_CACHE)
+        for h in allh:
+            nongaap.merge(h, adj.get(h["ticker"]) or [])
+        n_op = sum(1 for h in allh if any(q.get("op_adj") is not None
+                                          for q in h.get("quarters") or []))
+        print(f"::notice::[진단] 조정 영업이익 붙은 종목 {n_op}/{len(allh)}")
+    except Exception as e:                     # noqa: BLE001
+        print(f"    ! 조정 실적 실패(GAAP 로 계속): {type(e).__name__}: {e}")
 
     # 어닝콜 전문 요약. 주도주·관심종목에 더해, 최근 실적을 발표한 종목도
     # 넣는다 — 실적 발표 카드에서 눌러 들어온 종목의 컨콜 탭이 비어 있으면
