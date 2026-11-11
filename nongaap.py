@@ -47,7 +47,11 @@ WORKERS = 4
 BUDGET = int(os.environ.get("NONGAAP_BUDGET") or 240)   # 초. 넘기면 다음 실행으로
 VER = 1
 RELEASES = 4             # 종목마다 최근 몇 번의 실적 보도자료를 읽나(4 → 전년 동기까지 6분기)
-LOOKBACK_DAYS = 420      # 그보다 오래된 보도자료는 보지 않는다
+LOOKBACK_DAYS = 420      # 분기용 — 그보다 오래된 보도자료는 보지 않는다
+# 연간은 4분기(회계연도 말) 보도자료에만 있다. 한 건에 올해·작년 연간이 같이
+# 있으므로 최근 4분기 보도자료와 2년 전 것을 읽으면 4개 연도가 찬다.
+ANNUAL_LOOKBACK_DAYS = 1150
+ANNUAL_RELEASES = 2      # 최근 4분기 보도자료 다음으로 몇 해 전 것까지 더 읽나
 SNIP_MAX = 16000         # Claude 에게 넘기는 발췌 상한
 MATCH_DAYS = 20          # 회사 분기말(10/4)과 야후 분기말(9/30)을 같은 분기로 볼 거리
 
@@ -74,9 +78,10 @@ def _ciks() -> dict:
             for v in data.values()}
 
 
-def _releases(cik: int, since: dt.date) -> list[dict]:
-    """최근 실적 발표 8-K(Item 2.02) 목록, 새것부터."""
+def _releases(cik: int, since: dt.date) -> tuple[list[dict], str]:
+    """최근 실적 발표 8-K(Item 2.02) 목록(새것부터)과 회계연도 말(MMDD)."""
     sub = _sec_get(SUBMISSIONS.format(cik=cik)).json()
+    fye = str(sub.get("fiscalYearEnd") or "")
     r = (sub.get("filings") or {}).get("recent") or {}
     out = []
     for form, acc, date, items in zip(r.get("form", []), r.get("accessionNumber", []),
@@ -86,9 +91,7 @@ def _releases(cik: int, since: dt.date) -> list[dict]:
         if dt.date.fromisoformat(date) < since:
             break
         out.append({"acc": acc, "filed": date})
-        if len(out) >= RELEASES:
-            break
-    return out
+    return out, fye
 
 
 EX_NAME = re.compile(r"ex-?99|exhibit-?99|press|release|earnings|results", re.I)
@@ -152,13 +155,18 @@ def _snippet(text: str) -> str:
 PROMPT = """\
 Below is an excerpt of a US company's quarterly earnings press release.
 Extract the figures for the THREE-MONTH period (not year-to-date, not full year)
-of the quarter this release reports, and for the same quarter one year earlier.
+of the quarter this release reports, and for the same quarter one year earlier;
+and, if the release covers a fiscal-year-end quarter, the full fiscal year figures too.
 
 Return ONLY JSON:
 {{"period_end": "YYYY-MM-DD", "unit": "ones|thousands|millions|billions",
   "cur":   {{"revenue": n, "op_gaap": n, "op_adj": n, "net_gaap": n, "net_adj": n, "eps_adj": n}},
   "prior": {{"period_end": "YYYY-MM-DD", "revenue": n, "op_gaap": n, "op_adj": n,
-             "net_gaap": n, "net_adj": n, "eps_adj": n}}}}
+             "net_gaap": n, "net_adj": n, "eps_adj": n}},
+  "fy":       {{"period_end": "YYYY-MM-DD", "revenue": n, "op_gaap": n, "op_adj": n,
+               "net_gaap": n, "net_adj": n, "eps_adj": n}} or null,
+  "fy_prior": {{"period_end": "YYYY-MM-DD", "revenue": n, "op_gaap": n, "op_adj": n,
+               "net_gaap": n, "net_adj": n, "eps_adj": n}} or null}}
 
 Rules:
 - period_end: last day of the fiscal quarter as stated (e.g. "October 4, 2026" -> "2026-10-04").
@@ -172,6 +180,9 @@ Rules:
   company labels the segment total as its adjusted operating income.
 - net_adj: non-GAAP / adjusted net income attributable to the company.
 - eps_adj: non-GAAP / adjusted diluted EPS.
+- fy / fy_prior: ONLY if this release reports a fiscal-year-end quarter AND prints
+  full fiscal year (twelve months / year ended) figures — the fiscal year just ended and
+  the year before it. Otherwise null. Do not put year-to-date figures of a partial year here.
 - Use null for anything the excerpt does not state. Never compute or estimate a value
   that is not printed. Losses are negative numbers.
 Ticker: {ticker}
@@ -244,7 +255,14 @@ def _parse(out: str) -> dict | None:
 
     cur = block(d.get("cur"), d.get("period_end"))
     prior = block(d.get("prior"), (d.get("prior") or {}).get("period_end"))
-    return {"rows": [r for r in (cur, prior) if r]} if cur else None
+    fy = block(d.get("fy"), (d.get("fy") or {}).get("period_end"))
+    fyp = block(d.get("fy_prior"), (d.get("fy_prior") or {}).get("period_end"))
+    if not cur:
+        return None
+    # 연간 매출이 분기 매출보다 작으면 연간을 잘못 읽은 것이다
+    yrs = [r for r in (fy, fyp) if r and not (r.get("revenue") and cur.get("revenue")
+                                             and r["revenue"] < cur["revenue"] * 2.5)]
+    return {"rows": [r for r in (cur, prior) if r], "years": yrs, "fy_checked": True}
 
 
 def _iso(s) -> bool:
@@ -289,28 +307,62 @@ def build(tickers, path: str) -> dict:
         print(f"::warning::[조정실적] SEC 티커 목록 실패: {type(e).__name__} — 캐시만 쓴다")
         return _assemble(cache, want)
 
-    since = dt.date.today() - dt.timedelta(days=LOOKBACK_DAYS)
+    today = dt.date.today()
+    since = today - dt.timedelta(days=LOOKBACK_DAYS)
+    since_y = today - dt.timedelta(days=ANNUAL_LOOKBACK_DAYS)
     todo, no_cik = [], []
 
     def scan(t):
         cik = ciks.get(t)
         if not cik:
-            return t, None, []
+            return t, None, [], ""
         try:
-            return t, cik, _releases(cik, since)
+            rels, fye = _releases(cik, since_y)
+            return t, cik, rels, fye
         except Exception as e:                     # noqa: BLE001
             print(f"[조정실적] {t} 목록 실패: {type(e).__name__}")
-            return t, cik, []
+            return t, cik, [], ""
+
+    def is_fy_end(v, fye):
+        """캐시된 보도자료의 이번 분기말이 회계연도 말(±20일)인가."""
+        rows = (v or {}).get("rows") or []
+        if not rows or len(fye) != 4:
+            return False
+        end = dt.date.fromisoformat(rows[0]["end"])
+        for y in (end.year - 1, end.year, end.year + 1):
+            try:
+                f = dt.date(y, int(fye[:2]), int(fye[2:]))
+            except ValueError:
+                continue
+            if abs((end - f).days) <= MATCH_DAYS:
+                return True
+        return False
 
     with ThreadPoolExecutor(max_workers=6) as ex:
-        for t, cik, rels in ex.map(scan, want):
+        for t, cik, rels, fye in ex.map(scan, want):
             if cik is None:
                 no_cik.append(t)
-            for r in rels:
-                if r["acc"] not in cache:
-                    todo.append((t, cik, r))
-    # 최근 보도자료부터 — 예산에 걸려 넘어가는 것은 오래된 분기다
-    todo.sort(key=lambda x: x[2]["filed"], reverse=True)
+                continue
+            recent = [r for r in rels if dt.date.fromisoformat(r["filed"]) >= since][:RELEASES]
+            for r in recent:
+                v = cache.get(r["acc"])
+                # 연간 칸이 생기기 전에 읽은 4분기 보도자료는 연간을 위해 다시 읽는다
+                if v is None or (is_fy_end(v, fye) and not v.get("fy_checked")):
+                    todo.append((t, cik, r, 0))
+            # 연간용: 최근 4분기 보도자료를 알면 1년·2년 전 같은 철 보도자료를 더 읽는다
+            q4 = next((r for r in recent if is_fy_end(cache.get(r["acc"]), fye)), None)
+            if q4:
+                # 1년 전 4분기 보도자료는 건너뛴다 — 그 해는 최근 보도자료의
+                # '작년' 칸에 이미 있다. 2년 전 것이 그 앞의 두 해를 채운다.
+                f0 = dt.date.fromisoformat(q4["filed"])
+                k = ANNUAL_RELEASES
+                near = [r for r in rels
+                        if abs((dt.date.fromisoformat(r["filed"]) - f0).days + 365 * k) <= 45]
+                if near and near[0]["acc"] not in cache:
+                    todo.append((t, cik, near[0], 1))
+    # 분기용 최근 보도자료가 먼저, 그 안에서는 새것부터 — 예산에 걸려 넘어가는
+    # 것은 오래된 연간용이다
+    todo.sort(key=lambda x: (x[3], -dt.date.fromisoformat(x[2]["filed"]).toordinal()))
     print(f"::notice::[조정실적] {len(want)}종목 중 SEC 8-K 대상 {len(want) - len(no_cik)}종목"
           f" · 새로 읽을 보도자료 {len(todo)}건 (6-K 등 제외 {len(no_cik)}종목)")
 
@@ -318,7 +370,7 @@ def build(tickers, path: str) -> dict:
     done = skipped = 0
 
     def one(item):
-        t, cik, r = item
+        t, cik, r, _ = item
         if time.monotonic() > deadline:
             return item, None, True
         try:
@@ -334,7 +386,7 @@ def build(tickers, path: str) -> dict:
         return item, {"ticker": t, "filed": r["filed"], **got}, False
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
-        for (t, cik, r), val, retry in ex.map(one, todo):
+        for (t, cik, r, _), val, retry in ex.map(one, todo):
             if retry:
                 skipped += 1
                 continue
@@ -347,6 +399,13 @@ def build(tickers, path: str) -> dict:
 
 
 def _assemble(cache: dict, want) -> dict:
+    """{티커: {"q": [분기 행], "y": [연간 행]}}"""
+    ys = _assemble_key(cache, want, "years")
+    return {t: {"q": q, "y": ys.get(t, [])}
+            for t, q in _assemble_key(cache, want, "rows").items()}
+
+
+def _assemble_key(cache: dict, want, key: str) -> dict:
     """종목별로 분기 행을 모은다. 같은 분기가 두 보도자료에 나오면(이번 분기
     표와 1년 뒤 보도자료의 전년 동기 칸) 나중에 낸 쪽을 쓴다 — 재분류가
     반영돼 있다."""
@@ -356,35 +415,44 @@ def _assemble(cache: dict, want) -> dict:
         t = v.get("ticker")
         if t not in w or v.get("none"):
             continue
-        for row in v.get("rows") or []:
+        for row in v.get(key) or []:
             out.setdefault(t, {})[row["end"]] = row
     return {t: sorted(d.values(), key=lambda r: r["end"]) for t, d in out.items()}
 
 
-def merge(holding: dict, rows: list[dict]) -> None:
-    """야후 분기 표(quarters)에 조정치를 붙인다. 분기말이 며칠 어긋나는
-    회사(52주 회계연도)가 있어 가장 가까운 분기와 MATCH_DAYS 안이면 맞춘다.
-    야후에 아직 없는 최근 분기(10-Q 전)는 prov_adj 로 따로 넘겨 '잠정' 칸이
-    영업이익·순이익까지 채우게 한다."""
-    if not rows:
+def merge(holding: dict, adj) -> None:
+    """야후 분기·연간 표에 조정치를 붙인다. adj 는 {"q": [...], "y": [...]}.
+
+    분기말이 며칠 어긋나는 회사(52주 회계연도)가 있어 가장 가까운 칸과
+    MATCH_DAYS 안이면 맞춘다. 야후에 아직 없는 최근 분기(10-Q 전)는 prov_adj 로
+    따로 넘겨 '잠정' 칸이 영업이익·순이익까지 채우게 한다."""
+    if not adj:
         return
-    qs = holding.get("quarters") or []
+    if isinstance(adj, list):                     # 옛 모양(분기만)
+        adj = {"q": adj, "y": []}
+    prov = _attach(holding.get("quarters") or [], adj.get("q") or [])
+    if prov:
+        holding["prov_adj"] = {k: prov.get(k) for k in ("end", *FIELDS)}
+    _attach(holding.get("annuals") or [], adj.get("y") or [])
+
+
+def _attach(qs: list[dict], rows: list[dict]):
+    """rows 를 qs 칸에 붙이고, qs 마지막 칸보다 뒤에 있는 가장 최근 행을 돌려준다."""
     dates = [dt.date.fromisoformat(q["date"]) for q in qs]
-    used = set()
+    newer = None
     for row in rows:
         end = dt.date.fromisoformat(row["end"])
         best = min(range(len(dates)), key=lambda i: abs((dates[i] - end).days),
                    default=None)
         if best is not None and abs((dates[best] - end).days) <= MATCH_DAYS:
             q = qs[best]
-            # 매출이 크게 어긋나면 다른 분기·다른 기준을 읽은 것이다
+            # 매출이 크게 어긋나면 다른 기간·다른 기준을 읽은 것이다
             if (q.get("revenue") and row.get("revenue")
                     and abs(row["revenue"] / q["revenue"] - 1) > 0.06):
                 continue
-            for k_src, k_dst in (("op_adj", "op_adj"), ("net_adj", "net_adj"),
-                                 ("eps_adj", "eps_adj")):
-                if row.get(k_src) is not None:
-                    q[k_dst] = row[k_src]
-            used.add(row["end"])
+            for k in ("op_adj", "net_adj", "eps_adj"):
+                if row.get(k) is not None:
+                    q[k] = row[k]
         elif not dates or end > max(dates):
-            holding["prov_adj"] = {k: row.get(k) for k in ("end", *FIELDS)}
+            newer = row                            # rows 는 날짜순 — 마지막이 최신
+    return newer

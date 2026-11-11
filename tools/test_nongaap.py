@@ -21,18 +21,29 @@ check(bad["rows"][0]["op_adj"] is None, "매출보다 큰 조정이익은 버린
 check(N._parse('{"unit":"millions","cur":{}}') is None, "분기말 없으면 버린다")
 check(N._parse("no json") is None, "JSON 아님")
 
+# 1b) 연간: fy·fy_prior, 분기보다 작은 연간 매출은 버림
+y = N._parse('''{"period_end":"2025-12-31","unit":"millions",
+ "cur":{"revenue":772,"op_adj":250},"prior":{"period_end":"2024-12-31","revenue":729,"op_adj":230},
+ "fy":{"period_end":"2025-12-31","revenue":2860,"op_adj":810,"eps_adj":5.1},
+ "fy_prior":{"period_end":"2024-12-31","revenue":700,"op_adj":700}}''')
+check(len(y["years"]) == 1 and y["years"][0]["op_adj"] == 810e6, "연간 추출·상식 검사")
+check(y["fy_checked"] and N._parse('''{"period_end":"2026-06-30","unit":"millions",
+ "cur":{"revenue":730,"op_adj":211},"fy":null}''')["years"] == [], "연간 없음")
+
 # 2) 분기 맞춤: 10/4 → 9/30, 매출 어긋나면 안 붙임, 야후에 없는 분기는 prov_adj
-h = {"quarters": [{"date": "2026-06-30", "revenue": 729.7e6},
+h = {"annuals": [{"date": "2025-12-31", "revenue": 2.85e9}],
+     "quarters": [{"date": "2026-06-30", "revenue": 729.7e6},
                   {"date": "2025-09-30", "revenue": 699e6}]}
 h["quarters"].sort(key=lambda q: q["date"])
 rows = [{"end": "2025-09-28", "revenue": 698.9e6, "op_adj": 182.4e6, "net_adj": None, "eps_adj": 1.18},
         {"end": "2026-07-05", "revenue": 729.7e6, "op_adj": 211e6, "net_adj": 150e6, "eps_adj": 1.18},
         {"end": "2026-10-04", "revenue": 728.9e6, "op_adj": 209.3e6, "op_gaap": 95e6,
          "net_gaap": 60e6, "net_adj": 160e6, "eps_adj": 1.37}]
-N.merge(h, rows)
+N.merge(h, {"q": rows, "y": [{"end": "2025-12-31", "revenue": 2.86e9, "op_adj": 8.1e8}]})
 q = {x["date"]: x for x in h["quarters"]}
 check(q["2025-09-30"]["op_adj"] == 182.4e6, "날짜 며칠 차이 맞춤")
 check(q["2026-06-30"]["op_adj"] == 211e6, "52주 회계연도 맞춤")
+check(h["annuals"][0]["op_adj"] == 8.1e8, "연간 맞춤")
 check(h["prov_adj"]["end"] == "2026-10-04" and h["prov_adj"]["op_adj"] == 209.3e6, "잠정 분기")
 h2 = {"quarters": [{"date": "2026-06-30", "revenue": 500e6}]}
 N.merge(h2, [{"end": "2026-06-28", "revenue": 729e6, "op_adj": 211e6}])
