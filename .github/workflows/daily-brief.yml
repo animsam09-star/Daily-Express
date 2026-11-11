@@ -14,6 +14,15 @@ on:
     # 겨울에는 장중 값이 나간다. 06:05 면 겨울에도 마감 후 5분이고
     # 06:30 까지 25분이 남아 Actions 지연을 흡수할 수 있다.
     - cron: "5 21 * * 0-4"
+    # 웹만 다시 갱신(텔레그램 없음). 06:05 실행은 미국 장 마감 직후라 그날 장
+    # 마감 뒤 실적(애프터마켓 발표·컨콜)이 아직 없다 — 숫자도 전문도 다음날
+    # 06:05 에야 들어와 웹에 이틀 늦게 떴다. 그래서 두 번 더 돈다.
+    #  07:35 KST(22:35 UTC) — 발표 직후. 실적 숫자(SEC 보도자료)가 들어온다.
+    #  10:35 KST(01:35 UTC) — 컨콜이 끝나고 전문이 올라온 뒤. 컨콜 요약이 붙는다.
+    # 06:05 외의 schedule 은 전부 웹 전용으로 돈다(아래 조건). GitHub cron 이
+    # 한 시간쯤 늦어도 웹 갱신이라 상관없다.
+    - cron: "35 22 * * 1-5"     # UTC 월~금 = 미국 월~금 저녁
+    - cron: "35 1 * * 2-6"      # UTC 화~토 새벽
   workflow_dispatch:        # 정시 발송(Routine) + 수동 실행(테스트용)
     inputs:
       web_only:
@@ -87,7 +96,7 @@ jobs:
       # 조회가 실패하면 발송하는 쪽으로 폴백한다(미발송보다 중복이 낫다).
       - name: 중복 발송 가드
         id: guard
-        if: inputs.web_only != true
+        if: ${{ !(inputs.web_only == true || (github.event_name == 'schedule' && github.event.schedule != '5 21 * * 0-4')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           WF: daily-brief.yml
@@ -182,7 +191,7 @@ jobs:
         env:
           CONCALL_BUDGET: ${{ inputs.concall_budget || '240' }}
           NONGAAP_BUDGET: ${{ inputs.nongaap_budget || '240' }}
-        run: python main.py ${{ inputs.web_only == true && '--dry-run' || '--defer-send' }}
+        run: python main.py ${{ (inputs.web_only == true || (github.event_name == 'schedule' && github.event.schedule != '5 21 * * 0-4')) && '--dry-run' || '--defer-send' }}
 
       - name: 기업 개요·어닝콜 캐시 남기기
         if: steps.guard.outputs.skip != 'true'
@@ -280,7 +289,7 @@ jobs:
       # 웹이 갱신된 뒤에 알림이 가야 링크를 눌렀을 때 새 내용이 보인다.
       # 수집을 다시 하지 않고 저장해 둔 본문·차트만 읽어 보낸다.
       - name: 텔레그램 발송
-        if: steps.guard.outputs.skip != 'true' && inputs.web_only != true
+        if: ${{ steps.guard.outputs.skip != 'true' && !(inputs.web_only == true || (github.event_name == 'schedule' && github.event.schedule != '5 21 * * 0-4')) }}
         run: python main.py --send-pending
 
       - name: 실패 시 차트 보관(원인 확인용)
