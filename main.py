@@ -81,10 +81,12 @@ def main() -> int:
         allh = [h for hs in (data.get("holdings") or {}).values() for h in hs]
         adj = nongaap.build([h["ticker"] for h in allh], NONGAAP_CACHE)
         for h in allh:
-            nongaap.merge(h, adj.get(h["ticker"]) or [])
+            nongaap.merge(h, adj.get(h["ticker"]))
         n_op = sum(1 for h in allh if any(q.get("op_adj") is not None
                                           for q in h.get("quarters") or []))
-        print(f"::notice::[진단] 조정 영업이익 붙은 종목 {n_op}/{len(allh)}")
+        n_y = sum(1 for h in allh if any(q.get("op_adj") is not None
+                                         for q in h.get("annuals") or []))
+        print(f"::notice::[진단] 조정 영업이익 붙은 종목 — 분기 {n_op} · 연간 {n_y} / {len(allh)}")
     except Exception as e:                     # noqa: BLE001
         print(f"    ! 조정 실적 실패(GAAP 로 계속): {type(e).__name__}: {e}")
 

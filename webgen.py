@@ -1625,8 +1625,7 @@ function finHtml(rows, annual, prov){
   if(!rows||!rows.length)
     return `<div class="about"><p>${annual?'연간':'분기'} 실적이 없습니다.</p></div>`;
   const back=annual?1:4;
-  const hasAdj=!annual && D.market!=='kr'
-    && rows.some(q=>q.op_adj!=null || q.net_adj!=null);
+  const hasAdj=D.market!=='kr' && rows.some(q=>q.op_adj!=null || q.net_adj!=null);
   const adj=hasAdj && FIN_BASIS==='adj';
   // 칸 값과 그 값의 기준. 조정 보기인데 조정치가 없으면 GAAP 로 물러선다.
   const pick=(q,k)=>{
@@ -1649,7 +1648,7 @@ function finHtml(rows, annual, prov){
       ? '<sup class="gmark" title="회사가 조정치를 내지 않아 GAAP 값">G</sup>' : '';
     return `<td${q.prov?' class="prov"':''}>${v==null?'–':fmt(v/U.d,U.p)}${mark}${
       g!=null?`<span class="yoy ${cls(g)}">${sgn(g)}%</span>`:''}</td>`;}).join('');
-  const lab = annual || D.market==='kr' ? ''
+  const lab = D.market==='kr' ? ''
     : adj ? '<span class="unit">조정(Non-GAAP)</span>' : '<span class="unit">GAAP</span>';
   const toggle = hasAdj ? `<span class="basis">${
       [['adj','조정'],['gaap','GAAP']].map(([k,n])=>
@@ -1657,12 +1656,11 @@ function finHtml(rows, annual, prov){
   const epsRow = adj && rows.some(q=>q.eps_adj!=null)
     ? `<tr><th>EPS<span class="unit">조정</span></th>${rows.map(q=>
         `<td${q.prov?' class="prov"':''}>${q.eps_adj==null?'–':fmt(q.eps_adj,2)}</td>`).join('')}</tr>` : '';
-  const note = annual
-    ? (D.market==='kr' ? '' : ' · 연간은 GAAP 기준')
+  const note = D.market==='kr' ? ''
     : hasAdj
       ? (adj ? ' · 영업이익·순이익은 회사 실적 발표문의 조정(Non-GAAP) 수치, G 는 조정치가 없어 GAAP 값'
              : ' · 회계 기준(GAAP) 수치 — 인수 무형자산 상각·구조조정비 등이 포함된다')
-      : (D.market==='kr' ? '' : ' · GAAP 기준(회사가 조정치를 내지 않거나 발표문을 받지 못함)');
+      : ' · GAAP 기준(회사가 조정치를 내지 않거나 발표문을 받지 못함)';
   return `<div class="about finbox"><div class="lb">최근 ${rows.length}개 ${
       annual?'연간':'분기'} 실적 <span
       style="color:var(--muted);font-weight:400">(단위: ${U.u})</span>${toggle}</div>
@@ -1800,11 +1798,11 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
     const drawFin=()=>{
       const fin=finHtml(about.quarters, false, prov);
       document.getElementById('p-fin').innerHTML = fin;
+      document.getElementById('p-year').innerHTML = finHtml(about.annuals, true);
       more.innerHTML = aboutHtml(about) + fin;
     };
     FIN_DRAW=drawFin;
     document.getElementById('p-about').innerHTML = aboutHtml(about);
-    document.getElementById('p-year').innerHTML  = finHtml(about.annuals, true);
     document.getElementById('p-call').innerHTML  = callHtml(about);
     document.getElementById('p-doc').innerHTML   = linksHtml(about);
     drawFin();
