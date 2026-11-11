@@ -816,15 +816,20 @@ async function applyQuotes(D){
 }
 await applyQuotes(D);
 const UP='#e34948', DOWN='#2a78d6';               // 마크용 상승/하락
-const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7'],[224,'#8a6d3b']];  // 검증된 categorical 슬롯
+const MA=[[20,'#eb6834'],[60,'#1baf7a'],[120,'#4a3aa7'],[224,'#8a6d3b'],[5,'#d44b9a']];  // 검증된 categorical 슬롯
 // 봉 단위(일/주/월)별 이동평균. 어느 단위에서나 '한 달 남짓 / 반년 / 1~2년'을
 // 보도록 창을 맞췄다. 색은 위 MA 와 같은 슬롯을 그대로 쓴다.
 // 224일선(약 11개월)은 주봉 45주, 월봉 11개월로 옮겼다. 셋째 칸은 MA 색 슬롯 —
 // 224일 상당 선은 단위가 바뀌어도 같은 색(갈색)으로 보이게 한다.
-const MA_TF={d:[[20,'20일',0],[60,'60일',1],[120,'120일',2],[224,'224일',3]],
+const MA_TF={d:[[5,'5일',4],[20,'20일',0],[60,'60일',1],[120,'120일',2],[224,'224일',3]],
              w:[[13,'13주',0],[26,'26주',1],[45,'45주',3],[52,'52주',2]],
              m:[[6,'6개월',0],[11,'11개월',3],[12,'12개월',1],[24,'24개월',2]]};
 const TF_NAME={d:'일봉', w:'주봉', m:'월봉'};
+// 골든크로스(단기선이 장기선을 위로 뚫음 ▲)·데드크로스(아래로 ▼) 표시.
+// 조합은 고를 수 있다 — 한국 단기 5·20, 스윙 20·60, 미국 표준 50·200.
+// 일봉에서만 그린다(주·월봉의 '20' 은 20주·20개월이라 뜻이 달라진다).
+const CROSS_SETS={'5·20':[5,20],'20·60':[20,60],'50·200':[50,200]};
+let CROSS='20·60';
 
 // 일봉을 주봉/월봉으로 묶는다. 시가는 구간 첫 봉, 종가는 마지막 봉,
 // 고·저는 구간 전체의 최대·최소, 거래량은 합. 라벨은 구간의 '마지막' 날짜다 —
@@ -1002,6 +1007,30 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
   (MA_TF[tf]||MA_TF.d).forEach(([w,name,slot])=>{ if(closes.length>w)
     ds.push({type:'line', label:name, data:ma(closes,w), borderColor:MA[slot][1],
              borderWidth:1.1, pointRadius:0, pointHitRadius:0, tension:0, order:0}); });
+  const pair = tf==='d' ? CROSS_SETS[CROSS] : null;
+  if(pair && closes.length>pair[1]+1){
+    const [a,b]=pair, sa=ma(closes,a), sb=ma(closes,b);
+    // 차트에 없는 선(50·200일)은 고른 경우에만 가는 점선으로 같이 그린다
+    const shown=new Set((MA_TF.d).map(x=>x[0]));
+    [a,b].forEach((w,k)=>{ if(!shown.has(w))
+      ds.push({type:'line', label:w+'일', data:k?sb:sa, borderColor:k?'#2f6f4f':'#c0392b',
+               borderWidth:1, borderDash:[5,3], pointRadius:0, pointHitRadius:0,
+               tension:0, order:0}); });
+    const gold=Array(n).fill(null), dead=Array(n).fill(null);
+    for(let i=1;i<n;i++){
+      if(sa[i]==null||sb[i]==null||sa[i-1]==null||sb[i-1]==null) continue;
+      const p=sa[i-1]-sb[i-1], c=sa[i]-sb[i];
+      // 표식은 봉 바깥에 둔다 — 골든은 저가 아래, 데드는 고가 위
+      if(p<=0 && c>0) gold[i]=ohlc[i][3]*0.985;
+      else if(p>=0 && c<0) dead[i]=ohlc[i][2]*1.015;
+    }
+    const mk=(label,data,color,rot)=>({type:'line', label, data, showLine:false,
+      pointStyle:'triangle', rotation:rot, pointRadius:7, pointHoverRadius:8,
+      pointHitRadius:6, backgroundColor:color, borderColor:'#fff', borderWidth:1,
+      order:-1, cross:true});
+    ds.push(mk(`골든크로스(${a}·${b})`, gold, UP, 0));
+    ds.push(mk(`데드크로스(${a}·${b})`, dead, DOWN, 180));
+  }
   // 2년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
   // 잡힌다 — 네이버 차트와 같은 조작감.
@@ -1032,6 +1061,7 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
           const g=prev&&prev[4]?((r[4]/prev[4]-1)*100):null;
           return [`종가 ${fmt(r[4])}${unit}${g==null?'':`  (${sgn(g)}%)`}`,
                   `시 ${fmt(r[1])}  고 ${fmt(r[2])}  저 ${fmt(r[3])}`];}
+        if(c.dataset.cross) return c.parsed.y==null?null:'◆ '+lb;
         return c.parsed.y==null?null:lb+': '+fmt(c.parsed.y);}}},
       zoom:{limits:{x:{min:0, max:total-1, minRange:10}},
             pan:{enabled:true, mode:'x', modifierKey:null},
@@ -1039,7 +1069,7 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
                   mode:'x',
                   // 확대·축소할 때마다 프리셋 버튼 선택을 해제한다
                   onZoomComplete:({chart})=>{
-                    document.querySelectorAll('#dlg-segs button.on')
+                    document.querySelectorAll('#dlg-segs button[data-tf].on')
                       .forEach(b=>b.classList.remove('on'));
                     chart.update('none');
                     if(typeof syncVol==='function') syncVol();}}}},
@@ -1858,7 +1888,9 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
     // 기본 표시 구간(봉 수). 일봉은 최근 6개월만 보여야 봉이 뭉개지지 않고,
     // 주봉·월봉은 전체를 보는 것이 그 단위를 쓰는 이유다.
     const SPAN={d:126, w:0, m:0};
+    let curTf='d';
     const draw=tf=>{
+      curTf=tf;
       if(dlgChart){if(dlgChart.__offPan)dlgChart.__offPan();dlgChart.destroy();dlgChart=null;}
       if(dlgVol){dlgVol.destroy();dlgVol=null;}
       const rows=bars[tf]||[];
@@ -1869,13 +1901,30 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
                                    dlgChart.options.scales.x.max) : null;
       volBox.hidden = !dlgVol;
       if(dlgChart) enablePan(dlgChart, dlgChart.data.labels.length-1, syncVol);
-      segs.querySelectorAll('button').forEach(b=>
+      segs.querySelectorAll('button[data-tf]').forEach(b=>
         b.classList.toggle('on', b.dataset.tf===tf));
     };
     ['d','w','m'].forEach(tf=>{
       if(!(bars[tf]||[]).length) return;
       const b=document.createElement('button');
       b.textContent=TF_NAME[tf]; b.dataset.tf=tf; b.onclick=()=>draw(tf);
+      segs.appendChild(b);
+    });
+    // 크로스 조합 고르기(일봉 전용). 고르면 지금 보는 봉 단위로 다시 그린다.
+    const xl=document.createElement('span');
+    xl.style.cssText='margin-left:10px;color:var(--muted);font-size:11.5px';
+    xl.textContent='크로스';
+    segs.appendChild(xl);
+    [...Object.keys(CROSS_SETS),'끄기'].forEach(k=>{
+      const b=document.createElement('button');
+      b.textContent=k; b.dataset.cross=k;
+      b.classList.toggle('on', CROSS===k || (k==='끄기' && !CROSS_SETS[CROSS]));
+      b.onclick=()=>{
+        CROSS=k;
+        segs.querySelectorAll('button[data-cross]').forEach(x=>
+          x.classList.toggle('on', x.dataset.cross===k));
+        draw(curTf);
+      };
       segs.appendChild(b);
     });
     const hint=document.createElement('span');
