@@ -321,7 +321,7 @@ def build(tickers, path: str) -> dict:
         ciks = _ciks()
     except Exception as e:                         # noqa: BLE001
         print(f"::warning::[조정실적] SEC 티커 목록 실패: {type(e).__name__} — 캐시만 쓴다")
-        return _assemble(cache, want)
+        return _assemble(cache, want, None)
 
     today = dt.date.today()
     since = today - dt.timedelta(days=LOOKBACK_DAYS)
@@ -354,8 +354,11 @@ def build(tickers, path: str) -> dict:
                 return True
         return False
 
+    filed: dict[str, list] = {}     # 종목별 실적 발표 8-K (차트의 E 표시용)
     with ThreadPoolExecutor(max_workers=6) as ex:
         for t, cik, rels, fye in ex.map(scan, want):
+            if rels:
+                filed[t] = rels
             if cik is None:
                 no_cik.append(t)
                 continue
@@ -413,14 +416,35 @@ def build(tickers, path: str) -> dict:
     save(path, cache)
     print(f"[조정실적] 새로 읽은 보도자료 {done}건 (캐시 {len(cache)}건)"
           + (f" — {skipped}건은 다음 실행으로" if skipped else ""))
-    return _assemble(cache, want)
+    return _assemble(cache, want, filed)
 
 
-def _assemble(cache: dict, want) -> dict:
-    """{티커: {"q": [분기 행], "y": [연간 행]}}"""
+def _assemble(cache: dict, want, filed: dict | None) -> dict:
+    """{티커: {"q": [분기 행], "y": [연간 행], "e": [실적 발표일]}}
+
+    e 는 차트에 실적 발표일(E)을 찍는 재료다 — SEC 실적 8-K 접수일(보도자료가
+    나온 날)과, 읽어 둔 보도자료면 그 분기 조정 EPS·전년 동기 EPS. SEC 목록을
+    못 받았으면 캐시에 남은 보도자료 날짜로 대신한다."""
+    qs = _assemble_key(cache, want, "rows")
     ys = _assemble_key(cache, want, "years")
-    return {t: {"q": q, "y": ys.get(t, [])}
-            for t, q in _assemble_key(cache, want, "rows").items()}
+    if filed is None:
+        filed = {}
+        for acc, v in cache.items():
+            if v.get("ticker") in set(want):
+                filed.setdefault(v["ticker"], []).append({"acc": acc, "filed": v["filed"]})
+    out = {}
+    for t in set(qs) | set(filed):
+        ev = []
+        for r in sorted(filed.get(t) or [], key=lambda r: r["filed"]):
+            v = cache.get(r["acc"]) or {}
+            rows = v.get("rows") or []
+            cur = rows[0] if rows else {}
+            prior = rows[1] if len(rows) > 1 else {}
+            ev.append({"d": r["filed"], "q": cur.get("end"),
+                       "eps": cur.get("eps_adj"), "eps_py": prior.get("eps_adj"),
+                       "rev": cur.get("revenue"), "rev_py": prior.get("revenue")})
+        out[t] = {"q": qs.get(t, []), "y": ys.get(t, []), "e": ev}
+    return out
 
 
 def _assemble_key(cache: dict, want, key: str) -> dict:
@@ -448,6 +472,8 @@ def merge(holding: dict, adj) -> None:
         return
     if isinstance(adj, list):                     # 옛 모양(분기만)
         adj = {"q": adj, "y": []}
+    if adj.get("e"):
+        holding["earn_dates"] = adj["e"]
     prov = _attach(holding.get("quarters") or [], adj.get("q") or [])
     if prov:
         holding["prov_adj"] = {k: prov.get(k) for k in ("end", *FIELDS)}

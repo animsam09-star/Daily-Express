@@ -141,6 +141,8 @@ def _holding(h, notes):
                      for k, v in q.items()} for q in (h.get("annuals") or [])],
         # 야후 표에 아직 없는 최근 분기의 발표문 숫자(조정·GAAP 둘 다)
         "prov_adj": h.get("prov_adj"),
+        # 차트에 찍는 과거 실적 발표일(SEC 실적 8-K 접수일)과 그 분기 EPS
+        "earn_dates": h.get("earn_dates") or [],
     }
 
 
@@ -937,11 +939,30 @@ function crosshair(values){
   }};
 }
 const chartArea_left=chart=>chart.chartArea.left;
+const VOL_SPIKE=3;                 // 거래량 급증 기준(직전 20봉 평균의 몇 배)
+// 실적 발표일 표식 — 봉 아래에 'E' 배지를 그린다(Chart.js 점 모양에는 글자가 없다)
+const earnBadges={id:'earnBadges', afterDatasetsDraw(chart){
+  const {ctx}=chart;
+  chart.data.datasets.forEach((d,di)=>{
+    if(!d.earnBadge || !chart.isDatasetVisible(di)) return;
+    chart.getDatasetMeta(di).data.forEach((pt,i)=>{
+      if(d.data[i]==null || pt.skip) return;
+      const {x,y}=pt; if(x<chart.chartArea.left||x>chart.chartArea.right) return;
+      ctx.save();
+      ctx.fillStyle='#0b0b0b'; ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x-7,y-7,14,14,3) : ctx.rect(x-7,y-7,14,14);
+      ctx.fill();
+      ctx.fillStyle='#fff'; ctx.font='bold 10px system-ui,sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('E',x,y+0.5);
+      ctx.restore();
+    });
+  });
+}};
 
 // 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
 // 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
 // grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
-function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
+function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=''}={}){
  try{
   const labels=ohlc.map(r=>r[0]), n=ohlc.length;
   const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
@@ -1031,6 +1052,53 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
     ds.push(mk(`골든크로스(${a}·${b})`, gold, UP, 0));
     ds.push(mk(`데드크로스(${a}·${b})`, dead, DOWN, 180));
   }
+  // ---- 사건 표시. 툴팁 문구는 데이터셋의 tips[i] 에 둔다.
+  const evt=(label,data,tips,extra)=>({type:'line', label, data, tips, showLine:false,
+    pointHitRadius:7, order:-2, evt:true, ...extra});
+  // 거래량 급증 — 직전 20봉 평균의 3배 이상. 일봉에서만(주·월봉 합계는 기준이 다르다).
+  if(tf==='d'){
+    const vol=ohlc.map(r=>r.length>5?r[5]:0), spike=Array(n).fill(null), tipV=[];
+    let acc=0;
+    for(let i=0;i<n;i++){
+      if(i>=20){ const avg=acc/20;
+        if(avg>0 && vol[i]>=avg*VOL_SPIKE){ spike[i]=ohlc[i][2]*1.03;
+          tipV[i]=`거래량 급증 ${(vol[i]/avg).toFixed(1)}배(직전 20일 평균 대비)`; } }
+      acc+=vol[i]; if(i>=20) acc-=vol[i-20];
+    }
+    if(spike.some(v=>v!=null))
+      ds.push(evt('거래량 급증', spike, tipV, {pointStyle:'rectRot', pointRadius:4.5,
+        pointHoverRadius:6, backgroundColor:'#f39c12', borderColor:'#fff', borderWidth:1}));
+  }
+  // 실적 발표일 E — SEC 실적 8-K 접수일. 주·월봉에서는 그 날이 든 봉에 찍는다.
+  if(earn && earn.length){
+    const e=Array(n).fill(null), tipE=[];
+    const lastD=labels[n-1];
+    for(const ev of earn){
+      if(!ev.d || ev.d>lastD) continue;
+      const i=labels.findIndex((l,k)=>k<n && l>=ev.d);
+      if(i<0) continue;
+      e[i]=ohlc[i][3]*0.965;
+      const lines=[`실적 발표 ${ev.d}${ev.q?` (분기말 ${ev.q})`:''}`];
+      if(ev.eps!=null){
+        const g=ev.eps_py>0 ? ` · 전년 ${fmt(ev.eps_py,2)}, ${sgn((ev.eps/ev.eps_py-1)*100)}%` : '';
+        lines.push(`조정 EPS ${fmt(ev.eps,2)}${g}`);
+      }
+      if(ev.rev!=null && ev.rev_py>0)
+        lines.push(`매출 전년 대비 ${sgn((ev.rev/ev.rev_py-1)*100)}%`);
+      // 컨센서스는 최근 발표분만 있다(실적 카드와 같은 출처)
+      const c=(D.earnings||[]).find(r=>r.ticker===ticker && r.kind==='done' && r.date
+        && Math.abs((new Date(r.date)-new Date(ev.d))/864e5)<=3);
+      if(c && c.eps!=null && c.eps_est)
+        lines.push(`컨센서스 EPS ${fmt(c.eps_est,2)} 대비 ${sgn((c.eps/c.eps_est-1)*100)}%`);
+      // 장 전·후 발표를 모르므로 전날 종가 → 다음 봉 종가(이틀)로 반응을 본다
+      if(tf==='d' && i>0 && i+1<n)
+        lines.push(`발표 전후 이틀 등락 ${sgn((ohlc[i+1][4]/ohlc[i-1][4]-1)*100)}%`);
+      tipE[i]=lines;
+    }
+    if(e.some(v=>v!=null))
+      ds.push(evt('실적 발표(E)', e, tipE, {pointStyle:'circle', pointRadius:0,
+        pointHoverRadius:0, backgroundColor:'#0b0b0b', earnBadge:true}));
+  }
   // 2년치를 다 싣고 x 축 범위(인덱스)로 보이는 기간을 정한다. 휠을 굴리면
   // 범위가 좁아지고(줌인) 넓어지며(줌아웃), 그에 따라 y 축도 자동으로 다시
   // 잡힌다 — 네이버 차트와 같은 조작감.
@@ -1044,7 +1112,7 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
   // (실측: y 가 0~1 로 비고 캔들이 통째로 사라졌다). 명시해서 못 박는다.
   ds.forEach(d => { if(!d.yAxisID) d.yAxisID = 'y'; });
   return new Chart(canvas,{type:'bar',data:{labels,datasets:ds},
-    plugins:[crosshair(i=>ohlc[i]?ohlc[i][4]:null)],options:{
+    plugins:[crosshair(i=>ohlc[i]?ohlc[i][4]:null), earnBadges],options:{
     responsive:true,maintainAspectRatio:false,animation:false,
     interaction:{mode:'index',intersect:false},
     plugins:{legend:{display:true,labels:{boxWidth:14,font:{size:10},
@@ -1062,6 +1130,7 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d'}={}){
           return [`종가 ${fmt(r[4])}${unit}${g==null?'':`  (${sgn(g)}%)`}`,
                   `시 ${fmt(r[1])}  고 ${fmt(r[2])}  저 ${fmt(r[3])}`];}
         if(c.dataset.cross) return c.parsed.y==null?null:'◆ '+lb;
+        if(c.dataset.evt) return c.parsed.y==null?null:(c.dataset.tips||[])[c.dataIndex]||lb;
         return c.parsed.y==null?null:lb+': '+fmt(c.parsed.y);}}},
       zoom:{limits:{x:{min:0, max:total-1, minRange:10}},
             pan:{enabled:true, mode:'x', modifierKey:null},
@@ -1094,9 +1163,13 @@ function volChart(canvas, ohlc, labels, x0, x1){
   const unitVol = v => v >= 1e8 ? (v/1e8).toFixed(1)+'억주'
                      : v >= 1e4 ? Math.round(v/1e4).toLocaleString()+'만주'
                      : Math.round(v).toLocaleString()+'주';
+  // 거래량 급증(직전 20봉 평균의 VOL_SPIKE 배 이상)은 주황으로 칠한다 — 캔들 위 ◆ 와 같은 날
+  const hot = vols.map((v,i)=>{ if(i<20) return false;
+    let a=0; for(let k=i-20;k<i;k++) a+=vols[k]; a/=20;
+    return a>0 && v>=a*VOL_SPIKE; });
   return new Chart(canvas,{type:'bar',
     data:{labels, datasets:[{label:'거래량', data:vols,
-      backgroundColor: ohlc.map(r => col(r) + '88'),
+      backgroundColor: ohlc.map((r,i) => hot[i] ? '#f39c12' : col(r) + '88'),
       barPercentage:0.72, categoryPercentage:0.95, grouped:false}]},
     options:{responsive:true, maintainAspectRatio:false,
       interaction:{mode:'index', intersect:false},
@@ -1117,7 +1190,7 @@ function lineChart(canvas, series, {label='종가', withMA=true, unit='', color=
   const labels=series.map(p=>p[0]), vals=series.map(p=>p[1]);
   const ds=[{label, data:vals, borderColor:color, borderWidth:1.7,
              pointRadius:0, pointHitRadius:8, tension:0, order:1}];
-  if(withMA) for(const [w,c] of MA) if(vals.length>w)
+  if(withMA) for(const [w,c] of MA) if(w>=20 && vals.length>w)
     ds.push({label:w+'일',data:ma(vals,w),borderColor:c,borderWidth:1,
              pointRadius:0,pointHitRadius:0,tension:0,order:2});
 
@@ -1894,7 +1967,8 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
       if(dlgChart){if(dlgChart.__offPan)dlgChart.__offPan();dlgChart.destroy();dlgChart=null;}
       if(dlgVol){dlgVol.destroy();dlgVol=null;}
       const rows=bars[tf]||[];
-      dlgChart=candleChart(cv, rows, {unit, span:SPAN[tf]||null, tf});
+      dlgChart=candleChart(cv, rows, {unit, span:SPAN[tf]||null, tf,
+        earn:(about&&about.earn_dates)||[], ticker:(about&&about.ticker)||''});
       // 거래량은 아래에 별도 차트로. 라벨·x범위를 캔들과 공유해 세로로 맞춘다.
       dlgVol = dlgChart ? volChart(volCv, rows, dlgChart.data.labels,
                                    dlgChart.options.scales.x.min,
