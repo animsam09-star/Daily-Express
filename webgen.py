@@ -166,6 +166,35 @@ _WATCH_ORDER = {"watch": 0, "early": 1, "trend": 2, "rebound": 3}
 EARN_UPCOMING = 15       # 카드에 싣는 '발표 예정' 줄 수
 
 
+def _fill_from_release(r, h):
+    """캘린더(Finnhub)가 아직 발표치를 못 받은 줄을 SEC 실적 보도자료로 채운다.
+
+    장 마감 직후 발표는 보도자료가 SEC 에 몇 분 만에 올라오는데 캘린더의
+    실제치는 몇 시간 늦다. 그 사이 카드는 '발표 예정' 에 머물러 결과가 다음
+    날에야 보였다. nongaap 이 읽어 둔 최근 보도자료(prov_adj — 재무 데이터에
+    아직 없는 분기)가 이 발표의 분기면(분기말이 발표일 10~100일 전) 매출과
+    조정 EPS 를 넣고 '발표' 로 올린다. EPS 는 컨센서스와 같은 조정 기준이다.
+    """
+    pa = h.get("prov_adj") or {}
+    if not pa.get("end") or (r.get("rev") is not None and r.get("eps") is not None):
+        return r
+    try:
+        gap = (dt.date.fromisoformat(r["date"]) - dt.date.fromisoformat(pa["end"])).days
+    except (KeyError, TypeError, ValueError):
+        return r
+    if not 10 <= gap <= 100:
+        return r
+    out = dict(r)
+    if out.get("rev") is None and pa.get("revenue") is not None:
+        out["rev"] = pa["revenue"]
+    if out.get("eps") is None and pa.get("eps_adj") is not None:
+        out["eps"] = pa["eps_adj"]
+    if out.get("rev") is not None or out.get("eps") is not None:
+        out["kind"] = "done"
+        out["src"] = "sec"
+    return out
+
+
 def _earn_list(earnings, sectors):
     """실적 발표·컨콜 카드용 목록. 캘린더 행에 종목명·거래소를 붙인다.
 
@@ -187,6 +216,7 @@ def _earn_list(earnings, sectors):
         h = meta.get(r["ticker"])
         if not h:                        # 들고 있지 않은 종목은 싣지 않는다
             continue
+        r = _fill_from_release(r, h)
         out.append({**r, "name": h.get("name") or r["ticker"],
                     "exchange": h.get("exchange") or "",
                     "chg_pct": h.get("chg_pct"), "pick": h.get("pick") or ""})
