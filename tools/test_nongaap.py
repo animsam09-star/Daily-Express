@@ -30,6 +30,8 @@ check(len(y["years"]) == 1 and y["years"][0]["op_adj"] == 810e6, "연간 추출�
 check(y["fy_checked"] and N._parse('''{"period_end":"2026-06-30","unit":"millions",
  "cur":{"revenue":730,"op_adj":211},"fy":null}''')["years"] == [], "연간 없음")
 
+check(N._scale("USD in millions") == 1e6 and N._scale("dollars") == 1 and N._scale("?") is None, "단위 표기 변형")
+
 # 2) 분기 맞춤: 10/4 → 9/30, 매출 어긋나면 안 붙임, 야후에 없는 분기는 prov_adj
 h = {"annuals": [{"date": "2025-12-31", "revenue": 2.85e9}],
      "quarters": [{"date": "2026-06-30", "revenue": 729.7e6},
