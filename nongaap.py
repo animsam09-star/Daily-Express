@@ -191,6 +191,11 @@ Ticker: {ticker}
 """
 
 
+# 답은 왔는데 읽을 수 없던 보도자료(단위·분기말을 못 찾음 등). 다시 물어도
+# 같은 답이라 실패로 남겨 두면 매 실행 예산만 먹는다 — 한 번으로 끝낸다.
+UNREADABLE = {"unreadable": True}
+
+
 def _ask(prompt: str) -> dict | None:
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") and shutil.which("claude"):
         try:
@@ -198,7 +203,7 @@ def _ask(prompt: str) -> dict | None:
                                capture_output=True, text=True, encoding="utf-8",
                                timeout=CLI_TIMEOUT)
             if r.returncode == 0:
-                return _parse(r.stdout)
+                return _parse(r.stdout) or UNREADABLE
             print(f"[조정실적] Claude Code 오류(exit {r.returncode})")
         except (subprocess.TimeoutExpired, OSError) as e:
             print(f"[조정실적] Claude Code 호출 실패: {type(e).__name__}")
@@ -209,7 +214,7 @@ def _ask(prompt: str) -> dict | None:
                 model=MODEL, max_tokens=1200,
                 messages=[{"role": "user", "content": prompt}])
             return _parse("".join(b.text for b in resp.content
-                                  if getattr(b, "type", "") == "text"))
+                                  if getattr(b, "type", "") == "text")) or UNREADABLE
         except Exception as e:                     # noqa: BLE001
             print(f"[조정실적] API 실패: {type(e).__name__}")
     return None
@@ -217,6 +222,17 @@ def _ask(prompt: str) -> dict | None:
 
 SCALE = {"ones": 1, "thousands": 1e3, "millions": 1e6, "billions": 1e9}
 FIELDS = ("revenue", "op_gaap", "op_adj", "net_gaap", "net_adj", "eps_adj")
+
+
+def _scale(unit):
+    """'millions' 뿐 아니라 'in millions', 'USD millions', 'dollars' 도 받는다."""
+    u = str(unit or "").lower()
+    for word, k in (("billion", 1e9), ("million", 1e6), ("thousand", 1e3)):
+        if word in u:
+            return k
+    if u.strip() in ("ones", "one", "dollars", "usd", "units", "$"):
+        return 1
+    return None
 
 
 def _num(v):
@@ -235,7 +251,7 @@ def _parse(out: str) -> dict | None:
         d = json.loads(s[i:j + 1])
     except ValueError:
         return None
-    k = SCALE.get(str(d.get("unit") or "").lower())
+    k = _scale(d.get("unit"))
     if not k:
         return None
 
@@ -382,7 +398,9 @@ def build(tickers, path: str) -> dict:
             return item, {"ticker": t, "filed": r["filed"], "none": True}, False
         got = _ask(PROMPT.format(ticker=t, text=_snippet(text)))
         if got is None:
-            return item, None, True                # 다음 실행에서 다시
+            return item, None, True                # 호출 실패 — 다음 실행에서 다시
+        if got.get("unreadable"):
+            return item, {"ticker": t, "filed": r["filed"], "none": True}, False
         return item, {"ticker": t, "filed": r["filed"], **got}, False
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
