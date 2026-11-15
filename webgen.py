@@ -1051,12 +1051,13 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=
       if(p<=0 && c>0) gold[i]=ohlc[i][3]*0.985;
       else if(p>=0 && c<0) dead[i]=ohlc[i][2]*1.015;
     }
-    const mk=(label,data,color,rot)=>({type:'line', label, data, showLine:false,
-      pointStyle:'triangle', rotation:rot, pointRadius:7, pointHoverRadius:8,
-      pointHitRadius:6, backgroundColor:color, borderColor:'#fff', borderWidth:1,
+    // 색은 캔들(빨강·파랑)과 겹치지 않게 금색·보라로, 테두리는 진하게 둔다
+    const mk=(label,data,color,edge,rot)=>({type:'line', label, data, showLine:false,
+      pointStyle:'triangle', rotation:rot, pointRadius:8, pointHoverRadius:9,
+      pointHitRadius:6, backgroundColor:color, borderColor:edge, borderWidth:1.5,
       order:-1, cross:true});
-    ds.push(mk(`골든크로스(${a}·${b})`, gold, UP, 0));
-    ds.push(mk(`데드크로스(${a}·${b})`, dead, DOWN, 180));
+    ds.push(mk(`골든크로스(${a}·${b})`, gold, '#f5b800', '#6b4e00', 0));
+    ds.push(mk(`데드크로스(${a}·${b})`, dead, '#8e44ad', '#3d1458', 180));
   }
   // ---- 사건 표시. 툴팁 문구는 데이터셋의 tips[i] 에 둔다.
   const evt=(label,data,tips,extra)=>({type:'line', label, data, tips, showLine:false,
