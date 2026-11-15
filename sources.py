@@ -1435,6 +1435,58 @@ def fetch_treasury_now():
     return out
 
 
+CNBC_BARS = "https://ts-api.cnbc.com/harmony/app/charts/{rng}.json?symbol={sym}"
+
+
+def _cnbc_bars(sym, rng):
+    j = _get(CNBC_BARS.format(rng=rng, sym=sym)).json()
+    out = []
+    for b in (j.get("barData") or {}).get("priceBars") or []:
+        try:
+            d = dt.datetime.utcfromtimestamp(int(b["tradeTimeinMills"]) / 1000).date()
+            o, h, l, c = (float(b[k]) for k in ("open", "high", "low", "close"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((d, o, h, l, c, 0.0))
+    return out
+
+
+def _to_monthly(bars):
+    """주봉·일봉을 월봉으로 — 시가는 첫 봉, 종가는 마지막 봉, 고저는 극값."""
+    out = {}
+    for d, o, h, l, c, v in bars:
+        k = (d.year, d.month)
+        if k not in out:
+            out[k] = [d, o, h, l, c, v]
+        else:
+            m = out[k]
+            m[0], m[2], m[3], m[4] = d, max(m[2], h), min(m[3], l), c
+    return [tuple(v) for _, v in sorted(out.items())]
+
+
+def fetch_treasury_ohlc():
+    """미 국채 2·10·30년 금리 일봉(약 2년)과 월봉(10년) — 웹 캔들차트용.
+
+    현재가를 주는 CNBC 의 차트 API 다. 재무부 CMT 는 하루 한 값(종가)뿐이라
+    캔들을 못 그리고, 야후는 2년물이 없다(2YY=F 는 시가=고가=저가=종가로
+    빈 봉만 온다 — 실측). '1Y' 가 일봉 2년치, '5Y' 가 주봉 10년치를 준다.
+    """
+    out = {}
+    for sym in TENOR_CSVCOL:
+        try:
+            d = _cnbc_bars(sym, "1Y")
+        except Exception as e:                     # noqa: BLE001
+            print(f"[금리] {sym} 일봉 실패: {type(e).__name__}")
+            continue
+        try:
+            m = _to_monthly(_cnbc_bars(sym, "5Y"))
+        except Exception:                          # noqa: BLE001
+            m = _to_monthly(d)
+        if d:
+            out[sym] = {"ohlc": d, "ohlc_m": m}
+    return out
+
+
 def fetch_treasury_history():
     """재무부 일별 CMT CSV에서 2/10/30년 2개년 시계열."""
     this_year = dt.date.today().year
@@ -1696,6 +1748,7 @@ def collect_all():
     run("kr_proxy", fetch_kr_proxy)
     run("ust_now", fetch_treasury_now)
     run("ust_hist", fetch_treasury_history)
+    run("ust_ohlc", fetch_treasury_ohlc)
     run("domestic", fetch_domestic)
 
     data["errors"] = errors

@@ -158,8 +158,18 @@ def _post(token, method, files=None, **kw):
                     f[1].seek(0)
                 except (AttributeError, OSError):
                     pass
-        r = requests.post(API.format(token=token, method=method),
-                          files=files, timeout=TIMEOUT, **kw)
+        try:
+            r = requests.post(API.format(token=token, method=method),
+                              files=files, timeout=TIMEOUT, **kw)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            # 텔레그램이 응답을 늦게 주거나 연결이 끊길 때(2026-11-16 06:05
+            # '앨범 2' 가 90초 ReadTimeout 으로 빠졌다). 한 번 더 보낸다 —
+            # 이미 받아 놓고 응답만 늦은 경우 같은 사진이 두 번 갈 수 있지만,
+            # 빠지는 것보다 낫다.
+            last = f"{method} {type(e).__name__}"
+            print(f"    [telegram] {last} — {attempt + 1}번째, 다시 보낸다")
+            time.sleep(10)
+            continue
         if r.ok:
             return r.json()
 
