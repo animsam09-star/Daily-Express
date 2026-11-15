@@ -1,14 +1,18 @@
-"""야후 미 국채 금리 심볼의 OHLC 가 쓸 만한지(일회성)."""
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import sources
-for sym in ("^TNX", "^TYX", "^FVX", "2YY=F", "10Y=F", "30Y=F", "^IRX"):
-    try:
-        o = sources.yahoo_candles(sym)
-        m = sources.monthly_candles(sym)
-        print(f"{sym}: {len(o)}봉 월{len(m)} 처음 {o[0][0]} 마지막 {o[-1]} "
-              f"고저폭평균 {sum(r[2]-r[3] for r in o[-20:])/20:.3f}")
-    except Exception as e:
-        print(f"{sym}: 실패 {type(e).__name__} {e}")
-h = sources.fetch_treasury_history()
-print("재무부 마지막:", {k: v[-1] for k, v in h.items()})
+"""CNBC 차트 API 로 미 국채 금리 OHLC 를 받을 수 있는지(일회성)."""
+import requests, datetime as dt
+UA = {"User-Agent": "Mozilla/5.0"}
+for rng in ("1Y", "5Y", "ALL"):
+    for sym in ("US2Y", "US10Y", "US30Y"):
+        u = f"https://ts-api.cnbc.com/harmony/app/charts/{rng}.json?symbol={sym}"
+        try:
+            r = requests.get(u, headers=UA, timeout=30)
+            j = r.json()
+            bars = (j.get("barData") or {}).get("priceBars") or []
+            def d(b): return dt.datetime.utcfromtimestamp(int(b["tradeTimeinMills"])/1000).date()
+            print(rng, sym, r.status_code, len(bars),
+                  (d(bars[0]), d(bars[-1]), bars[-1]) if bars else list(j)[:5])
+            if bars:
+                gaps = sum(1 for b in bars[-30:] if float(b["high"]) > float(b["low"]))
+                print("   최근30봉 중 고저폭 있는 봉", gaps, "간격(일)", (d(bars[-1]) - d(bars[-2])).days)
+        except Exception as e:
+            print(rng, sym, "실패", type(e).__name__, e)
