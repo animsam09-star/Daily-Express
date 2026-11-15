@@ -599,6 +599,11 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .dlinks .sub2{margin-left:auto;color:var(--muted);font-size:11.5px;text-align:right}
 [hidden]{display:none!important}   /* display:flex 가 hidden 속성을 이겨 지수 창에도 탭이 떴다 */
 .about{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid)}
+.fit{font-size:12px;color:var(--ink2);margin:0 0 8px;line-height:1.55}
+.fit summary{cursor:pointer;color:var(--ink)}
+.fit table{margin-top:6px;font-size:11.5px}
+.fit td,.fit th{padding:3px 8px}
+.fit .best{font-weight:700;color:var(--ink)}
 .basis{float:right;display:inline-flex;gap:2px;font-weight:400}
 .basis button{font:inherit;font-size:11.5px;padding:2px 8px;border:1px solid var(--grid);
   background:transparent;color:var(--sub);border-radius:6px;cursor:pointer}
@@ -747,6 +752,7 @@ footer{margin-top:40px;color:var(--muted);font-size:12px;line-height:1.6}
   <div class="pane on" id="p-chart">
     <div class="rets" id="dlg-rets"></div>
     <div class="segs" id="dlg-segs" style="margin:0 0 8px"></div>
+    <div class="fit" id="dlg-fit" hidden></div>
     <div class="chartbox big"><canvas id="dlg-chart"></canvas></div>
     <div class="chartbox vol" id="dlg-volbox" hidden><canvas id="dlg-vol"></canvas></div>
     <!-- 차트 바로 아래에 개요와 분기 실적을 같이 둔다 — 탭을 옮겨 다니지
@@ -837,6 +843,77 @@ const TF_NAME={d:'일봉', w:'주봉', m:'월봉'};
 // 일봉에서만 그린다(주·월봉의 '20' 은 20주·20개월이라 뜻이 달라진다).
 const CROSS_SETS={'5·20':[5,20],'20·60':[20,60],'50·200':[50,200]};
 let CROSS='20·60';
+let CROSS_USER=false;     // 사람이 직접 고르면 종목마다 바꾸지 않는다
+
+// ---- 이 종목에 잘 맞은 신호(최근 2년 일봉). 종목마다 맞는 선이 다르다 —
+// 어떤 종목은 20·60 크로스가, 어떤 종목은 60일선 지지가 잘 들었다. 과거
+// 성적을 세어 보여 주고, 크로스 표시는 가장 잘 맞은 조합으로 시작한다.
+const FIT_H=20;           // 크로스 성적: 신호 뒤 20거래일 수익률
+const FIT_SUP=10;         // 지지선 성적: 닿은 뒤 10거래일
+function fitStats(ohlc){
+  const c=ohlc.map(r=>r[4]), lo=ohlc.map(r=>r[3]), n=c.length;
+  if(n<260) return null;
+  let bs=0,bn=0; for(let i=0;i+FIT_H<n;i++){bs+=c[i+FIT_H]/c[i]-1;bn++;}
+  const base=bn?bs/bn:0;
+  const agg=a=>({n:a.length, hit:a.filter(x=>x.hit).length,
+                 avg:a.length?a.reduce((t,x)=>t+x.r,0)/a.length:null});
+  const pairs=Object.entries(CROSS_SETS).map(([k,[a,b]])=>{
+    const sa=ma(c,a), sb=ma(c,b), g=[], d=[];
+    for(let i=1;i+FIT_H<n;i++){
+      if(sa[i]==null||sb[i]==null||sa[i-1]==null||sb[i-1]==null) continue;
+      const p=sa[i-1]-sb[i-1], q=sa[i]-sb[i], r=c[i+FIT_H]/c[i]-1;
+      if(p<=0&&q>0) g.push({r,hit:r>0});
+      else if(p>=0&&q<0) d.push({r,hit:r<0});
+    }
+    const G=agg(g), Dd=agg(d);
+    // 점수: 골든 뒤 평균 − 데드 뒤 평균. 둘 다 있어야 비교가 된다.
+    const score=(G.n&&Dd.n&&G.n+Dd.n>=3)?(G.avg-Dd.avg):null;
+    return {k,G,D:Dd,score};
+  });
+  const sups=[20,60,120,224].map(w=>{
+    const m=ma(c,w), ev=[]; let last=-99;
+    for(let i=w+1;i+FIT_SUP<n;i++){
+      if(m[i]==null||m[i-1]==null) continue;
+      // 위에서 내려와 선에 닿은 날(저가가 선 +1% 안쪽, 전날 종가는 선 위)
+      if(c[i-1]>m[i-1] && lo[i]<=m[i]*1.01 && i-last>=FIT_SUP){
+        last=i;
+        let held=true;
+        for(let k=i;k<=i+FIT_SUP;k++) if(c[k]<m[k]*0.97){held=false;break;}
+        ev.push({r:c[i+FIT_SUP]/c[i]-1, hit:held});
+      }
+    }
+    return {w, ...agg(ev)};
+  });
+  const okP=pairs.filter(p=>p.score!=null).sort((a,b)=>b.score-a.score);
+  const okS=sups.filter(x=>x.n>=3).sort((a,b)=>b.hit/b.n-a.hit/a.n || b.n-a.n);
+  return {base, pairs, sups,
+          bestPair: okP.length && okP[0].score>0 ? okP[0].k : null,
+          bestSup: okS.length && okS[0].hit/okS[0].n>=0.6 ? okS[0].w : null};
+}
+function fitHtml(st){
+  if(!st) return '';
+  const pc=x=>x==null?'–':sgn(x*100)+'%';
+  const rate=a=>a.n?`${a.hit}/${a.n}`:'–';
+  const bp=st.pairs.find(p=>p.k===st.bestPair), bsup=st.sups.find(x=>x.w===st.bestSup);
+  const head=[
+    bp ? `크로스는 <b>${bp.k}</b> 조합이 가장 잘 맞았다(골든 뒤 ${FIT_H}일 ${pc(bp.G.avg)}, 데드 뒤 ${pc(bp.D.avg)})`
+       : '크로스는 뚜렷하게 맞은 조합이 없다',
+    bsup ? `지지선은 <b>${bsup.w}일선</b>(닿은 뒤 버틴 비율 ${bsup.hit}/${bsup.n})`
+         : '지지선은 뚜렷하게 버틴 선이 없다'].join(' · ');
+  return `<details><summary>이 종목에 잘 맞은 신호(최근 2년) — ${head}</summary>
+    <table><thead><tr><th>크로스</th><th>골든 뒤 ${FIT_H}일(적중)</th>
+      <th>데드 뒤 ${FIT_H}일(적중)</th><th>차이</th></tr></thead><tbody>${
+      st.pairs.map(p=>`<tr class="${p.k===st.bestPair?'best':''}"><td>${p.k}${p.k===st.bestPair?' ★':''}</td>
+        <td>${pc(p.G.avg)} (${rate(p.G)})</td><td>${pc(p.D.avg)} (${rate(p.D)})</td>
+        <td>${p.score==null?'–':sgn(p.score*100)+'%p'}</td></tr>`).join('')}</tbody></table>
+    <table><thead><tr><th>지지선</th><th>닿은 횟수</th><th>버틴 비율</th>
+      <th>${FIT_SUP}일 뒤 평균</th></tr></thead><tbody>${
+      st.sups.map(x=>`<tr class="${x.w===st.bestSup?'best':''}"><td>${x.w}일선${x.w===st.bestSup?' ★':''}</td>
+        <td>${x.n}</td><td>${x.n?Math.round(x.hit/x.n*100)+'%':'–'}</td><td>${pc(x.avg)}</td></tr>`).join('')}</tbody></table>
+    <div style="color:var(--muted);margin-top:4px">같은 기간 아무 날이나 샀을 때 ${FIT_H}일 평균 ${pc(st.base)}.
+      적중 = 골든 뒤 올랐거나 데드 뒤 내린 횟수. 버팀 = 닿은 뒤 ${FIT_SUP}일 동안 선 아래 3% 넘게 무너지지 않음.
+      표본이 적어 참고용이다 — 과거에 맞았다고 앞으로도 맞는 것은 아니다.</div></details>`;
+}
 
 // 일봉을 주봉/월봉으로 묶는다. 시가는 구간 첫 봉, 종가는 마지막 봉,
 // 고·저는 구간 전체의 최대·최소, 거래량은 합. 라벨은 구간의 '마지막' 날짜다 —
@@ -1961,6 +2038,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
   if(dlgVol){dlgVol.destroy();dlgVol=null;}
   volBox.hidden = true;
   segs.innerHTML='';
+  { const f=document.getElementById('dlg-fit'); f.hidden=true; f.innerHTML=''; }
   if(ohlc&&ohlc.length){         // 개별 종목: 캔들 + 봉 단위 전환 + 줌
     // 일봉은 실려 온 2년치 그대로, 주봉은 그걸 브라우저에서 묶어 만든다.
     // 월봉만 따로 실려 온다(10년치) — 2년을 묶으면 24봉뿐이라 일목균형표가
@@ -1993,6 +2071,11 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
       b.textContent=TF_NAME[tf]; b.dataset.tf=tf; b.onclick=()=>draw(tf);
       segs.appendChild(b);
     });
+    // 이 종목에 잘 맞은 신호. 사람이 크로스를 고른 적이 없으면 그 조합으로 시작한다.
+    const st=fitStats(ohlc), fit=document.getElementById('dlg-fit');
+    fit.innerHTML=fitHtml(st); fit.hidden=!st;
+    if(st && !CROSS_USER && st.bestPair) CROSS=st.bestPair;
+    else if(!CROSS_USER) CROSS='20·60';
     // 크로스 조합 고르기(일봉 전용). 고르면 지금 보는 봉 단위로 다시 그린다.
     const xl=document.createElement('span');
     xl.style.cssText='margin-left:10px;color:var(--muted);font-size:11.5px';
@@ -2000,10 +2083,10 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
     segs.appendChild(xl);
     [...Object.keys(CROSS_SETS),'끄기'].forEach(k=>{
       const b=document.createElement('button');
-      b.textContent=k; b.dataset.cross=k;
+      b.textContent=k+(st&&st.bestPair===k?' ★':''); b.dataset.cross=k;
       b.classList.toggle('on', CROSS===k || (k==='끄기' && !CROSS_SETS[CROSS]));
       b.onclick=()=>{
-        CROSS=k;
+        CROSS=k; CROSS_USER=true;
         segs.querySelectorAll('button[data-cross]').forEach(x=>
           x.classList.toggle('on', x.dataset.cross===k));
         draw(curTf);
