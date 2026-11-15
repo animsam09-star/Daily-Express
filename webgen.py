@@ -68,8 +68,10 @@ def _ds_ohlc(ohlc, days=CANDLE_DAYS):
     cut = ohlc[-1][0] - dt.timedelta(days=days) if days else None
     # 6번째 칸은 거래량. 주식은 야후가 주고, 지수·환율은 안 줘서 0 이 된다.
     # 정수로 반올림한다 — 소수점은 의미도 없고 용량만 먹는다.
-    return [[r[0].isoformat(), round(r[1], 2), round(r[2], 2), round(r[3], 2),
-             round(r[4], 2), int(r[5]) if len(r) > 5 else 0]
+    # 금리(4.874%)는 셋째 자리까지 둔다 — 둘째에서 자르면 0.1bp 단위 움직임이 사라진다
+    nd = 3 if ohlc[-1][4] < 50 else 2
+    return [[r[0].isoformat(), round(r[1], nd), round(r[2], nd), round(r[3], nd),
+             round(r[4], nd), int(r[5]) if len(r) > 5 else 0]
             for r in ohlc if cut is None or r[0] >= cut]
 
 
@@ -286,9 +288,11 @@ def build_us(data, path):
                        ("US30Y", "미국채 30년")):
         q = now.get(sym)
         if q:
+            uo = (data.get("ust_ohlc") or {}).get(sym) or {}
             summary.append(_summary_item(label, round(q["yield"], 3),
                                          round(q["chg_bp"], 1), "%", "bp",
-                                         hist.get(sym)))
+                                         hist.get(sym), ohlc=uo.get("ohlc"),
+                                         ohlc_m=uo.get("ohlc_m")))
     if fx.get("last") is not None:
         summary.append(_summary_item("원/달러", round(fx["last"], 1),
                                      round(fx.get("chg", 0), 1), "원", "원",
@@ -593,6 +597,7 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .dlinks a:hover{background:var(--plane)}
 .dlinks .ic{flex:none;width:18px;text-align:center}
 .dlinks .sub2{margin-left:auto;color:var(--muted);font-size:11.5px;text-align:right}
+[hidden]{display:none!important}   /* display:flex 가 hidden 속성을 이겨 지수 창에도 탭이 떴다 */
 .about{margin-top:14px;padding-top:12px;border-top:1px solid var(--grid)}
 .basis{float:right;display:inline-flex;gap:2px;font-weight:400}
 .basis button{font:inherit;font-size:11.5px;padding:2px 8px;border:1px solid var(--grid);
@@ -962,7 +967,7 @@ const earnBadges={id:'earnBadges', afterDatasetsDraw(chart){
 // 개별 종목은 캔들(일봉)로 그린다. Chart.js 에 캔들 타입이 없어 막대 두 벌로
 // 만든다 — 얇은 막대가 고가~저가(꼬리), 굵은 막대가 시가~종가(몸통).
 // grouped:false 라야 두 막대가 나란히 서지 않고 겹쳐 그려진다.
-function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=''}={}){
+function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker='', rs=true}={}){
  try{
   const labels=ohlc.map(r=>r[0]), n=ohlc.length;
   const col=r=>r[4]>=r[1]?UP:DOWN;            // 종가>=시가 면 상승(빨강)
@@ -1007,7 +1012,8 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=
   // 섹터 카드 차트와 같은 방식·같은 색(보라 파선, 우측 축)을 쓴다.
   let hasRS = false;
   const bench = (D.bench || {}).series || [];
-  if(bench.length > 30){
+  // 지수 대비 상대강도는 종목에만 — 금리·환율·지수 자신에게는 뜻이 없다
+  if(rs && bench.length > 30){
     const bm = new Map(bench);
     const rs = []; let base = null;
     for(const r of ohlc){
@@ -1144,7 +1150,9 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=
                     if(typeof syncVol==='function') syncVol();}}}},
     scales:{x:{min:x0, max:x1, ticks:{maxTicksLimit:8,font:{size:10}},
                grid:{display:false}, stacked:false},
-            y:{ticks:{font:{size:10},callback:v=>fmt(v,0)},grid:{color:'#e1e0d9'},
+            // 금리(4.85%)처럼 값이 작으면 소수 둘째 자리까지 — 0자리로 찍으면
+            // 축이 5·5·5 로 뭉개진다
+            y:{ticks:{font:{size:10},callback:v=>fmt(v, hi<50?2:0)},grid:{color:'#e1e0d9'},
                beginAtZero:false},
             ...(hasRS ? {y2:{position:'right', grid:{display:false},
                              ticks:{font:{size:9}, color:'#8e44ad',
@@ -1968,7 +1976,7 @@ function openDlg(title, meta, rets, series, unit='', sub='', ohlc=null, about=nu
       if(dlgVol){dlgVol.destroy();dlgVol=null;}
       const rows=bars[tf]||[];
       dlgChart=candleChart(cv, rows, {unit, span:SPAN[tf]||null, tf,
-        earn:(about&&about.earn_dates)||[], ticker:(about&&about.ticker)||''});
+        earn:(about&&about.earn_dates)||[], ticker:(about&&about.ticker)||'', rs:!!about});
       // 거래량은 아래에 별도 차트로. 라벨·x범위를 캔들과 공유해 세로로 맞춘다.
       dlgVol = dlgChart ? volChart(volCv, rows, dlgChart.data.labels,
                                    dlgChart.options.scales.x.min,
