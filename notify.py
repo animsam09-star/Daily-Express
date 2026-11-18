@@ -140,7 +140,7 @@ def build_message(data) -> str:
 
 
 SEND_GAP = 1.2          # 메시지 사이 간격(초). 같은 방에 초당 1건이 안전선이다
-MAX_RETRY = 4
+MAX_RETRY = 5
 
 
 def _post(token, method, files=None, **kw):
@@ -183,7 +183,10 @@ def _post(token, method, files=None, **kw):
             time.sleep(wait + 0.5)
             continue
         if 500 <= r.status_code < 600:
-            time.sleep(2 * (attempt + 1))
+            # 11/17 06:05 에 502 Bad Gateway 가 2·4·6초 간격 재시도 안에 안
+            # 풀려 브리핑이 통째로 빠졌다. 텔레그램 장애는 수십 초 단위라
+            # 간격을 길게 잡는다(10·20·40·80초).
+            time.sleep(10 * 2 ** attempt)
             continue
         break                                   # 400 등은 재시도해도 같다
     raise RuntimeError(last or f"{method} 실패")

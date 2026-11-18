@@ -76,7 +76,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WF: daily-brief-kr.yml
         run: |
-          CUTOFF=$(date -u -d '20 hours ago' '+%Y-%m-%dT%H:%M:%S+00:00')
+          # '오늘 브리핑' 을 이미 보냈는지만 본다 — 기준은 오늘 09:00 KST
+          # (00:00 UTC). '20시간 안' 으로 보면, 15:45 발송이 실패하고 GitHub
+          # cron 백업이 밤에 대신 보낸 날 다음날 15:45 가 그 창에 걸려 생략되고
+          # 백업이 또 밤에 보내는 일이 되풀이된다(미국 브리핑에서 실제로 났다).
+          CUTOFF=$(date -u '+%Y-%m-%dT00:00:00+00:00')
           ROWS=$(gh run list -R "$GITHUB_REPOSITORY" -w "$WF" \
                    --created ">=$CUTOFF" --json databaseId,status \
                    -q '.[] | [.databaseId, .status] | @tsv' || echo "")
@@ -101,7 +105,7 @@ jobs:
           done <<< "$ROWS"
           if [ "$SENT" -gt 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "최근 20시간 안에 이미 발송함($SENT건) — 이번 실행은 생략"
+            echo "오늘 이미 발송함($SENT건) — 이번 실행은 생략"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
