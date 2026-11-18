@@ -8,12 +8,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import nongaap  # noqa: E402
 import sources  # noqa: E402
 
-MISS = "SPOT FRO FMX XOM GMAB PHG GFL SAP CCJ NXE OKLO SPCX EMA DNN PUK DB AER TJX".split()
+MISS = "SPOT SAP TJX OKLO".split()
 VIS = "https://query1.finance.yahoo.com/v1/finance/visualization"
 
 
 def yahoo(s, crumb, t):
-    body = {"size": 16, "offset": 0, "sortField": "startdatetime", "sortType": "DESC",
+    body = {"size": 40, "offset": 0, "sortField": "startdatetime", "sortType": "DESC",
             "entityIdType": "earnings",
             "includeFields": ["startdatetime", "epsestimate", "epsactual", "eventtype"],
             "query": {"operator": "and", "operands": [
@@ -42,10 +42,11 @@ def main():
         else:
             cols, rows = got
             print(f"  {t} {cols} {len(rows)}행")
-            for r in rows[:10]:
+            for r in sorted(rows, reverse=True)[:14]:
                 print("     ", r)
         time.sleep(0.5)
 
+    return
     ciks = nongaap._ciks()
     since = dt.date.today() - dt.timedelta(days=400)
     for t in ("SPOT", "SAP", "DB", "CCJ", "AER", "GMAB"):
