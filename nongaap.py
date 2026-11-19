@@ -15,7 +15,8 @@ SEC 에 올라온 실적 발표 8-K(Item 2.02)의 보도자료(EX-99.1)를 받�
 새 분기 보도자료만 새로 읽는다.
 
 조정치를 내지 않는 회사(애플처럼 GAAP 만 쓰는 곳, 은행)와 8-K 대신 6-K 를
-내는 외국 회사는 GAAP 그대로 둔다 — 화면에서 GAAP 로 표시한다.
+내는 외국 회사는 GAAP 그대로 둔다 — 화면에서 GAAP 로 표시한다. 다만 6-K 도
+본문을 훑어 실적 발표일만은 찾는다(차트 E 표시).
 """
 from __future__ import annotations
 
@@ -52,6 +53,13 @@ LOOKBACK_DAYS = 420      # 분기용 — 그보다 오래된 보도자료는 보
 # 있으므로 최근 4분기 보도자료와 2년 전 것을 읽으면 4개 연도가 찬다.
 ANNUAL_LOOKBACK_DAYS = 1150
 ANNUAL_RELEASES = 2      # 최근 4분기 보도자료 다음으로 몇 해 전 것까지 더 읽나
+# 8-K 2.02 가 없는 회사의 E 표시: 차트가 2년이므로 그만큼 6-K 등을 훑는다.
+# 6-K 를 많이 내는 회사(PUK 는 자사주 공시로 1년에 수백 건)가 있어 실행마다
+# 시간 상한을 두고 새것부터 읽는다 — 결과는 접수번호로 캐시해 다시 안 읽는다.
+ALT_LOOKBACK_DAYS = 760
+ALT_MIN = 3              # 최근 LOOKBACK_DAYS 동안 8-K 2.02 가 이보다 적으면 다른 공시를 본다
+ALT_BUDGET = int(os.environ.get("ALT_BUDGET") or 150)
+ALT_DEDUP_DAYS = 7       # 같은 실적을 여러 공시로 낸 경우(보도자료 + 분기 보고서) 하나로
 SNIP_MAX = 16000         # Claude 에게 넘기는 발췌 상한
 MATCH_DAYS = 20          # 회사 분기말(10/4)과 야후 분기말(9/30)을 같은 분기로 볼 거리
 
@@ -78,20 +86,98 @@ def _ciks() -> dict:
             for v in data.values()}
 
 
-def _releases(cik: int, since: dt.date) -> tuple[list[dict], str]:
-    """최근 실적 발표 8-K(Item 2.02) 목록(새것부터)과 회계연도 말(MMDD)."""
+def _releases(cik: int, since: dt.date) -> tuple[list[dict], str, list[dict]]:
+    """최근 실적 발표 8-K(Item 2.02) 목록(새것부터), 회계연도 말(MMDD),
+    그리고 실적 발표일 수 있는 다른 공시(6-K, Item 2.02 없는 8-K) 목록.
+
+    뒤의 것은 8-K 2.02 를 안 내는 회사(Spotify·SAP 같은 외국 회사는 6-K,
+    OKLO 는 7.01/8.01)의 차트 E 표시용이다 — 본문을 읽어 실적인지 가린다."""
     sub = _sec_get(SUBMISSIONS.format(cik=cik)).json()
     fye = str(sub.get("fiscalYearEnd") or "")
     r = (sub.get("filings") or {}).get("recent") or {}
-    out = []
+    out, alt, per = [], [], []
+    alt_since = dt.date.today() - dt.timedelta(days=ALT_LOOKBACK_DAYS)
     for form, acc, date, items in zip(r.get("form", []), r.get("accessionNumber", []),
                                       r.get("filingDate", []), r.get("items", [])):
-        if form not in ("8-K", "8-K/A") or "2.02" not in (items or ""):
-            continue
-        if dt.date.fromisoformat(date) < since:
+        d = dt.date.fromisoformat(date)
+        if d < since and d < alt_since:
             break
-        out.append({"acc": acc, "filed": date})
-    return out, fye
+        if form in ("8-K", "8-K/A") and "2.02" in (items or ""):
+            if d >= since:
+                out.append({"acc": acc, "filed": date})
+        elif d >= alt_since and (form == "6-K" or (
+                form == "8-K" and re.search(r"7\.01|8\.01", items or ""))):
+            alt.append({"acc": acc, "filed": date})
+        elif d >= alt_since and form in ("10-Q", "10-K"):
+            per.append({"acc": acc, "filed": date, "src": form})
+    return out, fye, alt + per
+
+
+# 실적 발표문인지 — 머리말(제목·표지의 첨부 목록)에 '실적을 냈다' 는 문구가
+# 있는가. 예고("3분기 실적을 ○일 발표한다")·사전 안내(XOM 'Earnings
+# Considerations', DB 'Key updates')·주총 안내가 그보다 먼저 나오면 아니다.
+_EARN_POS = [re.compile(x, re.I) for x in (
+    r"\b(reports?|reported|announces?|delivers?|posts?|publishes)\b[^.\n]{0,90}?"
+    r"\b(results|earnings|profits?)\b",
+    r"\b(q[1-4]|[1-4]q|first|second|third|fourth|half[- ]year|first[- ]half|full[- ]year|"
+    r"interim|quarterly|annual)\b[^.\n]{0,25}?\b(results|earnings|profits?)\b",
+    r"\bearnings report as of\b|\binterim report\b|"
+    r"\binterim (condensed )?(consolidated )?financial statements\b|"
+    r"management.s discussion and analysis for the (quarter|three|six|nine|year)",
+    r"\b(results|earnings)\s+for\s+the\s+(first|second|third|fourth|full|fiscal|[1-4]q|q[1-4]|"
+    r"three|six|nine|twelve|half|year|quarter|period)\b",
+    # Spotify 는 보도자료 제목이 'Q4 2025 Update' 다
+    r"\b(q[1-4]|[1-4]q|h[12]|fy)\s*'?(20)?\d\d\s+(update|shareholder letter|"
+    r"letter to shareholders|financial (summary|highlights)|earnings (release|report))\b")]
+_EARN_NEG = re.compile(
+    r"planned impacts to earnings|earnings considerations|key updates communicated|"
+    r"\bwill (report|announce|release|publish|host|hold)\b|"
+    r"\bto (report|announce|release) (its|their)\b|notice of|annual general meeting|"
+    r"information circular|expected increase|\bpricing of\b|"
+    r"announces? (the )?(date|timing)|conference call (and webcast )?(to|on|scheduled)", re.I)
+EARN_HEAD = 4000
+_EARN_NUM = re.compile(r"\b(revenues?|net (income|profit|loss)|operating (income|profit|loss)|"
+                       r"per share|ebitda|profit before tax|net sales)\b", re.I)
+
+
+def _is_earnings(text: str) -> bool:
+    if len(text) < 2500:
+        return False
+    head = text[:EARN_HEAD]
+    pos = [m.start() for rx in _EARN_POS for m in [rx.search(head)] if m]
+    if not pos:
+        return False
+    neg = _EARN_NEG.search(head[:600])
+    return not neg or min(pos) < neg.start()
+
+
+def _earn_score(text: str) -> int:
+    """실적 발표문다움 — 앞부분의 재무 항목 수. 한 분기 안에 실적으로 보이는
+    공시가 여럿이면 이 값이 큰 것을 남긴다(보도자료·보고서가 자사주·채권
+    공시보다 크다)."""
+    return len(_EARN_NUM.findall(text[:20000]))
+
+
+EARN_FILE = re.compile(r"earn|result|q[1-4]|[1-4]q|interim|quarter|half|press|release|"
+                       r"ex-?99|exhibit-?99|99-?1|991", re.I)
+
+
+def _alt_earnings(cik: int, acc: str) -> int:
+    """6-K 등 한 건이 실적 발표인가. 첨부가 여럿이면(표지·보도자료·보고서)
+    실적일 법한 이름부터 세 개까지 본다. 실적이 아니면 0, 맞으면 1 + 점수."""
+    base = ARCHIVE.format(cik=cik, acc=acc.replace("-", ""))
+    idx = _sec_get(base + "index.json").json()
+    files = [f for f in (idx.get("directory") or {}).get("item") or []
+             if f.get("name", "").lower().endswith((".htm", ".html"))
+             and "index" not in f["name"].lower()
+             and not re.fullmatch(r"R\d+\.htm", f["name"])]
+    files.sort(key=lambda f: (not EARN_FILE.search(f["name"]), int(f.get("size") or 0)))
+    best = 0
+    for f in files[:3]:
+        t = _clean(_sec_get(base + f["name"]).text)
+        if _is_earnings(t):
+            best = max(best, 1 + _earn_score(t))
+    return best
 
 
 EX_NAME = re.compile(r"ex-?99|exhibit-?99|press|release|earnings|results", re.I)
@@ -111,8 +197,13 @@ def _release_text(cik: int, acc: str) -> str:
     if not pool:
         return ""
     pick = max(pool, key=lambda f: int(f.get("size") or 0))
-    raw = _sec_get(base + pick["name"]).text
-    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
+    return _clean(_sec_get(base + pick["name"]).text)
+
+
+def _clean(raw: str) -> str:
+    # 인라인 XBRL 의 숨은 머리(ix:header)는 본문 앞에 태그 값을 줄줄이 늘어놓는다
+    t = re.sub(r"(?is)<ix:header>.*?</ix:header>", " ", raw)
+    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
     t = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", t)
     t = re.sub(r"<[^>]+>", " ", t)
     t = html.unescape(t).replace("\xa0", " ")
@@ -331,13 +422,13 @@ def build(tickers, path: str) -> dict:
     def scan(t):
         cik = ciks.get(t)
         if not cik:
-            return t, None, [], ""
+            return t, None, [], "", []
         try:
-            rels, fye = _releases(cik, since_y)
-            return t, cik, rels, fye
+            rels, fye, alt = _releases(cik, since_y)
+            return t, cik, rels, fye, alt
         except Exception as e:                     # noqa: BLE001
             print(f"[조정실적] {t} 목록 실패: {type(e).__name__}")
-            return t, cik, [], ""
+            return t, cik, [], "", []
 
     def is_fy_end(v, fye):
         """캐시된 보도자료의 이번 분기말이 회계연도 말(±20일)인가."""
@@ -355,10 +446,16 @@ def build(tickers, path: str) -> dict:
         return False
 
     filed: dict[str, list] = {}     # 종목별 실적 발표 8-K (차트의 E 표시용)
+    alt_todo, alt_have = [], {}      # 8-K 2.02 가 없는 회사의 6-K 등
     with ThreadPoolExecutor(max_workers=6) as ex:
-        for t, cik, rels, fye in ex.map(scan, want):
+        for t, cik, rels, fye, alt in ex.map(scan, want):
             if rels:
                 filed[t] = rels
+            if alt and sum(dt.date.fromisoformat(r["filed"]) >= since
+                           for r in rels) < ALT_MIN:
+                alt_have[t] = alt
+                alt_todo += [(t, cik, r) for r in alt
+                             if not r.get("src") and r["acc"] not in cache]
             if cik is None:
                 no_cik.append(t)
                 continue
@@ -416,7 +513,94 @@ def build(tickers, path: str) -> dict:
     save(path, cache)
     print(f"[조정실적] 새로 읽은 보도자료 {done}건 (캐시 {len(cache)}건)"
           + (f" — {skipped}건은 다음 실행으로" if skipped else ""))
+    _scan_alt(cache, alt_todo)
+    save(path, cache)
+    for t, alt in alt_have.items():
+        got = [{**r, "score": (cache.get(r["acc"]) or {}).get("score") or 1}
+               for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
+        ev = _pick_quarterly(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
+        ev = _fill_periodic(ev, [r for r in alt if r.get("src")])
+        if ev:
+            filed[t] = ev
     return _assemble(cache, want, filed)
+
+
+ALT_CLUSTER_DAYS = 50    # 분기 실적은 석 달 간격 — 이 안에 붙은 후보는 한 분기다
+
+
+def _pick_quarterly(rels: list[dict]) -> list[dict]:
+    """날짜순 후보를 ALT_CLUSTER_DAYS 단위로 묶어 묶음마다 하나만 남긴다.
+    8-K 2.02(점수 없음)가 있으면 그것, 없으면 점수가 큰 것(같으면 앞의 것)."""
+    out, grp = [], []
+    for r in rels + [None]:
+        if r is not None and grp and (dt.date.fromisoformat(r["filed"])
+                                      - dt.date.fromisoformat(grp[0]["filed"])).days <= ALT_CLUSTER_DAYS:
+            grp.append(r)
+            continue
+        if grp:
+            pick = max(grp, key=lambda x: (x.get("score") is None, x.get("score") or 0,
+                                           -dt.date.fromisoformat(x["filed"]).toordinal()))
+            out.append({k: v for k, v in pick.items() if k != "score"})
+        grp = [r] if r is not None else []
+    return out
+
+
+def _fill_periodic(ev: list[dict], per: list[dict]) -> list[dict]:
+    """실적 발표 공시를 못 찾은 분기를 분기·연간 보고서(10-Q/10-K) 제출일로
+    채운다 — OKLO·XOM 처럼 실적을 8-K 2.02 로 안 내는 미국 회사. 보도자료보다
+    며칠 늦을 수 있어 화면에서 '보고서 제출' 로 따로 적는다. 앞 45일 안에
+    발표가 이미 있는 보고서는 그 분기 것이라 넣지 않는다."""
+    if not per:
+        return ev
+    have = [dt.date.fromisoformat(r["filed"]) for r in ev]
+    add = []
+    for r in per:
+        d = dt.date.fromisoformat(r["filed"])
+        if not any(0 <= (d - h).days <= 45 for h in have):
+            add.append(r)
+    return sorted(ev + add, key=lambda r: r["filed"])
+
+
+def _dedup(rels: list[dict]) -> list[dict]:
+    """날짜순 목록에서 ALT_DEDUP_DAYS 안에 붙은 것은 앞의 것만 남긴다."""
+    out = []
+    for r in rels:
+        d = dt.date.fromisoformat(r["filed"])
+        if out and (d - dt.date.fromisoformat(out[-1]["filed"])).days <= ALT_DEDUP_DAYS:
+            continue
+        out.append(r)
+    return out
+
+
+def _scan_alt(cache: dict, todo: list) -> None:
+    """6-K 등을 읽어 실적 발표문인지만 가린다(Claude 없이). 결과는
+    {"ticker", "filed", "alt": True, "earn": bool} 로 캐시한다."""
+    if not todo:
+        return
+    todo.sort(key=lambda x: x[2]["filed"], reverse=True)
+    deadline = time.monotonic() + ALT_BUDGET
+
+    def one(item):
+        t, cik, r = item
+        if time.monotonic() > deadline:
+            return item, None
+        try:
+            earn = _alt_earnings(cik, r["acc"])
+        except Exception:                          # noqa: BLE001
+            return item, None
+        return item, {"ticker": t, "filed": r["filed"], "alt": True, "earn": earn > 0,
+                      "score": earn}
+
+    n = hit = 0
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for (t, cik, r), v in ex.map(one, todo):
+            if v is None:
+                continue
+            cache[r["acc"]] = v
+            n += 1
+            hit += v["earn"]
+    print(f"::notice::[실적일] 8-K 2.02 없는 종목의 공시 {n}/{len(todo)}건 확인 — 실적 {hit}건"
+          + (" (나머지는 다음 실행)" if n < len(todo) else ""))
 
 
 def _assemble(cache: dict, want, filed: dict | None) -> dict:
@@ -430,8 +614,9 @@ def _assemble(cache: dict, want, filed: dict | None) -> dict:
     if filed is None:
         filed = {}
         for acc, v in cache.items():
-            if v.get("ticker") in set(want):
+            if v.get("ticker") in set(want) and (not v.get("alt") or v.get("earn")):
                 filed.setdefault(v["ticker"], []).append({"acc": acc, "filed": v["filed"]})
+        filed = {t: _dedup(sorted(rs, key=lambda r: r["filed"])) for t, rs in filed.items()}
     out = {}
     for t in set(qs) | set(filed):
         ev = []
@@ -440,7 +625,7 @@ def _assemble(cache: dict, want, filed: dict | None) -> dict:
             rows = v.get("rows") or []
             cur = rows[0] if rows else {}
             prior = rows[1] if len(rows) > 1 else {}
-            ev.append({"d": r["filed"], "q": cur.get("end"),
+            ev.append({"d": r["filed"], "q": cur.get("end"), "src": r.get("src"),
                        "eps": cur.get("eps_adj"), "eps_py": prior.get("eps_adj"),
                        "rev": cur.get("revenue"), "rev_py": prior.get("revenue")})
         out[t] = {"q": qs.get(t, []), "y": ys.get(t, []), "e": ev}

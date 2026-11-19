@@ -56,4 +56,60 @@ text = "Q3 results headline. " * 200 + ("filler " * 3000) + \
        "Reconciliation: Adjusted operating income $209.3 million non-GAAP " + ("x " * 3000)
 s = N._snippet(text)
 check("Adjusted operating income" in s and len(s) <= N.SNIP_MAX + 50, "발췌")
+
+# 4) 6-K 등 실적 발표문 판별과 같은 실적 묶기
+pr = ("Spotify Technology S.A. Announces Financial Results for Third Quarter 2026\n"
+      "Total revenue grew 12% Y/Y. Operating income of EUR 700 million. " + "filler " * 600 +
+      "Revenue " * 3 + "Net income per share diluted " + "Gross profit " * 50)
+check(N._is_earnings(pr), "실적 보도자료")
+pre = ("SAP will announce its third quarter 2026 results on October 21. A conference call will "
+       "be held. " + "Contact investor relations. " * 150)
+check(not N._is_earnings(pre), "실적 예고 공시는 아니다")
+buy = "Transaction in own shares. " + "Prudential plc purchased ordinary shares. " * 120
+check(not N._is_earnings(buy), "자사주 공시는 아니다")
+check(not N._is_earnings("Exhibit 99.1 Key updates communicated during Q3 2026. Revenues: results " + "x " * 2000),
+      "사전 안내(DB)는 아니다")
+check(not N._is_earnings("EXHIBIT 99.1 3Q 2026 Market and Planned Impacts to Earnings. 3Q results " + "x " * 2000),
+      "사전 안내(XOM)는 아니다")
+check(N._is_earnings("Exhibit 99.1 Earnings Report as of September 30, 2026 Deutsche Bank " + "x " * 2000),
+      "DB 실적 보고서")
+check(N._is_earnings("Media Release Deutsche Bank hits 2025 financial targets with record full-year and "
+                     "fourth-quarter profits " + "x " * 2000), "DB 연간 실적")
+check(N._is_earnings("PRESS RELEASE Denison Reports Financial and Operational Results for Q2 2026 " + "x " * 2000),
+      "DNN 실적")
+check(N._is_earnings("EXHIBIT 99.1 Exhibit 99.1 Q4 2025 Update February 10th, 2026 Table of Contents " + "x " * 2000),
+      "SPOT 4분기 Update")
+check(not N._is_earnings("Cameco Reports Expected Increase in Its Share of Westinghouse 2025 Adjusted EBITDA "
+                         + "x " * 2000), "실적 아닌 Reports")
+check("iso4217" not in N._clean("<html><ix:header>iso4217:USD 0001434265</ix:header><p>Interim report</p></html>"),
+      "인라인 XBRL 머리 제거")
+ev = [{"acc": "a", "filed": "2026-07-31"}]
+per = [{"acc": "q", "filed": "2026-08-04", "src": "10-Q"}, {"acc": "k", "filed": "2026-05-08", "src": "10-Q"}]
+got = N._fill_periodic(ev, per)
+check([(r["filed"], r.get("src")) for r in got] == [("2026-05-08", "10-Q"), ("2026-07-31", None)],
+      "발표 못 찾은 분기만 보고서 제출일로")
+rs = [{"acc": "a", "filed": "2026-10-22"}, {"acc": "b", "filed": "2026-10-22"},
+      {"acc": "c", "filed": "2026-07-28"}, {"acc": "d", "filed": "2026-10-26"}]
+got = N._dedup(sorted(rs, key=lambda r: r["filed"]))
+check([r["filed"] for r in got] == ["2026-07-28", "2026-10-22"], "같은 실적 공시 묶기")
+cache = {"a": {"ticker": "SPOT", "filed": "2026-10-22", "alt": True, "earn": True},
+         "b": {"ticker": "SPOT", "filed": "2026-09-03", "alt": True, "earn": False}}
+e = N._assemble(cache, ["SPOT"], None)["SPOT"]["e"]
+check([x["d"] for x in e] == ["2026-10-22"], "캐시만으로도 실적 아닌 공시는 뺀다")
+pk = N._pick_quarterly([{"acc": "x", "filed": "2026-04-08", "score": 3},
+                         {"acc": "y", "filed": "2026-04-29", "score": 32},
+                         {"acc": "z", "filed": "2026-07-29", "score": 12}])
+check([r["acc"] for r in pk] == ["y", "z"] and "score" not in pk[0], "분기마다 점수 큰 것 하나")
+class _R:
+    def __init__(self, t=None, j=None): self.text, self._j = t, j
+    def json(self): return self._j
+def _fake(url):
+    if url.endswith("index.json"):
+        return _R(j={"directory": {"item": [{"name": "ex99-1.htm", "size": "9000"}]}})
+    return _R(t="<p>Spotify Announces Financial Results for Third Quarter 2026</p>" + "<p>revenue</p>" * 400)
+_orig, N._sec_get = N._sec_get, _fake
+c = {}
+N._scan_alt(c, [("SPOT", 1, {"acc": "0001-26-1", "filed": "2026-10-22"})])
+N._sec_get = _orig
+check(c["0001-26-1"]["earn"] and c["0001-26-1"]["score"] > 1, "6-K 한 건 판별 경로")
 print(f"{ok}/{ok} 통과")
