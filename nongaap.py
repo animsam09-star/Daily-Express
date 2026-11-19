@@ -142,17 +142,24 @@ def _is_earnings(text: str) -> bool:
     pos = [m.start() for rx in _EARN_POS for m in [rx.search(head)] if m]
     if not pos:
         return False
-    neg = _EARN_NEG.search(head)
+    neg = _EARN_NEG.search(head[:600])
     return not neg or min(pos) < neg.start()
+
+
+def _earn_score(text: str) -> int:
+    """실적 발표문다움 — 앞부분의 재무 항목 수. 한 분기 안에 실적으로 보이는
+    공시가 여럿이면 이 값이 큰 것을 남긴다(보도자료·보고서가 자사주·채권
+    공시보다 크다)."""
+    return len(_EARN_NUM.findall(text[:20000]))
 
 
 EARN_FILE = re.compile(r"earn|result|q[1-4]|[1-4]q|interim|quarter|half|press|release|"
                        r"ex-?99|exhibit-?99|99-?1|991", re.I)
 
 
-def _alt_earnings(cik: int, acc: str) -> bool:
+def _alt_earnings(cik: int, acc: str) -> int:
     """6-K 등 한 건이 실적 발표인가. 첨부가 여럿이면(표지·보도자료·보고서)
-    실적일 법한 이름부터 세 개까지 본다."""
+    실적일 법한 이름부터 세 개까지 본다. 실적이 아니면 0, 맞으면 1 + 점수."""
     base = ARCHIVE.format(cik=cik, acc=acc.replace("-", ""))
     idx = _sec_get(base + "index.json").json()
     files = [f for f in (idx.get("directory") or {}).get("item") or []
@@ -160,10 +167,12 @@ def _alt_earnings(cik: int, acc: str) -> bool:
              and "index" not in f["name"].lower()
              and not re.fullmatch(r"R\d+\.htm", f["name"])]
     files.sort(key=lambda f: (not EARN_FILE.search(f["name"]), int(f.get("size") or 0)))
+    best = 0
     for f in files[:3]:
-        if _is_earnings(_clean(_sec_get(base + f["name"]).text)):
-            return True
-    return False
+        t = _clean(_sec_get(base + f["name"]).text)
+        if _is_earnings(t):
+            best = max(best, 1 + _earn_score(t))
+    return best
 
 
 EX_NAME = re.compile(r"ex-?99|exhibit-?99|press|release|earnings|results", re.I)
@@ -502,12 +511,33 @@ def build(tickers, path: str) -> dict:
     _scan_alt(cache, alt_todo)
     save(path, cache)
     for t, alt in alt_have.items():
-        got = [r for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
-        ev = _dedup(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
+        got = [{**r, "score": (cache.get(r["acc"]) or {}).get("score") or 1}
+               for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
+        ev = _pick_quarterly(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
         ev = _fill_periodic(ev, [r for r in alt if r.get("src")])
         if ev:
             filed[t] = ev
     return _assemble(cache, want, filed)
+
+
+ALT_CLUSTER_DAYS = 50    # 분기 실적은 석 달 간격 — 이 안에 붙은 후보는 한 분기다
+
+
+def _pick_quarterly(rels: list[dict]) -> list[dict]:
+    """날짜순 후보를 ALT_CLUSTER_DAYS 단위로 묶어 묶음마다 하나만 남긴다.
+    8-K 2.02(점수 없음)가 있으면 그것, 없으면 점수가 큰 것(같으면 앞의 것)."""
+    out, grp = [], []
+    for r in rels + [None]:
+        if r is not None and grp and (dt.date.fromisoformat(r["filed"])
+                                      - dt.date.fromisoformat(grp[0]["filed"])).days <= ALT_CLUSTER_DAYS:
+            grp.append(r)
+            continue
+        if grp:
+            pick = max(grp, key=lambda x: (x.get("score") is None, x.get("score") or 0,
+                                           -dt.date.fromisoformat(x["filed"]).toordinal()))
+            out.append({k: v for k, v in pick.items() if k != "score"})
+        grp = [r] if r is not None else []
+    return out
 
 
 def _fill_periodic(ev: list[dict], per: list[dict]) -> list[dict]:
@@ -553,7 +583,8 @@ def _scan_alt(cache: dict, todo: list) -> None:
             earn = _alt_earnings(cik, r["acc"])
         except Exception:                          # noqa: BLE001
             return item, None
-        return item, {"ticker": t, "filed": r["filed"], "alt": True, "earn": earn}
+        return item, {"ticker": t, "filed": r["filed"], "alt": True, "earn": earn > 0,
+                      "score": earn}
 
     n = hit = 0
     with ThreadPoolExecutor(max_workers=4) as ex:

@@ -94,4 +94,8 @@ cache = {"a": {"ticker": "SPOT", "filed": "2026-10-22", "alt": True, "earn": Tru
          "b": {"ticker": "SPOT", "filed": "2026-09-03", "alt": True, "earn": False}}
 e = N._assemble(cache, ["SPOT"], None)["SPOT"]["e"]
 check([x["d"] for x in e] == ["2026-10-22"], "캐시만으로도 실적 아닌 공시는 뺀다")
+pk = N._pick_quarterly([{"acc": "x", "filed": "2026-04-08", "score": 3},
+                         {"acc": "y", "filed": "2026-04-29", "score": 32},
+                         {"acc": "z", "filed": "2026-07-29", "score": 12}])
+check([r["acc"] for r in pk] == ["y", "z"] and "score" not in pk[0], "분기마다 점수 큰 것 하나")
 print(f"{ok}/{ok} 통과")

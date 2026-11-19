@@ -20,8 +20,9 @@ def main():
         todo += [(t, ciks[t], r) for r in alt if not r.get("src")]
     N._scan_alt(cache, todo)
     for t, (rels, alt) in alts.items():
-        hits = [r for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
-        merged = N._dedup(sorted(rels + hits, key=lambda r: r["filed"]))
+        hits = [{**r, "score": cache[r["acc"]].get("score") or 1} for r in alt
+                if (cache.get(r["acc"]) or {}).get("earn")]
+        merged = N._pick_quarterly(sorted(rels + hits, key=lambda r: r["filed"]))
         merged = N._fill_periodic(merged, [r for r in alt if r.get("src")])
         print(f"{t:5s} 공시 {len(alt)}건 중 실적 {len(hits)}건 → E {len(merged)}개: "
               + " ".join(r["filed"] + ("*" if r.get("src") else "") for r in merged[-10:]))
