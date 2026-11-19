@@ -67,6 +67,25 @@ pre = ("SAP will announce its third quarter 2026 results on October 21. A confer
 check(not N._is_earnings(pre), "실적 예고 공시는 아니다")
 buy = "Transaction in own shares. " + "Prudential plc purchased ordinary shares. " * 120
 check(not N._is_earnings(buy), "자사주 공시는 아니다")
+check(not N._is_earnings("Exhibit 99.1 Key updates communicated during Q3 2026. Revenues: results " + "x " * 2000),
+      "사전 안내(DB)는 아니다")
+check(not N._is_earnings("EXHIBIT 99.1 3Q 2026 Market and Planned Impacts to Earnings. 3Q results " + "x " * 2000),
+      "사전 안내(XOM)는 아니다")
+check(N._is_earnings("Exhibit 99.1 Earnings Report as of September 30, 2026 Deutsche Bank " + "x " * 2000),
+      "DB 실적 보고서")
+check(N._is_earnings("Media Release Deutsche Bank hits 2025 financial targets with record full-year and "
+                     "fourth-quarter profits " + "x " * 2000), "DB 연간 실적")
+check(N._is_earnings("PRESS RELEASE Denison Reports Financial and Operational Results for Q2 2026 " + "x " * 2000),
+      "DNN 실적")
+check(not N._is_earnings("Cameco Reports Expected Increase in Its Share of Westinghouse 2025 Adjusted EBITDA "
+                         + "x " * 2000), "실적 아닌 Reports")
+check("iso4217" not in N._clean("<html><ix:header>iso4217:USD 0001434265</ix:header><p>Interim report</p></html>"),
+      "인라인 XBRL 머리 제거")
+ev = [{"acc": "a", "filed": "2026-07-31"}]
+per = [{"acc": "q", "filed": "2026-08-04", "src": "10-Q"}, {"acc": "k", "filed": "2026-05-08", "src": "10-Q"}]
+got = N._fill_periodic(ev, per)
+check([(r["filed"], r.get("src")) for r in got] == [("2026-05-08", "10-Q"), ("2026-07-31", None)],
+      "발표 못 찾은 분기만 보고서 제출일로")
 rs = [{"acc": "a", "filed": "2026-10-22"}, {"acc": "b", "filed": "2026-10-22"},
       {"acc": "c", "filed": "2026-07-28"}, {"acc": "d", "filed": "2026-10-26"}]
 got = N._dedup(sorted(rs, key=lambda r: r["filed"]))

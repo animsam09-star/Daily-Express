@@ -1153,7 +1153,7 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=
       ds.push(evt('거래량 급증', spike, tipV, {pointStyle:'rectRot', pointRadius:4.5,
         pointHoverRadius:6, backgroundColor:'#f39c12', borderColor:'#fff', borderWidth:1}));
   }
-  // 실적 발표일 E — SEC 실적 8-K 접수일. 주·월봉에서는 그 날이 든 봉에 찍는다.
+  // 실적 발표일 E — SEC 실적 8-K 접수일(외국 회사는 실적 6-K). 주·월봉에서는 그 날이 든 봉에 찍는다.
   if(earn && earn.length){
     const e=Array(n).fill(null), tipE=[];
     const lastD=labels[n-1];
@@ -1162,7 +1162,9 @@ function candleChart(canvas, ohlc, {unit='', span=null, tf='d', earn=[], ticker=
       const i=labels.findIndex((l,k)=>k<n && l>=ev.d);
       if(i<0) continue;
       e[i]=ohlc[i][3]*0.965;
-      const lines=[`실적 발표 ${ev.d}${ev.q?` (분기말 ${ev.q})`:''}`];
+      // src 가 있으면 실적 공시를 못 찾아 분기 보고서(10-Q·10-K) 제출일로 찍은 것
+      const lines=[ev.src ? `분기 보고서 제출 ${ev.d} (${ev.src}) — 실적 발표는 며칠 앞설 수 있다`
+                          : `실적 발표 ${ev.d}${ev.q?` (분기말 ${ev.q})`:''}`];
       if(ev.eps!=null){
         const g=ev.eps_py>0 ? ` · 전년 ${fmt(ev.eps_py,2)}, ${sgn((ev.eps/ev.eps_py-1)*100)}%` : '';
         lines.push(`조정 EPS ${fmt(ev.eps,2)}${g}`);

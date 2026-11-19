@@ -95,7 +95,7 @@ def _releases(cik: int, since: dt.date) -> tuple[list[dict], str, list[dict]]:
     sub = _sec_get(SUBMISSIONS.format(cik=cik)).json()
     fye = str(sub.get("fiscalYearEnd") or "")
     r = (sub.get("filings") or {}).get("recent") or {}
-    out, alt = [], []
+    out, alt, per = [], [], []
     alt_since = dt.date.today() - dt.timedelta(days=ALT_LOOKBACK_DAYS)
     for form, acc, date, items in zip(r.get("form", []), r.get("accessionNumber", []),
                                       r.get("filingDate", []), r.get("items", [])):
@@ -108,38 +108,62 @@ def _releases(cik: int, since: dt.date) -> tuple[list[dict], str, list[dict]]:
         elif d >= alt_since and (form == "6-K" or (
                 form == "8-K" and re.search(r"7\.01|8\.01", items or ""))):
             alt.append({"acc": acc, "filed": date})
-    return out, fye, alt
+        elif d >= alt_since and form in ("10-Q", "10-K"):
+            per.append({"acc": acc, "filed": date, "src": form})
+    return out, fye, alt + per
 
 
-# 실적 발표문인지 — 머리말에 '분기·반기·연간' 과 '실적·결과' 가 붙어 나오고,
-# 본문에 숫자 항목(매출·이익·주당)이 있어야 한다. '몇 일에 실적을 발표한다'는
-# 예고 공시는 짧고 숫자 항목이 없어 걸러진다.
-_EARN_PERIOD = re.compile(
-    r"\b(first|second|third|fourth|1st|2nd|3rd|4th|q[1-4]|quarter(ly)?|half[- ]year(ly)?|"
-    r"first half|interim|full[- ]year|fiscal (year )?20\d\d|six months|nine months|"
-    r"three months|h[12] 20\d\d|annual)\b", re.I)
-_EARN_WORD = re.compile(r"\b(results|earnings|financial statements|interim report)\b", re.I)
-_EARN_NUM = re.compile(r"\b(revenues?|net (income|profit|loss)|operating (income|profit|loss)|"
-                       r"per share|ebitda|profit before tax|net sales)\b", re.I)
-_EARN_PRE = re.compile(r"\b(will (report|announce|release|publish|host)|to (report|announce|"
-                       r"release) (its|their)|conference call (to|will)|"
-                       r"(date|timing) of (its|the) )", re.I)
+# 실적 발표문인지 — 머리말(제목·표지의 첨부 목록)에 '실적을 냈다' 는 문구가
+# 있는가. 예고("3분기 실적을 ○일 발표한다")·사전 안내(XOM 'Earnings
+# Considerations', DB 'Key updates')·주총 안내가 그보다 먼저 나오면 아니다.
+_EARN_POS = [re.compile(x, re.I) for x in (
+    r"\b(reports?|reported|announces?|delivers?|posts?|publishes)\b[^.\n]{0,90}?"
+    r"\b(results|earnings|profits?)\b",
+    r"\b(q[1-4]|[1-4]q|first|second|third|fourth|half[- ]year|first[- ]half|full[- ]year|"
+    r"interim|quarterly|annual)\b[^.\n]{0,25}?\b(results|earnings|profits?)\b",
+    r"\bearnings report as of\b|\binterim report\b|"
+    r"\binterim (condensed )?(consolidated )?financial statements\b|"
+    r"management.s discussion and analysis for the (quarter|three|six|nine|year)",
+    r"\b(results|earnings)\s+for\s+the\s+(first|second|third|fourth|full|fiscal|[1-4]q|q[1-4]|"
+    r"three|six|nine|twelve|half|year|quarter|period)\b")]
+_EARN_NEG = re.compile(
+    r"planned impacts to earnings|earnings considerations|key updates communicated|"
+    r"\bwill (report|announce|release|publish|host|hold)\b|"
+    r"\bto (report|announce|release) (its|their)\b|notice of|annual general meeting|"
+    r"information circular|expected increase|\bpricing of\b|"
+    r"announces? (the )?(date|timing)|conference call (and webcast )?(to|on|scheduled)", re.I)
+EARN_HEAD = 4000
 
 
 def _is_earnings(text: str) -> bool:
-    if len(text) < 3000:
+    if len(text) < 2500:
         return False
-    head = text[:2500]
-    hit = False
-    for m in _EARN_WORD.finditer(head):
-        if _EARN_PERIOD.search(head[max(0, m.start() - 120): m.end() + 120]):
-            hit = True
-            break
-    if not hit:
+    head = text[:EARN_HEAD]
+    pos = [m.start() for rx in _EARN_POS for m in [rx.search(head)] if m]
+    if not pos:
         return False
-    if _EARN_PRE.search(head[:800]) and len(_EARN_NUM.findall(text[:20000])) < 6:
-        return False
-    return len(_EARN_NUM.findall(text[:20000])) >= 4
+    neg = _EARN_NEG.search(head)
+    return not neg or min(pos) < neg.start()
+
+
+EARN_FILE = re.compile(r"earn|result|q[1-4]|[1-4]q|interim|quarter|half|press|release|"
+                       r"ex-?99|exhibit-?99|99-?1|991", re.I)
+
+
+def _alt_earnings(cik: int, acc: str) -> bool:
+    """6-K 등 한 건이 실적 발표인가. 첨부가 여럿이면(표지·보도자료·보고서)
+    실적일 법한 이름부터 세 개까지 본다."""
+    base = ARCHIVE.format(cik=cik, acc=acc.replace("-", ""))
+    idx = _sec_get(base + "index.json").json()
+    files = [f for f in (idx.get("directory") or {}).get("item") or []
+             if f.get("name", "").lower().endswith((".htm", ".html"))
+             and "index" not in f["name"].lower()
+             and not re.fullmatch(r"R\d+\.htm", f["name"])]
+    files.sort(key=lambda f: (not EARN_FILE.search(f["name"]), int(f.get("size") or 0)))
+    for f in files[:3]:
+        if _is_earnings(_clean(_sec_get(base + f["name"]).text)):
+            return True
+    return False
 
 
 EX_NAME = re.compile(r"ex-?99|exhibit-?99|press|release|earnings|results", re.I)
@@ -159,8 +183,13 @@ def _release_text(cik: int, acc: str) -> str:
     if not pool:
         return ""
     pick = max(pool, key=lambda f: int(f.get("size") or 0))
-    raw = _sec_get(base + pick["name"]).text
-    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", raw)
+    return _clean(_sec_get(base + pick["name"]).text)
+
+
+def _clean(raw: str) -> str:
+    # 인라인 XBRL 의 숨은 머리(ix:header)는 본문 앞에 태그 값을 줄줄이 늘어놓는다
+    t = re.sub(r"(?is)<ix:header>.*?</ix:header>", " ", raw)
+    t = re.sub(r"(?is)<(script|style).*?</\1>", " ", t)
     t = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", t)
     t = re.sub(r"<[^>]+>", " ", t)
     t = html.unescape(t).replace("\xa0", " ")
@@ -411,7 +440,8 @@ def build(tickers, path: str) -> dict:
             if alt and sum(dt.date.fromisoformat(r["filed"]) >= since
                            for r in rels) < ALT_MIN:
                 alt_have[t] = alt
-                alt_todo += [(t, cik, r) for r in alt if r["acc"] not in cache]
+                alt_todo += [(t, cik, r) for r in alt
+                             if not r.get("src") and r["acc"] not in cache]
             if cik is None:
                 no_cik.append(t)
                 continue
@@ -473,9 +503,27 @@ def build(tickers, path: str) -> dict:
     save(path, cache)
     for t, alt in alt_have.items():
         got = [r for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
-        if got:
-            filed[t] = _dedup(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
+        ev = _dedup(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
+        ev = _fill_periodic(ev, [r for r in alt if r.get("src")])
+        if ev:
+            filed[t] = ev
     return _assemble(cache, want, filed)
+
+
+def _fill_periodic(ev: list[dict], per: list[dict]) -> list[dict]:
+    """실적 발표 공시를 못 찾은 분기를 분기·연간 보고서(10-Q/10-K) 제출일로
+    채운다 — OKLO·XOM 처럼 실적을 8-K 2.02 로 안 내는 미국 회사. 보도자료보다
+    며칠 늦을 수 있어 화면에서 '보고서 제출' 로 따로 적는다. 앞 45일 안에
+    발표가 이미 있는 보고서는 그 분기 것이라 넣지 않는다."""
+    if not per:
+        return ev
+    have = [dt.date.fromisoformat(r["filed"]) for r in ev]
+    add = []
+    for r in per:
+        d = dt.date.fromisoformat(r["filed"])
+        if not any(0 <= (d - h).days <= 45 for h in have):
+            add.append(r)
+    return sorted(ev + add, key=lambda r: r["filed"])
 
 
 def _dedup(rels: list[dict]) -> list[dict]:
@@ -502,11 +550,10 @@ def _scan_alt(cache: dict, todo: list) -> None:
         if time.monotonic() > deadline:
             return item, None
         try:
-            text = _release_text(cik, r["acc"])
+            earn = _alt_earnings(cik, r["acc"])
         except Exception:                          # noqa: BLE001
             return item, None
-        return item, {"ticker": t, "filed": r["filed"], "alt": True,
-                      "earn": _is_earnings(text)}
+        return item, {"ticker": t, "filed": r["filed"], "alt": True, "earn": earn}
 
     n = hit = 0
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -542,7 +589,7 @@ def _assemble(cache: dict, want, filed: dict | None) -> dict:
             rows = v.get("rows") or []
             cur = rows[0] if rows else {}
             prior = rows[1] if len(rows) > 1 else {}
-            ev.append({"d": r["filed"], "q": cur.get("end"),
+            ev.append({"d": r["filed"], "q": cur.get("end"), "src": r.get("src"),
                        "eps": cur.get("eps_adj"), "eps_py": prior.get("eps_adj"),
                        "rev": cur.get("revenue"), "rev_py": prior.get("revenue")})
         out[t] = {"q": qs.get(t, []), "y": ys.get(t, []), "e": ev}
