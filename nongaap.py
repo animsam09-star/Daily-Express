@@ -15,7 +15,8 @@ SEC 에 올라온 실적 발표 8-K(Item 2.02)의 보도자료(EX-99.1)를 받�
 새 분기 보도자료만 새로 읽는다.
 
 조정치를 내지 않는 회사(애플처럼 GAAP 만 쓰는 곳, 은행)와 8-K 대신 6-K 를
-내는 외국 회사는 GAAP 그대로 둔다 — 화면에서 GAAP 로 표시한다.
+내는 외국 회사는 GAAP 그대로 둔다 — 화면에서 GAAP 로 표시한다. 다만 6-K 도
+본문을 훑어 실적 발표일만은 찾는다(차트 E 표시).
 """
 from __future__ import annotations
 
@@ -52,6 +53,13 @@ LOOKBACK_DAYS = 420      # 분기용 — 그보다 오래된 보도자료는 보
 # 있으므로 최근 4분기 보도자료와 2년 전 것을 읽으면 4개 연도가 찬다.
 ANNUAL_LOOKBACK_DAYS = 1150
 ANNUAL_RELEASES = 2      # 최근 4분기 보도자료 다음으로 몇 해 전 것까지 더 읽나
+# 8-K 2.02 가 없는 회사의 E 표시: 차트가 2년이므로 그만큼 6-K 등을 훑는다.
+# 6-K 를 많이 내는 회사(PUK 는 자사주 공시로 1년에 수백 건)가 있어 실행마다
+# 시간 상한을 두고 새것부터 읽는다 — 결과는 접수번호로 캐시해 다시 안 읽는다.
+ALT_LOOKBACK_DAYS = 760
+ALT_MIN = 3              # 최근 LOOKBACK_DAYS 동안 8-K 2.02 가 이보다 적으면 다른 공시를 본다
+ALT_BUDGET = int(os.environ.get("ALT_BUDGET") or 150)
+ALT_DEDUP_DAYS = 7       # 같은 실적을 여러 공시로 낸 경우(보도자료 + 분기 보고서) 하나로
 SNIP_MAX = 16000         # Claude 에게 넘기는 발췌 상한
 MATCH_DAYS = 20          # 회사 분기말(10/4)과 야후 분기말(9/30)을 같은 분기로 볼 거리
 
@@ -78,20 +86,60 @@ def _ciks() -> dict:
             for v in data.values()}
 
 
-def _releases(cik: int, since: dt.date) -> tuple[list[dict], str]:
-    """최근 실적 발표 8-K(Item 2.02) 목록(새것부터)과 회계연도 말(MMDD)."""
+def _releases(cik: int, since: dt.date) -> tuple[list[dict], str, list[dict]]:
+    """최근 실적 발표 8-K(Item 2.02) 목록(새것부터), 회계연도 말(MMDD),
+    그리고 실적 발표일 수 있는 다른 공시(6-K, Item 2.02 없는 8-K) 목록.
+
+    뒤의 것은 8-K 2.02 를 안 내는 회사(Spotify·SAP 같은 외국 회사는 6-K,
+    OKLO 는 7.01/8.01)의 차트 E 표시용이다 — 본문을 읽어 실적인지 가린다."""
     sub = _sec_get(SUBMISSIONS.format(cik=cik)).json()
     fye = str(sub.get("fiscalYearEnd") or "")
     r = (sub.get("filings") or {}).get("recent") or {}
-    out = []
+    out, alt = [], []
+    alt_since = dt.date.today() - dt.timedelta(days=ALT_LOOKBACK_DAYS)
     for form, acc, date, items in zip(r.get("form", []), r.get("accessionNumber", []),
                                       r.get("filingDate", []), r.get("items", [])):
-        if form not in ("8-K", "8-K/A") or "2.02" not in (items or ""):
-            continue
-        if dt.date.fromisoformat(date) < since:
+        d = dt.date.fromisoformat(date)
+        if d < since and d < alt_since:
             break
-        out.append({"acc": acc, "filed": date})
-    return out, fye
+        if form in ("8-K", "8-K/A") and "2.02" in (items or ""):
+            if d >= since:
+                out.append({"acc": acc, "filed": date})
+        elif d >= alt_since and (form == "6-K" or (
+                form == "8-K" and re.search(r"7\.01|8\.01", items or ""))):
+            alt.append({"acc": acc, "filed": date})
+    return out, fye, alt
+
+
+# 실적 발표문인지 — 머리말에 '분기·반기·연간' 과 '실적·결과' 가 붙어 나오고,
+# 본문에 숫자 항목(매출·이익·주당)이 있어야 한다. '몇 일에 실적을 발표한다'는
+# 예고 공시는 짧고 숫자 항목이 없어 걸러진다.
+_EARN_PERIOD = re.compile(
+    r"\b(first|second|third|fourth|1st|2nd|3rd|4th|q[1-4]|quarter(ly)?|half[- ]year(ly)?|"
+    r"first half|interim|full[- ]year|fiscal (year )?20\d\d|six months|nine months|"
+    r"three months|h[12] 20\d\d|annual)\b", re.I)
+_EARN_WORD = re.compile(r"\b(results|earnings|financial statements|interim report)\b", re.I)
+_EARN_NUM = re.compile(r"\b(revenues?|net (income|profit|loss)|operating (income|profit|loss)|"
+                       r"per share|ebitda|profit before tax|net sales)\b", re.I)
+_EARN_PRE = re.compile(r"\b(will (report|announce|release|publish|host)|to (report|announce|"
+                       r"release) (its|their)|conference call (to|will)|"
+                       r"(date|timing) of (its|the) )", re.I)
+
+
+def _is_earnings(text: str) -> bool:
+    if len(text) < 3000:
+        return False
+    head = text[:2500]
+    hit = False
+    for m in _EARN_WORD.finditer(head):
+        if _EARN_PERIOD.search(head[max(0, m.start() - 120): m.end() + 120]):
+            hit = True
+            break
+    if not hit:
+        return False
+    if _EARN_PRE.search(head[:800]) and len(_EARN_NUM.findall(text[:20000])) < 6:
+        return False
+    return len(_EARN_NUM.findall(text[:20000])) >= 4
 
 
 EX_NAME = re.compile(r"ex-?99|exhibit-?99|press|release|earnings|results", re.I)
@@ -331,13 +379,13 @@ def build(tickers, path: str) -> dict:
     def scan(t):
         cik = ciks.get(t)
         if not cik:
-            return t, None, [], ""
+            return t, None, [], "", []
         try:
-            rels, fye = _releases(cik, since_y)
-            return t, cik, rels, fye
+            rels, fye, alt = _releases(cik, since_y)
+            return t, cik, rels, fye, alt
         except Exception as e:                     # noqa: BLE001
             print(f"[조정실적] {t} 목록 실패: {type(e).__name__}")
-            return t, cik, [], ""
+            return t, cik, [], "", []
 
     def is_fy_end(v, fye):
         """캐시된 보도자료의 이번 분기말이 회계연도 말(±20일)인가."""
@@ -355,10 +403,15 @@ def build(tickers, path: str) -> dict:
         return False
 
     filed: dict[str, list] = {}     # 종목별 실적 발표 8-K (차트의 E 표시용)
+    alt_todo, alt_have = [], {}      # 8-K 2.02 가 없는 회사의 6-K 등
     with ThreadPoolExecutor(max_workers=6) as ex:
-        for t, cik, rels, fye in ex.map(scan, want):
+        for t, cik, rels, fye, alt in ex.map(scan, want):
             if rels:
                 filed[t] = rels
+            if alt and sum(dt.date.fromisoformat(r["filed"]) >= since
+                           for r in rels) < ALT_MIN:
+                alt_have[t] = alt
+                alt_todo += [(t, cik, r) for r in alt if r["acc"] not in cache]
             if cik is None:
                 no_cik.append(t)
                 continue
@@ -416,7 +469,55 @@ def build(tickers, path: str) -> dict:
     save(path, cache)
     print(f"[조정실적] 새로 읽은 보도자료 {done}건 (캐시 {len(cache)}건)"
           + (f" — {skipped}건은 다음 실행으로" if skipped else ""))
+    _scan_alt(cache, alt_todo)
+    save(path, cache)
+    for t, alt in alt_have.items():
+        got = [r for r in alt if (cache.get(r["acc"]) or {}).get("earn")]
+        if got:
+            filed[t] = _dedup(sorted((filed.get(t) or []) + got, key=lambda r: r["filed"]))
     return _assemble(cache, want, filed)
+
+
+def _dedup(rels: list[dict]) -> list[dict]:
+    """날짜순 목록에서 ALT_DEDUP_DAYS 안에 붙은 것은 앞의 것만 남긴다."""
+    out = []
+    for r in rels:
+        d = dt.date.fromisoformat(r["filed"])
+        if out and (d - dt.date.fromisoformat(out[-1]["filed"])).days <= ALT_DEDUP_DAYS:
+            continue
+        out.append(r)
+    return out
+
+
+def _scan_alt(cache: dict, todo: list) -> None:
+    """6-K 등을 읽어 실적 발표문인지만 가린다(Claude 없이). 결과는
+    {"ticker", "filed", "alt": True, "earn": bool} 로 캐시한다."""
+    if not todo:
+        return
+    todo.sort(key=lambda x: x[2]["filed"], reverse=True)
+    deadline = time.monotonic() + ALT_BUDGET
+
+    def one(item):
+        t, cik, r = item
+        if time.monotonic() > deadline:
+            return item, None
+        try:
+            text = _release_text(cik, r["acc"])
+        except Exception:                          # noqa: BLE001
+            return item, None
+        return item, {"ticker": t, "filed": r["filed"], "alt": True,
+                      "earn": _is_earnings(text)}
+
+    n = hit = 0
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for (t, cik, r), v in ex.map(one, todo):
+            if v is None:
+                continue
+            cache[r["acc"]] = v
+            n += 1
+            hit += v["earn"]
+    print(f"::notice::[실적일] 8-K 2.02 없는 종목의 공시 {n}/{len(todo)}건 확인 — 실적 {hit}건"
+          + (" (나머지는 다음 실행)" if n < len(todo) else ""))
 
 
 def _assemble(cache: dict, want, filed: dict | None) -> dict:
@@ -430,8 +531,9 @@ def _assemble(cache: dict, want, filed: dict | None) -> dict:
     if filed is None:
         filed = {}
         for acc, v in cache.items():
-            if v.get("ticker") in set(want):
+            if v.get("ticker") in set(want) and (not v.get("alt") or v.get("earn")):
                 filed.setdefault(v["ticker"], []).append({"acc": acc, "filed": v["filed"]})
+        filed = {t: _dedup(sorted(rs, key=lambda r: r["filed"])) for t, rs in filed.items()}
     out = {}
     for t in set(qs) | set(filed):
         ev = []

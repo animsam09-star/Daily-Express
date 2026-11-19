@@ -56,4 +56,23 @@ text = "Q3 results headline. " * 200 + ("filler " * 3000) + \
        "Reconciliation: Adjusted operating income $209.3 million non-GAAP " + ("x " * 3000)
 s = N._snippet(text)
 check("Adjusted operating income" in s and len(s) <= N.SNIP_MAX + 50, "발췌")
+
+# 4) 6-K 등 실적 발표문 판별과 같은 실적 묶기
+pr = ("Spotify Technology S.A. Announces Financial Results for Third Quarter 2026\n"
+      "Total revenue grew 12% Y/Y. Operating income of EUR 700 million. " + "filler " * 600 +
+      "Revenue " * 3 + "Net income per share diluted " + "Gross profit " * 50)
+check(N._is_earnings(pr), "실적 보도자료")
+pre = ("SAP will announce its third quarter 2026 results on October 21. A conference call will "
+       "be held. " + "Contact investor relations. " * 150)
+check(not N._is_earnings(pre), "실적 예고 공시는 아니다")
+buy = "Transaction in own shares. " + "Prudential plc purchased ordinary shares. " * 120
+check(not N._is_earnings(buy), "자사주 공시는 아니다")
+rs = [{"acc": "a", "filed": "2026-10-22"}, {"acc": "b", "filed": "2026-10-22"},
+      {"acc": "c", "filed": "2026-07-28"}, {"acc": "d", "filed": "2026-10-26"}]
+got = N._dedup(sorted(rs, key=lambda r: r["filed"]))
+check([r["filed"] for r in got] == ["2026-07-28", "2026-10-22"], "같은 실적 공시 묶기")
+cache = {"a": {"ticker": "SPOT", "filed": "2026-10-22", "alt": True, "earn": True},
+         "b": {"ticker": "SPOT", "filed": "2026-09-03", "alt": True, "earn": False}}
+e = N._assemble(cache, ["SPOT"], None)["SPOT"]["e"]
+check([x["d"] for x in e] == ["2026-10-22"], "캐시만으로도 실적 아닌 공시는 뺀다")
 print(f"{ok}/{ok} 통과")
