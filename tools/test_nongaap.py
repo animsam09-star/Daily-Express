@@ -98,4 +98,16 @@ pk = N._pick_quarterly([{"acc": "x", "filed": "2026-04-08", "score": 3},
                          {"acc": "y", "filed": "2026-04-29", "score": 32},
                          {"acc": "z", "filed": "2026-07-29", "score": 12}])
 check([r["acc"] for r in pk] == ["y", "z"] and "score" not in pk[0], "분기마다 점수 큰 것 하나")
+class _R:
+    def __init__(self, t=None, j=None): self.text, self._j = t, j
+    def json(self): return self._j
+def _fake(url):
+    if url.endswith("index.json"):
+        return _R(j={"directory": {"item": [{"name": "ex99-1.htm", "size": "9000"}]}})
+    return _R(t="<p>Spotify Announces Financial Results for Third Quarter 2026</p>" + "<p>revenue</p>" * 400)
+_orig, N._sec_get = N._sec_get, _fake
+c = {}
+N._scan_alt(c, [("SPOT", 1, {"acc": "0001-26-1", "filed": "2026-10-22"})])
+N._sec_get = _orig
+check(c["0001-26-1"]["earn"] and c["0001-26-1"]["score"] > 1, "6-K 한 건 판별 경로")
 print(f"{ok}/{ok} 통과")

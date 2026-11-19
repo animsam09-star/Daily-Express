@@ -133,6 +133,8 @@ _EARN_NEG = re.compile(
     r"information circular|expected increase|\bpricing of\b|"
     r"announces? (the )?(date|timing)|conference call (and webcast )?(to|on|scheduled)", re.I)
 EARN_HEAD = 4000
+_EARN_NUM = re.compile(r"\b(revenues?|net (income|profit|loss)|operating (income|profit|loss)|"
+                       r"per share|ebitda|profit before tax|net sales)\b", re.I)
 
 
 def _is_earnings(text: str) -> bool:

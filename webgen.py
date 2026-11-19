@@ -127,6 +127,9 @@ def _holding(h, notes):
         # 시총 상위가 아니라 최근 흐름으로 뽑힌 자리인지("momentum"/"watch").
         # 표시가 없으면 시총 순서가 어긋난 것처럼 보인다.
         "pick": h.get("pick") or "",
+        # 스크리닝(추세·반등·초동)에 왜 걸렸나 — 조건별 실제 값과 문턱
+        "why": (sources.pick_why(h.get("pick"), h.get("returns"), h.get("ohlc"))
+                if h.get("pick") in ("trend", "rebound", "early") else ""),
         # 손으로 고정한 종목인가. pick 과 따로 두는 이유는, 고정 종목이 시총
         # 상위에도 들면 pick 이 안 붙어(이미 표에 있으니 관심 후보에서 빠진다)
         # 표시도 없고 관심종목 카드에도 안 뜨기 때문이다 — 팔란티어가 그랬다.
@@ -574,6 +577,7 @@ tr.stk{cursor:pointer}tr.stk:hover{background:rgba(11,11,11,.03)}
 .note-row td{font-weight:400;text-align:left;color:var(--ink2);font-size:12.5px;
              padding-top:0}
 .note-row a{color:var(--down-t)}
+.note-row.why td{color:var(--sub);font-size:12px;line-height:1.5}
 /* 종목 상세의 기업 개요·분기 실적 */
 /* 상세 모달 탭. 개요·실적·보고서를 위아래로 쌓으면 스크롤이 길어져 차트가
    밀린다 — 한 번에 하나만 보여준다. */
@@ -1673,7 +1677,7 @@ D.sectors.forEach(s=>{
                trend:'추세 상승 · 오늘 스크리닝',
                rebound:'바닥 반등 · 오늘 스크리닝'};
   const TIP = {
-    early:'돌파 직전 60봉이 1년 평균보다 조용했고, 최근 20봉 안에 50일선을 되찾았으며, 거래량이 직전 대비 1.5배 이상 붙은 종목. 3개월 등락률이 +5~40% 구간이라 아직 크게 가지 않았다',
+    early:'돌파 직전 60봉이 1년 평균보다 조용했고(변동폭 1.1배 이하), 최근 30봉 안에 50일선을 되찾았으며, 최근 20봉 거래량이 직전 60봉의 1.3배 이상 붙은 종목. 3개월 등락률이 −10~+40% 구간이라 아직 크게 가지 않았다',
     trend:'종가가 50일선·200일선 위(정배열)이고 3개월 +20% 이상, 최근 한 달도 안 꺾인 종목',
     rebound:'1년 등락률이 마이너스라 아직 200일선 아래인데, 50일선을 되찾고 그 50일선이 상승 전환했으며 최근 거래량까지 늘어난 종목'};
   const BADGE = {early:'초동', trend:'추세', rebound:'반등'};
@@ -1695,6 +1699,7 @@ D.sectors.forEach(s=>{
         <td>${px(h)}</td>
         <td>${capF(h.market_cap, D.currency)}</td>
         <td style="color:var(--sub);font-size:12px">${spans(h.returns)}</td></tr>`
+        + (h.why ? `<tr class="note-row why"><td colspan="6">왜 걸렸나 — ${h.why}</td></tr>` : '')
         + (h.note ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
             h.note_url ? ` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>` : ''
           }</td></tr>` : '');
@@ -1707,7 +1712,8 @@ D.sectors.forEach(s=>{
     const meta = [h.price != null ? px(h) : null,
                   capF(h.market_cap, D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`, `${sgn(h.chg_pct)}%  ·  ${meta}`,
-            h.returns, null, '', h.note ? `↳ ${h.note}` : '', h.ohlc, h, h.ohlc_m);
+            h.returns, null, '', [h.why ? `왜 걸렸나 — ${h.why}` : '', h.note ? `↳ ${h.note}` : '']
+              .filter(Boolean).join('  '), h.ohlc, h, h.ohlc_m);
   });
 })();
 
