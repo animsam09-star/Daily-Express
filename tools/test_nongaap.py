@@ -77,6 +77,8 @@ check(N._is_earnings("Media Release Deutsche Bank hits 2025 financial targets wi
                      "fourth-quarter profits " + "x " * 2000), "DB 연간 실적")
 check(N._is_earnings("PRESS RELEASE Denison Reports Financial and Operational Results for Q2 2026 " + "x " * 2000),
       "DNN 실적")
+check(N._is_earnings("EXHIBIT 99.1 Exhibit 99.1 Q4 2025 Update February 10th, 2026 Table of Contents " + "x " * 2000),
+      "SPOT 4분기 Update")
 check(not N._is_earnings("Cameco Reports Expected Increase in Its Share of Westinghouse 2025 Adjusted EBITDA "
                          + "x " * 2000), "실적 아닌 Reports")
 check("iso4217" not in N._clean("<html><ix:header>iso4217:USD 0001434265</ix:header><p>Interim report</p></html>"),

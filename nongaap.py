@@ -125,7 +125,10 @@ _EARN_POS = [re.compile(x, re.I) for x in (
     r"\binterim (condensed )?(consolidated )?financial statements\b|"
     r"management.s discussion and analysis for the (quarter|three|six|nine|year)",
     r"\b(results|earnings)\s+for\s+the\s+(first|second|third|fourth|full|fiscal|[1-4]q|q[1-4]|"
-    r"three|six|nine|twelve|half|year|quarter|period)\b")]
+    r"three|six|nine|twelve|half|year|quarter|period)\b",
+    # Spotify 는 보도자료 제목이 'Q4 2025 Update' 다
+    r"\b(q[1-4]|[1-4]q|h[12]|fy)\s*'?(20)?\d\d\s+(update|shareholder letter|"
+    r"letter to shareholders|financial (summary|highlights)|earnings (release|report))\b")]
 _EARN_NEG = re.compile(
     r"planned impacts to earnings|earnings considerations|key updates communicated|"
     r"\bwill (report|announce|release|publish|host|hold)\b|"
