@@ -1,7 +1,12 @@
 """회사명으로 상장 티커 찾기 — SEC 목록, 나스닥 스크리너, 야후 검색."""
+import os
+import sys
+
 import requests
 
-import sources
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import sources  # noqa: E402
 
 Q = "anthropic"
 UA = {"User-Agent": "Daily-Express market brief research@daily-express.invalid"}
