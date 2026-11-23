@@ -1699,7 +1699,8 @@ D.sectors.forEach(s=>{
         <td>${px(h)}</td>
         <td>${capF(h.market_cap, D.currency)}</td>
         <td style="color:var(--sub);font-size:12px">${spans(h.returns)}</td></tr>`
-        + (h.why ? `<tr class="note-row why"><td colspan="6">왜 걸렸나 — ${h.why}</td></tr>` : '')
+        + (h.why ? `<tr class="note-row why"><td colspan="6">${h.why.split('\n').map((l,k)=>
+            k===0 ? `<b>${l}</b>` : `· ${l}`).join('<br>')}</td></tr>` : '')
         + (h.note ? `<tr class="note-row"><td colspan="6">↳ ${h.note}${
             h.note_url ? ` <a href="${h.note_url}" target="_blank" rel="noopener">기사</a>` : ''
           }</td></tr>` : '');
@@ -1712,7 +1713,7 @@ D.sectors.forEach(s=>{
     const meta = [h.price != null ? px(h) : null,
                   capF(h.market_cap, D.currency)].filter(Boolean).join(' · ');
     openDlg(`${h.name} (${h.ticker})`, `${sgn(h.chg_pct)}%  ·  ${meta}`,
-            h.returns, null, '', [h.why ? `왜 걸렸나 — ${h.why}` : '', h.note ? `↳ ${h.note}` : '']
+            h.returns, null, '', [h.why ? h.why.split('\n')[0] : '', h.note ? `↳ ${h.note}` : '']
               .filter(Boolean).join('  '), h.ohlc, h, h.ohlc_m);
   });
 })();

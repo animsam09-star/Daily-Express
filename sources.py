@@ -974,11 +974,11 @@ def _early_score(rets, ohlc):
 
 
 def pick_why(kind, rets, ohlc):
-    """스크리닝 종목이 왜 걸렸는지 — 조건마다 이 종목의 실제 값과 문턱을
-    나란히 적는다. 화면의 종목 줄 아래에 그대로 나간다. 못 재면 ''.
+    """스크리닝 종목이 왜 걸렸는지를 풀어 쓴 줄들(줄바꿈으로 잇는다).
 
-    갈래별 기준은 _trend_score·_rebound_score·_early_score 와 같다. 거기
-    문턱을 바꾸면 여기 문구도 같은 상수를 쓰므로 함께 바뀐다."""
+    첫 줄은 그 갈래가 어떤 종목을 고르는지, 다음 줄부터는 조건마다
+    '이 종목의 실제 값 — 그게 무슨 뜻인가'. 문턱은 _trend_score·
+    _rebound_score·_early_score 와 같은 상수를 쓴다. 못 재면 ''."""
     rets = rets or {}
     ohlc = ohlc or []
     closes = [r[4] for r in ohlc]
@@ -987,6 +987,8 @@ def pick_why(kind, rets, ohlc):
     pct = lambda v: f"{v:+.1f}%"                    # noqa: E731
     out = []
     r1, r3 = rets.get("m1"), rets.get("m3")
+    if n < 1:
+        return ""
 
     def vs(w):
         m = _sma(closes, w, n)
@@ -998,50 +1000,66 @@ def pick_why(kind, rets, ohlc):
         base = sum(vols[-80:-20]) / 60
         return sum(vols[-20:]) / 20 / base if base > 0 else None
 
+    def vol_line(m, need):
+        return (f"거래량: 최근 20거래일 평균이 그 전 60거래일의 {m:.1f}배(기준 {need}배 이상) — "
+                f"사려는 사람이 늘었다는 뜻이다. 거래량 없이 오른 가격은 쉽게 되돌려진다.")
+
     if kind == "trend":
+        out.append("【추세】 이미 오르고 있고, 아직 꺾이지 않은 종목")
         if r3 is not None:
-            out.append(f"3개월 {pct(r3)} (기준 {SCREEN_TREND_3M:+.0f}% 이상)")
+            out.append(f"3개월 {pct(r3)}(기준 {SCREEN_TREND_3M:+.0f}% 이상) — 석 달 동안 뚜렷하게 올랐다.")
         if r1 is not None:
-            out.append(f"1개월 {pct(r1)} (꺾이지 않음)")
+            out.append(f"최근 1개월 {pct(r1)} — 최근에도 밀리지 않아 오름세가 살아 있다.")
         a, b = vs(50), vs(200)
         if a is not None and b is not None:
-            out.append(f"50일선 {pct(a)} · 200일선 {pct(b)} 위 (정배열)")
+            out.append(f"주가가 50일 평균가보다 {pct(a)}, 200일 평균가보다 {pct(b)} 위 — 두 달·1년 동안 "
+                       f"산 사람 대부분이 이익인 '정배열'이라, 본전에 팔려는 매물이 적다.")
+            if b > 60:
+                out.append(f"주의: 200일 평균가보다 {b:.0f}% 위라 이미 많이 오른 자리다. "
+                           f"새로 들어가면 흔들림이 클 수 있다.")
     elif kind == "rebound":
-        if r1 is not None:
-            out.append(f"1개월 {pct(r1)} (기준 +{SCREEN_REB_1M:.0f}% 이상)")
+        out.append("【반등】 크게 빠졌다가 바닥을 찍고 돌아서는 종목")
         if len(closes) >= 250:
             hi = max(closes[-252:])
-            out.append(f"1년 고점 대비 {pct((closes[n] / hi - 1) * 100)}"
-                       f" (−{SCREEN_REB_OFF_HIGH:.0f}% 넘게 아래 = 아직 바닥권)")
+            out.append(f"1년 고점보다 {pct((closes[n] / hi - 1) * 100)}(기준 "
+                       f"−{SCREEN_REB_OFF_HIGH:.0f}%보다 아래) — 아직 많이 빠진 자리라 되돌아갈 여지가 있다.")
+        if r1 is not None:
+            out.append(f"최근 1개월 {pct(r1)}(기준 +{SCREEN_REB_1M:.0f}% 이상) — 실제로 오르기 시작했다.")
         now = _sma(closes, 50, n)
         then = _sma(closes, 50, n - SCREEN_REB_SLOPE)
         if now and then:
-            out.append(f"50일선이 {SCREEN_REB_SLOPE}봉 전보다 {pct((now / then - 1) * 100)}"
-                       f" (상승 전환)")
+            out.append(f"50일 평균가가 {SCREEN_REB_SLOPE}거래일 전보다 {pct((now / then - 1) * 100)} — "
+                       f"평균가 자체가 위로 꺾였다. 하루 이틀 튄 게 아니라 하락 흐름이 멈췄다는 뜻이다.")
         m = vol_mult()
         if m is not None:
-            out.append(f"최근 20봉 거래량이 직전 60봉의 {m:.1f}배 (기준 {SCREEN_REB_VOL}배)")
+            out.append(vol_line(m, SCREEN_REB_VOL))
     elif kind == "early":
+        out.append("【초동】 한동안 조용하던 종목이 막 움직이기 시작한 단계 — 아직 덜 올라서 먼저 볼 후보")
         if r3 is not None:
-            out.append(f"3개월 {pct(r3)} (허용 {EARLY_MIN_3M:+.0f}~{EARLY_MAX_3M:+.0f}% — 아직 안 감)")
-        # 50일선을 아래에서 위로 넘은 가장 최근 봉
+            out.append(f"3개월 {pct(r3)} — 아직 거의 안 올랐다(+{EARLY_MAX_3M:.0f}%를 넘으면 '이미 간 종목'이라 뺀다).")
         for i in range(n, max(50, n - EARLY_CROSS) - 1, -1):
             a, b = _sma(closes, 50, i), _sma(closes, 50, i - 1)
             if a and b and closes[i] > a and closes[i - 1] <= b:
-                d = ohlc[i][0] if ohlc[i] else ""
-                out.append(f"50일선 돌파 {n - i}봉 전({str(d)[:10]}) — 최근 {EARLY_CROSS}봉 안"
-                           f", 지금 50일선 {pct(vs(50) or 0)} 위")
+                d = str(ohlc[i][0])[:10]
+                ago = n - i
+                when = "오늘" if ago == 0 else f"{ago}거래일 전"
+                line = (f"{d}({when}) 주가가 50일 평균가를 아래에서 위로 뚫었다 — 내리거나 옆으로 기던 "
+                        f"흐름이 위로 방향을 튼 첫 신호다. 지금은 평균가보다 {pct(vs(50) or 0)} 위.")
+                if ago > 20:
+                    line += f" 다만 돌파한 지 {ago}거래일이 지나 '막 시작'보다는 이미 진행 중이다."
+                out.append(line)
                 break
         xs = lambda lo, hi: [(r[2] - r[3]) / r[4] for r in ohlc[lo:hi] if r[4]]  # noqa: E731
         q, b = xs(-80, -20), xs(-252, None)
         if q and b and sum(b) > 0:
             ratio = (sum(q) / len(q)) / (sum(b) / len(b))
-            out.append(f"돌파 전 60봉 하루 변동폭이 1년 평균의 {ratio:.2f}배"
-                       f" (기준 {EARLY_QUIET}배 이하 — 눌려 있었다)")
+            out.append(f"돌파 전 석 달 동안 하루 등락폭이 1년 평균의 {ratio:.2f}배(기준 {EARLY_QUIET}배 이하) — "
+                       f"조용히 눌려 있었다. 팔 사람이 이미 팔고 난 뒤의 돌파라 의미가 크다. "
+                       f"내내 출렁이던 종목의 돌파는 잡음일 때가 많다.")
         m = vol_mult()
         if m is not None:
-            out.append(f"최근 20봉 거래량이 직전 60봉의 {m:.1f}배 (기준 {EARLY_VOL}배)")
-    return " · ".join(out)
+            out.append(vol_line(m, EARLY_VOL))
+    return "\n".join(out)
 
 
 def pick_extras(holdings, universe):
