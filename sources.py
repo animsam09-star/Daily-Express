@@ -52,6 +52,7 @@ SECTORS = [
 CURATED = {
     "IGV": {
         "MSFT": "Microsoft",             # 윈도우·오피스·애저
+        "ANT": "Anthropic",              # AI 모델(Claude) — 나스닥 상장
         "ORCL": "Oracle",                # 데이터베이스·클라우드
         "SAP": "SAP",                    # 전사 자원관리(ERP)
         "CRM": "Salesforce",             # 고객관계관리(CRM)
@@ -718,6 +719,8 @@ EARLY_PRESELECT = 70
 WATCHLIST = {
     "PLTR": "XLK",      # 팔란티어 — XLK 시총 12위라 상위 5 규칙에 늘 잘린다
     "BE": "XLI",        # 블룸에너지 — 지수 미편입. GICS 기준 산업재(전기장비)
+    "ANT": "IGV",       # 앤트로픽 — AI 모델(Claude). 소프트웨어 카드에도 있지만
+                        # 관심종목 카드에 늘 띄운다
     "SPCX": "ARKX",     # 스페이스X — 우주 카드 1위지만 그 카드가 페이지 중간이라
                         # 찾기 어렵다. 관심종목 카드에도 띄운다
 
