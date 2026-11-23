@@ -13,12 +13,12 @@ for page in ("us.html", "kr.html", "index.html"):
         continue
     t = r.text
     print(f"== {page} HTTP {r.status_code} {len(t)}B")
-    m = re.search(r"const D\s*=\s*(\{.*?\});\s*\n", t, re.S)
+    m = re.search(r'<script[^>]*id="data"[^>]*>(.*?)</script>', t, re.S)
     if not m:
-        print("  D 없음", re.findall(r"생성[^<]{0,60}", t)[:2])
+        print("  data 없음")
         continue
     D = json.loads(m.group(1))
-    print("  생성:", D.get("generated") or D.get("asof") or D.get("date"))
+    print("  키:", [k for k in D if isinstance(D[k], str)][:8], {k: D[k] for k in D if isinstance(D[k], str) and len(D[k]) < 40})
     hold = {h["ticker"]: h for s in D.get("sectors", []) for h in s.get("holdings", [])}
     for w in D.get("watch", []):
         if w["kind"] == "watch":
