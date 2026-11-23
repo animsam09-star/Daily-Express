@@ -892,11 +892,32 @@ function fitStats(ohlc){
     }
     return {w, ...agg(ev), live};
   });
+  // 저항선 — 지지선을 뒤집은 것. 아래에서 올라와 선에 닿은 날(고가가 선 −1% 안쪽,
+  // 전날 종가는 선 아래)을 잡고, 그 뒤 FIT_SUP 일 동안 선 위 3% 넘게 올라서지
+  // 못했으면 '막혔다'. r 은 닿은 날 대비 FIT_SUP 일 뒤 등락.
+  const hi=ohlc.map(r=>r[2]);
+  const ress=[20,60,120,224].map(w=>{
+    const m=ma(c,w), ev=[]; let last=-99, live=null;
+    for(let i=w+1;i<n;i++){
+      if(m[i]==null||m[i-1]==null) continue;
+      if(c[i-1]<m[i-1] && hi[i]>=m[i]*0.99 && i-last>=FIT_SUP){
+        last=i;
+        let held=true;
+        const end=Math.min(i+FIT_SUP, n-1);
+        for(let k=i;k<=end;k++) if(c[k]>m[k]*1.03){held=false;break;}
+        if(i+FIT_SUP<n) ev.push({r:c[i+FIT_SUP]/c[i]-1, hit:held});
+        else live={d:ohlc[i][0], broke:!held, gap:m[n-1]?c[n-1]/m[n-1]-1:null, days:n-1-i};
+      }
+    }
+    return {w, ...agg(ev), live};
+  });
   const okP=pairs.filter(p=>p.score!=null).sort((a,b)=>b.score-a.score);
   const okS=sups.filter(x=>x.n>=3).sort((a,b)=>b.hit/b.n-a.hit/a.n || b.n-a.n);
-  return {base, pairs, sups,
+  const okR=ress.filter(x=>x.n>=3).sort((a,b)=>b.hit/b.n-a.hit/a.n || b.n-a.n);
+  return {base, pairs, sups, ress,
           bestPair: okP.length && okP[0].score>0 ? okP[0].k : null,
-          bestSup: okS.length && okS[0].hit/okS[0].n>=0.6 ? okS[0].w : null};
+          bestSup: okS.length && okS[0].hit/okS[0].n>=0.6 ? okS[0].w : null,
+          bestRes: okR.length && okR[0].hit/okR[0].n>=0.6 ? okR[0].w : null};
 }
 function fitHtml(st){
   if(!st) return '';
@@ -906,14 +927,21 @@ function fitHtml(st){
   const liveTxt=x=>!x.live ? '' : x.live.broke
     ? ` — <b style="color:var(--down-t)">⚠ 이번에는 무너졌다</b>: ${x.live.d}에 닿은 뒤 지금 선보다 ${pc(x.live.gap)}. 과거에 버텼다는 기록보다 지금 이탈이 우선이다`
     : ` — 이번에도 ${x.live.d}에 닿아 ${x.live.days}일째 버티는 중(선 대비 ${pc(x.live.gap)}, 아직 집계 전)`;
+  const liveRes=x=>!x.live ? '' : x.live.broke
+    ? ` — <b style="color:var(--up-t)">이번에는 뚫었다</b>: ${x.live.d}에 닿은 뒤 지금 선보다 ${pc(x.live.gap)}. 과거에 막혔다는 기록보다 지금 돌파가 우선이다`
+    : ` — 이번에도 ${x.live.d}에 닿아 ${x.live.days}일째 막혀 있다(선 대비 ${pc(x.live.gap)}, 아직 집계 전)`;
   const rate=a=>a.n?`${a.hit}/${a.n}`:'–';
   const bp=st.pairs.find(p=>p.k===st.bestPair), bsup=st.sups.find(x=>x.w===st.bestSup);
+  const bres=(st.ress||[]).find(x=>x.w===st.bestRes);
   const head=[
     bp ? `크로스는 <b>${bp.k}</b> 조합이 가장 잘 맞았다(골든 뒤 ${FIT_H}일 ${pc(bp.G.avg)}, 데드 뒤 ${pc(bp.D.avg)})`
        : '크로스는 뚜렷하게 맞은 조합이 없다',
     bsup ? `지지선은 <b>${bsup.w}일선</b>(닿은 뒤 버틴 비율 ${bsup.hit}/${bsup.n}${
              bsup.n<6?' — 표본이 적어 우연일 수 있다':''})${liveTxt(bsup)}`
-         : '지지선은 뚜렷하게 버틴 선이 없다'].join(' · ');
+         : '지지선은 뚜렷하게 버틴 선이 없다',
+    bres ? `저항선은 <b>${bres.w}일선</b>(닿은 뒤 막힌 비율 ${bres.hit}/${bres.n}${
+             bres.n<6?' — 표본이 적어 우연일 수 있다':''})${liveRes(bres)}`
+         : '저항선은 뚜렷하게 막힌 선이 없다'].join(' · ');
   return `<details><summary>이 종목에 잘 맞은 신호(최근 2년) — ${head}</summary>
     <table><thead><tr><th>크로스</th><th>골든 뒤 ${FIT_H}일(적중)</th>
       <th>데드 뒤 ${FIT_H}일(적중)</th><th>차이</th></tr></thead><tbody>${
@@ -926,8 +954,15 @@ function fitHtml(st){
         <td>${x.n}</td><td>${x.n?Math.round(x.hit/x.n*100)+'%':'–'}</td><td>${pc(x.avg)}</td>
         <td>${!x.live?'–':x.live.broke?`<span style="color:var(--down-t)">무너짐(${pc(x.live.gap)})</span>`
                                       :`버티는 중(${pc(x.live.gap)})`}</td></tr>`).join('')}</tbody></table>
+    <table><thead><tr><th>저항선</th><th>닿은 횟수</th><th>막힌 비율</th>
+      <th>${FIT_SUP}일 뒤 평균</th><th>이번 접촉</th></tr></thead><tbody>${
+      (st.ress||[]).map(x=>`<tr class="${x.w===st.bestRes?'best':''}"><td>${x.w}일선${x.w===st.bestRes?' ★':''}</td>
+        <td>${x.n}</td><td>${x.n?Math.round(x.hit/x.n*100)+'%':'–'}</td><td>${pc(x.avg)}</td>
+        <td>${!x.live?'–':x.live.broke?`<span style="color:var(--up-t)">뚫음(${pc(x.live.gap)})</span>`
+                                      :`막히는 중(${pc(x.live.gap)})`}</td></tr>`).join('')}</tbody></table>
     <div style="color:var(--muted);margin-top:4px">같은 기간 아무 날이나 샀을 때 ${FIT_H}일 평균 ${pc(st.base)}.
-      적중 = 골든 뒤 올랐거나 데드 뒤 내린 횟수. 버팀 = 닿은 뒤 ${FIT_SUP}일 동안 선 아래 3% 넘게 무너지지 않음.
+      적중 = 골든 뒤 올랐거나 데드 뒤 내린 횟수. 버팀 = 위에서 내려와 닿은 뒤 ${FIT_SUP}일 동안 선 아래 3% 넘게 무너지지 않음.
+      막힘 = 아래에서 올라와 닿은 뒤 ${FIT_SUP}일 동안 선 위 3% 넘게 올라서지 못함.
       '이번 접촉'은 닿은 지 ${FIT_SUP}일이 안 돼 아직 비율에 안 들어간 최근 접촉의 지금 상태다.
       표본이 적어 참고용이다 — 4번 중 4번 버텼어도 '확률 100%'가 아니라 '지금까지 4번 그랬다'는 기록일 뿐이다.</div></details>`;
 }
