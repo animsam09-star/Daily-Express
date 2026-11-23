@@ -876,17 +876,21 @@ function fitStats(ohlc){
   });
   const sups=[20,60,120,224].map(w=>{
     const m=ma(c,w), ev=[]; let last=-99;
-    for(let i=w+1;i+FIT_SUP<n;i++){
+    let live=null;
+    for(let i=w+1;i<n;i++){
       if(m[i]==null||m[i-1]==null) continue;
       // 위에서 내려와 선에 닿은 날(저가가 선 +1% 안쪽, 전날 종가는 선 위)
       if(c[i-1]>m[i-1] && lo[i]<=m[i]*1.01 && i-last>=FIT_SUP){
         last=i;
         let held=true;
-        for(let k=i;k<=i+FIT_SUP;k++) if(c[k]<m[k]*0.97){held=false;break;}
-        ev.push({r:c[i+FIT_SUP]/c[i]-1, hit:held});
+        const end=Math.min(i+FIT_SUP, n-1);
+        for(let k=i;k<=end;k++) if(c[k]<m[k]*0.97){held=false;break;}
+        // 아직 FIT_SUP 일이 안 지난 최근 접촉은 집계에 넣지 않고 '진행 중'으로 따로 둔다
+        if(i+FIT_SUP<n) ev.push({r:c[i+FIT_SUP]/c[i]-1, hit:held});
+        else live={d:ohlc[i][0], broke:!held, gap:m[n-1]?c[n-1]/m[n-1]-1:null, days:n-1-i};
       }
     }
-    return {w, ...agg(ev)};
+    return {w, ...agg(ev), live};
   });
   const okP=pairs.filter(p=>p.score!=null).sort((a,b)=>b.score-a.score);
   const okS=sups.filter(x=>x.n>=3).sort((a,b)=>b.hit/b.n-a.hit/a.n || b.n-a.n);
@@ -897,12 +901,18 @@ function fitStats(ohlc){
 function fitHtml(st){
   if(!st) return '';
   const pc=x=>x==null?'–':sgn(x*100)+'%';
+  // 최근 접촉(아직 집계 전)의 지금 상태. 과거 성적이 좋아도 이번에 무너지고
+  // 있으면 그게 먼저 보여야 한다(VLO: 120일선 4/4 였는데 이번에 뚫렸다).
+  const liveTxt=x=>!x.live ? '' : x.live.broke
+    ? ` — <b style="color:var(--down-t)">⚠ 이번에는 무너졌다</b>: ${x.live.d}에 닿은 뒤 지금 선보다 ${pc(x.live.gap)}. 과거에 버텼다는 기록보다 지금 이탈이 우선이다`
+    : ` — 이번에도 ${x.live.d}에 닿아 ${x.live.days}일째 버티는 중(선 대비 ${pc(x.live.gap)}, 아직 집계 전)`;
   const rate=a=>a.n?`${a.hit}/${a.n}`:'–';
   const bp=st.pairs.find(p=>p.k===st.bestPair), bsup=st.sups.find(x=>x.w===st.bestSup);
   const head=[
     bp ? `크로스는 <b>${bp.k}</b> 조합이 가장 잘 맞았다(골든 뒤 ${FIT_H}일 ${pc(bp.G.avg)}, 데드 뒤 ${pc(bp.D.avg)})`
        : '크로스는 뚜렷하게 맞은 조합이 없다',
-    bsup ? `지지선은 <b>${bsup.w}일선</b>(닿은 뒤 버틴 비율 ${bsup.hit}/${bsup.n})`
+    bsup ? `지지선은 <b>${bsup.w}일선</b>(닿은 뒤 버틴 비율 ${bsup.hit}/${bsup.n}${
+             bsup.n<6?' — 표본이 적어 우연일 수 있다':''})${liveTxt(bsup)}`
          : '지지선은 뚜렷하게 버틴 선이 없다'].join(' · ');
   return `<details><summary>이 종목에 잘 맞은 신호(최근 2년) — ${head}</summary>
     <table><thead><tr><th>크로스</th><th>골든 뒤 ${FIT_H}일(적중)</th>
@@ -911,12 +921,15 @@ function fitHtml(st){
         <td>${pc(p.G.avg)} (${rate(p.G)})</td><td>${pc(p.D.avg)} (${rate(p.D)})</td>
         <td>${p.score==null?'–':sgn(p.score*100)+'%p'}</td></tr>`).join('')}</tbody></table>
     <table><thead><tr><th>지지선</th><th>닿은 횟수</th><th>버틴 비율</th>
-      <th>${FIT_SUP}일 뒤 평균</th></tr></thead><tbody>${
+      <th>${FIT_SUP}일 뒤 평균</th><th>이번 접촉</th></tr></thead><tbody>${
       st.sups.map(x=>`<tr class="${x.w===st.bestSup?'best':''}"><td>${x.w}일선${x.w===st.bestSup?' ★':''}</td>
-        <td>${x.n}</td><td>${x.n?Math.round(x.hit/x.n*100)+'%':'–'}</td><td>${pc(x.avg)}</td></tr>`).join('')}</tbody></table>
+        <td>${x.n}</td><td>${x.n?Math.round(x.hit/x.n*100)+'%':'–'}</td><td>${pc(x.avg)}</td>
+        <td>${!x.live?'–':x.live.broke?`<span style="color:var(--down-t)">무너짐(${pc(x.live.gap)})</span>`
+                                      :`버티는 중(${pc(x.live.gap)})`}</td></tr>`).join('')}</tbody></table>
     <div style="color:var(--muted);margin-top:4px">같은 기간 아무 날이나 샀을 때 ${FIT_H}일 평균 ${pc(st.base)}.
       적중 = 골든 뒤 올랐거나 데드 뒤 내린 횟수. 버팀 = 닿은 뒤 ${FIT_SUP}일 동안 선 아래 3% 넘게 무너지지 않음.
-      표본이 적어 참고용이다 — 과거에 맞았다고 앞으로도 맞는 것은 아니다.</div></details>`;
+      '이번 접촉'은 닿은 지 ${FIT_SUP}일이 안 돼 아직 비율에 안 들어간 최근 접촉의 지금 상태다.
+      표본이 적어 참고용이다 — 4번 중 4번 버텼어도 '확률 100%'가 아니라 '지금까지 4번 그랬다'는 기록일 뿐이다.</div></details>`;
 }
 
 // 일봉을 주봉/월봉으로 묶는다. 시가는 구간 첫 봉, 종가는 마지막 봉,
